@@ -2,7 +2,12 @@ name: TypeScript
 
 # The shared packages (protocol, transport) are deliberately platform-neutral,
 # so they are kept building and passing on Linux as well as macOS. The device
-# half — sandbox (seatbelt) and the Electron app — is macOS-only.
+# half runs on macOS AND Windows: the seatbelt sandbox is macOS-only, and the
+# Job Object cage, Credential Manager provider and Windows copy are
+# Windows-only — each side's tests pin its own platform and skip elsewhere.
+# The Electron evidence still needs a windowing environment, so macOS only.
+# Windows 11 ARM64 runs the same native-addon and confinement suite as x64;
+# neither architecture is allowed to borrow the other's binaries.
 
 on:
   push:
@@ -14,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest, windows-11-vs2026-arm]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -23,23 +28,29 @@ jobs:
           node-version: 22 # matches package.json engines (better-sqlite3 13 needs >=22)
           cache: npm
       - run: npm ci
+      # node-gyp needs a toolchain for the Windows addons (wincred, Hello,
+      # native-fs and winsandbox); VS Build Tools ship on both Windows runner
+      # architectures. macOS needs Xcode CLT
+      # for the keychain/permissions addons; both builds are tolerant, and a
+      # missing toolchain only disables its provider, never the install.
       - run: npx tsc -b
       # Protocol + transport are platform-independent (golden vectors, crypto,
-      # the WebSocket client) and run everywhere.
+      # the WebSocket client) and run everywhere. The golden path vectors are
+      # macOS-path-shaped; Windows pins the same properties over real temp
+      # paths instead of those bytes (see golden.test.ts).
       - run: npx vitest run packages/protocol packages/transport
-      # The device sandbox needs macOS seatbelt (sandbox-exec); mcp-server's
-      # cases run real sandboxed commands through it. relay-client's own tests
-      # cover the wire contract plus the connection lifecycle against a fake
-      # connection; nothing here talks to a real relay
-      # (see README-ts.md § Integration coverage, which owns that list).
-      # browser-server drives its ported server logic against stub Playwright
-      # objects — its one real-Camoufox test skips itself when no browser is
-      # fetched, which is every run here.
-      - if: runner.os == 'macOS'
+      # The device half, the MCP surface, the relay client, the browser
+      # server and the desktop unit tests run on macOS and Windows. The
+      # seatbelt/sandbox-exec cases, the AppleScript tool, the TCC probes
+      # and the macOS recipes are darwin-gated inside the suite; the Job
+      # Object cage, the CFA/ACL diagnosis and the Windows copy are
+      # win32-gated the same way. Ubuntu keeps the protocol/transport
+      # subset: the device tests assume a desktop OS with a keyring.
+      - if: runner.os == 'macOS' || runner.os == 'Windows'
         run: npx vitest run packages/device-core packages/mcp-server packages/relay-client packages/browser-server apps/desktop
-      # What is left under `e2e/`: the worktree-naming contract. The relay+MCP
-      # gate and the transcript runner went with the stand-in they needed; the
-      # directory did not.
+      # What is left under `e2e/`: the worktree-naming contract over POSIX
+      # shell. The relay+MCP gate and the transcript runner went with the
+      # stand-in they needed; the directory did not.
       - if: runner.os == 'macOS'
         run: npx vitest run e2e
       # The Electron-hosted evidence: the preload bridge, the approval dialog,
@@ -58,3 +69,31 @@ jobs:
           npx electron apps/desktop/scripts/connect-screenshot.mjs
         env:
           DOMO_HOME: ${{ runner.temp }}/domo-ci
+
+  # A Windows test run proves TypeScript and the native addons independently;
+  # this job proves the actual x64 app layout that a user receives. It is a
+  # directory package, deliberately unsigned, so pull requests never receive
+  # release credentials. Signed NSIS/update artifacts remain release-only.
+  windows-x64-package:
+    needs: test
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor/camoufox-browser
+            packages/browser-server/fingerprints.json
+          key: windows-x64-browser-${{ hashFiles('vendor/browser-server/runtime.lock.json', 'scripts/build-browser-runtime.mjs') }}
+      - run: npm ci
+      - run: npx tsc -b
+      - run: node scripts/fetch-vendored.mjs --all
+      - run: node scripts/build-browser-runtime.mjs --browser
+      - name: Pack and verify the x64 app layout
+        working-directory: apps/desktop
+        run: npx electron-builder --win --x64 --dir --publish never

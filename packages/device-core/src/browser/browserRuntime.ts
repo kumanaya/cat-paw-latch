@@ -62,17 +62,36 @@ function vendorLayout(dir: string): Layout {
 
 const hostArch = (): string => (process.arch === "arm64" ? "arm64" : "x86_64");
 
-/** The Camoufox executable inside an install dir, or null. The `camoufox fetch`
- * layout keeps it at browsers/official/<version>/Camoufox.app/Contents/MacOS/. A
- * dev checkout has thin per-arch trees; a universal tree is the packaged shape,
- * where the install dir IS `dir` itself. */
+/** A release interior is platform-specific. Accepting a similarly named file
+ * from another platform only advertises browsing until Playwright fails later. */
+function camoufoxExecutable(root: string, build: string): string {
+  if (process.platform === "win32") return path.join(root, build, "camoufox.exe");
+  if (process.platform === "darwin") {
+    return path.join(root, build, "Camoufox.app", "Contents", "MacOS", "camoufox");
+  }
+  // Linux is intentionally unsupported in this delivery: no accidental
+  // layout contract must turn an untested payload into an advertised runtime.
+  return "";
+}
+
+/** The Camoufox executable inside an install dir, or null. Dev trees are
+ * per-architecture; macOS also has a fused universal tree. */
 function camoufoxBinaryIn(dir: string): string | null {
-  const roots = [path.join(dir, hostArch()), path.join(dir, "universal"), dir];
+  const roots = [path.join(dir, process.arch), path.join(dir, hostArch())];
+  if (process.platform === "win32") roots.unshift(path.join(dir, "windows", process.arch));
+  if (process.platform === "darwin") roots.push(path.join(dir, "universal"));
+  roots.push(dir);
   for (const root of roots) {
+    // Camoufox's Windows installer layout puts the executable directly at its
+    // install root (unlike the macOS `browsers/official/...` cache layout).
+    if (process.platform === "win32") {
+      const direct = path.join(root, "camoufox.exe");
+      if (fs.existsSync(direct)) return direct;
+    }
     const official = path.join(root, "browsers", "official");
     if (!fs.existsSync(official)) continue;
     for (const build of fs.readdirSync(official)) {
-      const bin = path.join(official, build, "Camoufox.app", "Contents", "MacOS", "camoufox");
+      const bin = camoufoxExecutable(official, build);
       if (fs.existsSync(bin)) return bin;
     }
   }

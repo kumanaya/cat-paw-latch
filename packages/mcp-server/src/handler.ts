@@ -25,11 +25,12 @@ import { BlockedError, CALL_BUDGET_MS, DeferredResults, DeniedError, DeviceError
 import { JobOwners } from "./jobs.js";
 import {
   AgentIdentity,
-  MACOS_TOOLING,
+  HOST_TOOLING,
   TOOLS,
   ToolContext,
   toolBlocks,
   toolContent,
+  WINDOWS_TOOLING,
 } from "./tools.js";
 
 /** The MCP revision this server speaks, and the only one it will speak. */
@@ -59,19 +60,24 @@ export const PROTOCOL_REVISION = "2026-07-28";
  * prose was wrong in exactly the states that matter. An instructions block that
  * overstates its guarantee is worse than one that says less.
  *
- * `LIVE_WEB_ROUTING` and `MACOS_TOOLING` are interpolated rather than written
- * here; each has other consumers, and the rules about what may appear in them
- * (including why `osascript` may not) live on those constants.
- *
- * This is guidance to a model, never a capability claim. Nothing here widens
- * what a tool may do; the enforceable bound is the capability set the human
- * approves.
+  * `LIVE_WEB_ROUTING` and the host tooling list are interpolated rather than written
+  * here; each has other consumers, and the rules about what may appear in them
+  * (including why `osascript` may not) live on those constants.
+  *
+  * This is guidance to a model, never a capability claim. Nothing here widens
+  * what a tool may do; the enforceable bound is the capability set the human
+  * approves.
+  *
+  * Two full texts, one per OS — the mechanisms genuinely differ (seatbelt vs
+  * Job Object, TCC dialogs vs Controlled Folder Access, osascript vs none),
+  * so the block is written per host rather than interpolated word by word.
+  * `SERVER_INSTRUCTIONS` is this host's.
  */
-export const SERVER_INSTRUCTIONS = `These tools are Latch. They operate the user's own Mac — their real files, their real applications, their real shell, their speakers, and a real browser running there. Your own file, shell and web tools act on your workspace: a different machine, on a different network address, that the user cannot see.
+const MACOS_SERVER_INSTRUCTIONS = `These tools are Latch. They operate the user's own Mac — their real files, their real applications, their real shell, their speakers, and a real browser running there. Your own file, shell and web tools act on your workspace: a different machine, on a different network address, that the user cannot see.
 
 Default to this Mac for anything about the user or their world: "my computer", "my files", "my email", "say this", "open that", "find X" mean this Mac unless they say otherwise. Reach for these tools too whenever the question is about the live web. Public pages included: ${LIVE_WEB_ROUTING} — your own fetch does none of that, and trips bot walls and consent interstitials besides. "What's on the homepage of Reddit?" is a plow_browser_open question.
 
-Their Mac is a macOS workstation, with tooling your workspace does not have. Reach for it through plow_run_command when it fits the job: ${MACOS_TOOLING}.
+Their Mac is a macOS workstation, with tooling your workspace does not have. Reach for it through plow_run_command when it fits the job: ${HOST_TOOLING}.
 
 When something on their Mac needs a macOS permission the app lacks, TRY it rather than checking first: a refused attempt comes back 'blocked' with the exact sentence to tell the user, and shows them in the app which switch to flip — and for a folder or an Apple events target it raises macOS's own consent dialog, which is the easiest grant there is. plow_device_status is for when the user asks what you can reach on their Mac, or after a 'blocked' result to see the whole picture; it is not a way to avoid trying.
 
@@ -82,6 +88,32 @@ Use your own tools for your own work: code you are writing, scratch files, and a
 The user approves the operations these tools perform on their machine — reading and writing files, running commands, scripting their apps, and browsing. A call may return a pending handle instead of a result; the handle's own 'reason' and 'note' say what it is waiting for. Tell the user, then poll plow_get_result. Do not re-issue the original call; that starts a second request.
 
 A call can also come back with status 'blocked': the user approved it, and then their Mac itself refused — a macOS privacy permission the app has not been granted, a permission dialog waiting on the Mac's screen with nobody there to click it, or a path outside the bound that was approved. That is not the user saying no, and it is not the operation breaking. Read the 'diagnosis'. When its 'confidence' is 'confirmed', tell the user its 'owner_action' sentence word for word and stop: do not retry, and do not reword the goal to get a different answer. The one exception is a diagnosis whose 'retry' names a tool: that tool is the one move left, and only for what did not already happen. When it is 'likely' or 'unknown', say what this Mac found — 'evidence', 'ruled_out', and the 'probes' facts — and let the user decide. A command that comes back 'running' with a 'diagnosis' is parked on a permission dialog: leave it running, tell the user, and poll plow_get_output; the user answering the dialog lets it finish.`;
+
+/**
+ * The Windows instructions: same shape, Windows mechanisms. No AppleScript
+ * tool exists here, no consent dialog ever parks a refusal (it fails at
+ * once), and the gates are Controlled Folder Access and ACLs — so those
+ * sentences are absent and the CFA/ACL ones stand in their place.
+ */
+const WINDOWS_SERVER_INSTRUCTIONS = `These tools are Latch. They operate the user's own PC — their real files, their real applications, their real shell, and a real browser running there. Your own file, shell and web tools act on your workspace: a different machine, on a different network address, that the user cannot see.
+
+Default to this PC for anything about the user or their world: "my computer", "my files", "my email", "find X" mean this PC unless they say otherwise. Reach for these tools too whenever the question is about the live web. Public pages included: ${LIVE_WEB_ROUTING} — your own fetch does none of that, and trips bot walls and consent interstitials besides. "What's on the homepage of Reddit?" is a plow_browser_open question.
+
+Their PC is a Windows machine, with tooling your workspace does not have. Reach for it through plow_run_command when it fits the job: ${WINDOWS_TOOLING}.
+
+When something on their PC hits a Windows gate the app has not been allowed through, TRY it rather than checking first: a refused attempt comes back 'blocked' with the exact sentence to tell the user, and shows them in the app which switch to flip. plow_device_status is for when the user asks what you can reach on their PC, or after a 'blocked' result to see the whole picture; it is not a way to avoid trying.
+
+Call plow_list_skills early. This PC publishes skills — how-to guides for what it can do, specific to this user's setup in ways you cannot otherwise know — and the skill for a task beats rediscovering it.
+
+Use your own tools for your own work: code you are writing, scratch files, and anything you do not need their machine for.
+
+The user approves the operations these tools perform on their machine — reading and writing files, running commands, and browsing. A call may return a pending handle instead of a result; the handle's own 'reason' and 'note' say what it is waiting for. Tell the user, then poll plow_get_result. Do not re-issue the original call; that starts a second request.
+
+A call can also come back with status 'blocked': the user approved it, and then their PC itself refused — a Windows gate it was not allowed through, or a path outside the bound that was approved. That is not the user saying no, and it is not the operation breaking. Read the 'diagnosis'. When its 'confidence' is 'confirmed', tell the user its 'owner_action' sentence word for word and stop: do not retry, and do not reword the goal to get a different answer. The one exception is a diagnosis whose 'retry' names a tool: that tool is the one move left, and only for what did not already happen. When it is 'likely' or 'unknown', say what this PC found — 'evidence', 'ruled_out', and the 'probes' facts — and let the user decide.`;
+
+/** This host's instructions: the macOS text on macOS, the Windows text on Windows. */
+export const SERVER_INSTRUCTIONS =
+  process.platform === "win32" ? WINDOWS_SERVER_INSTRUCTIONS : MACOS_SERVER_INSTRUCTIONS;
 
 /**
  * Who this server says it is. Exported so the copy guards in toolCopy.test.ts
@@ -111,11 +143,15 @@ A call can also come back with status 'blocked': the user approved it, and then 
  */
 export const SERVER_IDENTITY = {
   name: "plow-latch",
-  title: "Plow Latch — Mac Desktop Manager",
+  title: process.platform === "win32" ? "Plow Latch — PC Desktop Manager" : "Plow Latch — Mac Desktop Manager",
   description:
-    "Operate this person's own Mac: read and write their files, run shell and macOS " +
-    "tooling, and drive a real browser on their own network. Operations stay within " +
-    "the scope the owner approved.",
+    process.platform === "win32"
+      ? "Operate this person's own PC: read and write their files, run shell and Windows " +
+        "tooling, and drive a real browser on their own network. Operations stay within " +
+        "the scope the owner approved."
+      : "Operate this person's own Mac: read and write their files, run shell and macOS " +
+        "tooling, and drive a real browser on their own network. Operations stay within " +
+        "the scope the owner approved.",
   websiteUrl: "https://watchmepivot.com/",
 } as const;
 

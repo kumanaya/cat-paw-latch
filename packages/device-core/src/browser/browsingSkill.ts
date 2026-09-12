@@ -181,3 +181,42 @@ vault describe → plow_browser_request (login item) → fill_secret → at chec
 plow_browser_request (card item; plus payment-provider origins if a popup appears) →
 fill_secret each card field → confirm → screenshot the confirmation → plow_browser_close.`,
 };
+
+/**
+ * The Windows browser is deliberately not a copy of the owner's browser. An
+ * AppContainer session receives an empty, per-session profile in its private
+ * workspace, so handing the macOS guide to a Windows caller would both
+ * misdescribe the product and invite a remote agent to look for state it must
+ * never receive.
+ */
+export function browsingSkillFor(platform: NodeJS.Platform = process.platform): Skill {
+  if (platform !== "win32") return BROWSING_SKILL;
+
+  const description =
+    "Browse websites on this Windows PC with an isolated Camoufox session. It uses the " +
+    "owner's local network, but has an empty temporary profile: it cannot read the owner's " +
+    "browser profile, Windows credentials, Latch vault, downloads, or history. A vault item " +
+    "is typed into an approved page only after local-owner approval; its value is never returned to you.";
+  const isolatedProfile =
+    "**Each Windows session starts with a new, empty temporary browser profile.** It is not " +
+    "a copy of the owner's browser and has no cookies, logins, downloads, history, Windows " +
+    "credentials, or direct vault access. When the session closes, its profile and downloads are " +
+    "discarded. If a page needs a secret, ask for the specific vault item with " +
+    "`plow_browser_request`, then use `fill_secret`; the value is typed locally and is never " +
+    "returned to you. Do not ask the owner to paste a secret into chat.";
+  const body = BROWSING_SKILL.body
+    .replaceAll("this Mac", "this Windows PC")
+    .replaceAll("This Mac", "This Windows PC")
+    .replaceAll("the Mac", "this Windows PC")
+    .replaceAll("on the Mac", "on this Windows PC")
+    .replaceAll("Mac is", "Windows PC is")
+    .replace(
+      /\*\*You are the user, already signed in\.\*\*[\s\S]*?When you do have to sign in, use `fill_secret`\./,
+      isolatedProfile,
+    )
+    .replace(
+      "The browser uses the owner's local network and credentials;",
+      "The browser uses the owner's local network; it does not receive their profile or credentials;",
+    );
+  return { name: BROWSING_SKILL.name, description, body };
+}

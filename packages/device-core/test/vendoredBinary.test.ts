@@ -7,9 +7,32 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { canonicalize } from "@domo/protocol";
 import { resolveVendoredBinary } from "../src/providers/vendoredBinary.js";
 
+/** Whether this machine can make a file symlink (needs a privilege Windows
+ *  does not grant by default). The symlink advice below is only testable
+ *  where a link can exist. */
+const CAN_SYMLINK = (() => {
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-link-probe-"));
+    try {
+      const target = path.join(dir, "t");
+      fs.writeFileSync(target, "x");
+      const link = path.join(dir, "l");
+      fs.symlinkSync(target, link);
+      fs.unlinkSync(link);
+      return true;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  } catch {
+    return false;
+  }
+})();
+
 const cleanups: (() => void)[] = [];
+const executableName = (name: string): string => process.platform === "win32" ? `${name}.exe` : name;
 // BEFORE as well as after: `DOMO_GOG` is a documented operator override for
 // driving a run against another Mac, so a developer with it exported would
 // otherwise get a red suite from their own shell.
@@ -33,7 +56,7 @@ function newBase(): string {
 function tree(rel: string, name = "gog", base = newBase()): string {
   const dir = path.join(base, rel, process.arch);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, name), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, executableName(name)), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   return base;
 }
 
@@ -44,7 +67,7 @@ describe("resolveVendoredBinary", () => {
   it("looks under the command it was asked about, not gog's", () => {
     const resourcesDir = tree("providers/slack", "slack");
     expect(resolveVendoredBinary("slack", { resourcesDir }).path).toBe(
-      path.join(resourcesDir, "providers/slack", process.arch, "slack"),
+      path.join(resourcesDir, "providers/slack", process.arch, executableName("slack")),
     );
     // gog's own staging does not answer for another provider.
     expect(resolveVendoredBinary("gog", { resourcesDir }).path).toBeNull();
@@ -56,7 +79,7 @@ describe("resolveVendoredBinary", () => {
     // `/tmp/gog` and running that with a minted Google token. Loud beats
     // handing the credential to the wrong binary.
     const staged = tree("misnamed", "gog-0.36.0");
-    const named = path.join(staged, "misnamed", process.arch, "gog-0.36.0");
+    const named = path.join(staged, "misnamed", process.arch, executableName("gog-0.36.0"));
     process.env.DOMO_GOG = named;
     // `tried` carries what this actually looked at, so the diagnostic does not
     // have to re-derive it from the environment.
@@ -78,7 +101,7 @@ describe("resolveVendoredBinary", () => {
     });
   });
 
-  it("accepts the symlink the misnamed message tells operators to make", () => {
+  it.skipIf(!CAN_SYMLINK)("accepts the symlink the misnamed message tells operators to make", () => {
     // The advice rests on `statSync` FOLLOWING symlinks, so a link named `gog`
     // pointing at `gog-0.36.0` passes both isFile() and the basename check.
     // Unasserted, that advice is a guess.
@@ -86,8 +109,8 @@ describe("resolveVendoredBinary", () => {
     // an operator following the advice would do.
     const base = newBase();
     tree("misnamed", "gog-0.36.0", base);
-    const link = path.join(base, "gog");
-    fs.symlinkSync(path.join(base, "misnamed", process.arch, "gog-0.36.0"), link);
+    const link = path.join(base, executableName("gog"));
+    fs.symlinkSync(path.join(base, "misnamed", process.arch, executableName("gog-0.36.0")), link);
     process.env.DOMO_GOG = link;
     expect(resolveVendoredBinary("gog")).toEqual({ path: link });
   });
@@ -97,7 +120,7 @@ describe("resolveVendoredBinary", () => {
     // cwd, so a relative one points somewhere else — and an ambient `gog`
     // further along PATH would take the already-minted token.
     const staged = tree("rel");
-    const absolute = path.join(staged, "rel", process.arch, "gog");
+    const absolute = path.join(staged, "rel", process.arch, executableName("gog"));
     process.env.DOMO_GOG = path.relative(process.cwd(), absolute);
     expect(process.env.DOMO_GOG.startsWith("/")).toBe(false);
     expect(resolveVendoredBinary("gog")).toEqual({ path: absolute });
@@ -105,20 +128,22 @@ describe("resolveVendoredBinary", () => {
 
   it("takes its override from that command's own variable", () => {
     const staged = tree("providers/slack", "slack");
-    process.env.DOMO_SLACK = path.join(staged, "providers/slack", process.arch, "slack");
+    process.env.DOMO_SLACK = path.join(staged, "providers/slack", process.arch, executableName("slack"));
     cleanups.push(() => delete process.env.DOMO_SLACK);
     process.env.DOMO_GOG = "/nonexistent";
     expect(resolveVendoredBinary("slack").path).toBe(process.env.DOMO_SLACK);
-    // ...and gog still reads its own, which is missing.
+    // ...and gog still reads its own, which is missing. `tried` is the
+    // NORMALIZED path this actually looked at — identical to `given` on
+    // POSIX, drive-rooted on Windows.
     expect(resolveVendoredBinary("gog")).toEqual({
-      path: null, problem: "override-missing", given: "/nonexistent", tried: "/nonexistent",
+      path: null, problem: "override-missing", given: "/nonexistent", tried: canonicalize("/nonexistent"),
     });
   });
 
   it("finds the binary a packaged app ships in Resources", () => {
     const resourcesDir = tree("providers/gog");
     expect(resolveVendoredBinary("gog", { resourcesDir }).path).toBe(
-      path.join(resourcesDir, "providers/gog", process.arch, "gog"),
+      path.join(resourcesDir, "providers/gog", process.arch, executableName("gog")),
     );
   });
 
@@ -128,7 +153,7 @@ describe("resolveVendoredBinary", () => {
     // lookup silently resolved nothing.
     const repoRoot = tree("vendor/providers/gog");
     expect(resolveVendoredBinary("gog", { repoRoot }).path).toBe(
-      path.join(repoRoot, "vendor/providers/gog", process.arch, "gog"),
+      path.join(repoRoot, "vendor/providers/gog", process.arch, executableName("gog")),
     );
   });
 
@@ -157,7 +182,7 @@ describe("resolveVendoredBinary", () => {
 
   it("takes DOMO_GOG ahead of everything else", () => {
     const named = tree("providers/gog");
-    process.env.DOMO_GOG = path.join(named, "providers/gog", process.arch, "gog");
+    process.env.DOMO_GOG = path.join(named, "providers/gog", process.arch, executableName("gog"));
     expect(resolveVendoredBinary("gog", { resourcesDir: tree("providers/gog") }).path).toBe(process.env.DOMO_GOG);
   });
 
@@ -169,7 +194,7 @@ describe("resolveVendoredBinary", () => {
     // stale env var.
     process.env.DOMO_GOG = "/nonexistent/gog";
     expect(resolveVendoredBinary("gog")).toEqual({
-      path: null, problem: "override-missing", given: "/nonexistent/gog", tried: "/nonexistent/gog",
+      path: null, problem: "override-missing", given: "/nonexistent/gog", tried: canonicalize("/nonexistent/gog"),
     });
   });
 });

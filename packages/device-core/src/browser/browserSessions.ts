@@ -221,11 +221,15 @@ export class BrowserSessions {
   ) {}
 
   /** True when a page URL is inside the session's approved origins.
-   * Blank/initial pages have no host and are always in scope. */
+   * Only the initial blank page has no host and remains in scope.  A hostless
+   * URL is otherwise not an approved web origin: in particular, a page can
+   * reach `file:` through a redirect or injected script even though `goto`
+   * rejects it before launch.  Treating every hostless scheme as blank would
+   * then let the agent read local files through later text/eval actions. */
   private inScope(s: Session, url: string): boolean {
     if (url === "" || url === "about:blank") return true;
     const host = hostOf(url);
-    if (host === null) return true; // about:, data: — no origin to judge
+    if (host === null) return false;
     return originMatches(host, s.origins);
   }
 

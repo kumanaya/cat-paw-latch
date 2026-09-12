@@ -22,7 +22,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { decString, encString, masterKeys } from "./vaultCrypto.js";
+import { decString, encString, masterKeys, wipeKeyMaterial } from "./vaultCrypto.js";
 import { Cipher, splitKey } from "./vaultItems.js";
 import { VaultKeyStore } from "./vaultKeyStore.js";
 import { VaultSecretStore } from "./vaultSecretStore.js";
@@ -118,9 +118,21 @@ export function legacyVaultPresent(dir: string): boolean {
  * Migrate, if there is anything to migrate. Called from openVaultKey — the
  * shared open path — whenever the item file has not landed yet; a machine
  * with no legacy vault returns without touching anything.
+ *
+ * macOS-only by implementation: the reader below is /usr/bin/sqlite3 (plus
+ * pgrep/ps for the live-server check), and only Mac installs have a legacy
+ * Bitwarden vault to migrate — Windows installs are new. Anywhere else a
+ * legacy database with account traces is refused outright rather than read
+ * halfway: copying ciphertext no reader on this host can open would strand
+ * the vault as permanently empty.
  */
 export function migrateLegacyVault(dir: string, keyStore: VaultKeyStore, store: VaultStore): void {
   if (store.exists() || !legacyVaultPresent(dir)) return;
+  if (process.platform !== "darwin") {
+    throw new Error(
+      "a legacy Bitwarden vault is present but migration runs on macOS only; move this home to a Mac to migrate it",
+    );
+  }
 
   // A live old server is a concurrent WRITER of the database about to be
   // cloned: a clone taken beside its WAL checkpoint can silently omit
@@ -162,6 +174,9 @@ export function migrateLegacyVault(dir: string, keyStore: VaultKeyStore, store: 
       break;
     } catch {
       /* not the pair the vault took; try the other */
+    } finally {
+      // Dead either way: a hit unwraps into userKey, a miss into nothing.
+      wipeKeyMaterial(derived.stretchedEnc, derived.stretchedMac);
     }
   }
   if (!userKey) {
@@ -181,16 +196,24 @@ export function migrateLegacyVault(dir: string, keyStore: VaultKeyStore, store: 
   // legacy user key; anything else is some other vault's key, and copying
   // ciphertext it cannot open would read as an empty vault forever.
   const existing = keyStore.readKey();
-  if (existing) {
-    if (!existing.equals(userKey)) {
-      throw new Error(
-        "this machine already holds a different vault key; refusing to migrate the old vault over it",
-      );
+  try {
+    if (existing) {
+      if (!existing.equals(userKey)) {
+        throw new Error(
+          "this machine already holds a different vault key; refusing to migrate the old vault over it",
+        );
+      }
+    } else if (keyStore.state().status === "locked") {
+      throw new Error("this vault's key cannot be opened on this machine, so the old vault cannot be migrated");
+    } else {
+      keyStore.writeKey(userKey);
     }
-  } else if (keyStore.state().status === "locked") {
-    throw new Error("this vault's key cannot be opened on this machine, so the old vault cannot be migrated");
-  } else {
-    keyStore.writeKey(userKey);
+  } finally {
+    // Both die here: userKey was filed (writeKey copies out) or refused,
+    // and existing was only ever compared. Neither is a splitKey alias —
+    // those live in rewrap's scope, finished above.
+    wipeKeyMaterial(userKey);
+    if (existing) wipeKeyMaterial(existing);
   }
   store.replaceAll(db.rows.map(cipherOf));
 }
@@ -212,39 +235,50 @@ function rewrapOrganizationRows(db: LegacyDb, userKey: Buffer): void {
     throw new Error("the old vault holds organization items but no private key to recover their key with");
   }
   const user = splitKey(userKey);
+  // Owned outright (fresh decString output): wiped below, after the KeyObject
+  // has copied what it needs. The `user` halves alias userKey — owned by the
+  // caller, never wiped here.
+  const privateDer = decString(db.privateKey, user.enc, user.mac);
   const privateKey = crypto.createPrivateKey({
-    key: decString(db.privateKey, user.enc, user.mac),
+    key: privateDer,
     format: "der",
     type: "pkcs8",
   });
   const orgKeyByUuid = new Map<string, Buffer>();
-  for (const { org_uuid, akey, access_all, atype } of db.orgKeys) {
-    // Only a membership that saw the WHOLE organization migrates its rows:
-    // access_all, or the owner/admin roles that imply it. A collection-scoped
-    // member holds the org key but the old server withheld rows by ACL, and
-    // this side does not replicate that policy — so it refuses to guess,
-    // before anything is written, rather than migrating what was withheld.
-    if (!access_all && atype > 1) {
-      throw new Error(
-        "the old vault's organization membership is limited to specific collections; " +
-          "its items cannot be migrated automatically",
-      );
+  try {
+    for (const { org_uuid, akey, access_all, atype } of db.orgKeys) {
+      // Only a membership that saw the WHOLE organization migrates its rows:
+      // access_all, or the owner/admin roles that imply it. A collection-scoped
+      // member holds the org key but the old server withheld rows by ACL, and
+      // this side does not replicate that policy — so it refuses to guess,
+      // before anything is written, rather than migrating what was withheld.
+      if (!access_all && atype > 1) {
+        throw new Error(
+          "the old vault's organization membership is limited to specific collections; " +
+            "its items cannot be migrated automatically",
+        );
+      }
+      if (akey) orgKeyByUuid.set(org_uuid, decRsaString(akey, privateKey));
     }
-    if (akey) orgKeyByUuid.set(org_uuid, decRsaString(akey, privateKey));
-  }
-  for (const row of orgRows) {
-    const orgKey = orgKeyByUuid.get(row.organization_uuid!);
-    if (!orgKey) {
-      throw new Error(
-        "the old vault holds an organization item whose key this account cannot recover; its items cannot be migrated",
-      );
+    for (const row of orgRows) {
+      const orgKey = orgKeyByUuid.get(row.organization_uuid!);
+      if (!orgKey) {
+        throw new Error(
+          "the old vault holds an organization item whose key this account cannot recover; its items cannot be migrated",
+        );
+      }
+      const org = splitKey(orgKey);
+      // With its own key: unwrap from the org key, re-wrap under the user key.
+      // Without one: the fields sit directly under the org key, so the org key
+      // BECOMES the item's own key — the fields stay byte-identical either way.
+      const itemKey = row.key ? decString(row.key, org.enc, org.mac) : orgKey;
+      row.key = encString(itemKey, user.enc, user.mac);
+      // A fresh unwrap dies here; an adopted orgKey dies with the map below.
+      if (itemKey !== orgKey) wipeKeyMaterial(itemKey);
     }
-    const org = splitKey(orgKey);
-    // With its own key: unwrap from the org key, re-wrap under the user key.
-    // Without one: the fields sit directly under the org key, so the org key
-    // BECOMES the item's own key — the fields stay byte-identical either way.
-    const itemKey = row.key ? decString(row.key, org.enc, org.mac) : orgKey;
-    row.key = encString(itemKey, user.enc, user.mac);
+  } finally {
+    wipeKeyMaterial(privateDer);
+    for (const orgKey of orgKeyByUuid.values()) wipeKeyMaterial(orgKey);
   }
 }
 

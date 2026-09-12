@@ -876,7 +876,9 @@ describe("the activation credential handoff", () => {
     expect(started).toBe(1);
   });
 
-  it("writes settings owner-only", async () => {
+  // Unix mode bits do not exist on Windows (ACLs instead); the OS-store
+  // providers are the floor there, as in settings.test.ts.
+  it.skipIf(process.platform === "win32")("writes settings owner-only", async () => {
     await signIn();
 
     const mode = fs.statSync(path.join(home, "app/settings.json")).mode & 0o777;

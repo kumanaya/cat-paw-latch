@@ -37,8 +37,11 @@ export interface InstancePaths {
   electronData: string;
   /**
    * The Keychain identity the vault account's encryption is bound to. NOT the
-   * app name: `safeStorage` keys on `app.name`, and binding a secret to a
+   * app name: `safeStorage` keys on `app.name` on macOS, and binding a secret to a
    * display string is what made an app rename unreadable. See vaultKeychain.ts.
+   * On Windows/Linux safeStorage does not key on the app name, so main.ts
+   * does not apply this as the app name there — it still labels the
+   * per-vault native-secret account (vaultKeyStore.ts) on every platform.
    */
   vaultIdentity: string;
 }

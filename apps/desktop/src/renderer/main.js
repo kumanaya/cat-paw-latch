@@ -765,12 +765,14 @@ async function renderRules() {
 
   const ruleItems = rules.length
     ? rules.map((r) => {
-        const remove = el("button", { class: "btn danger", text: "Revoke Rule" });
+        const remove = el("button", { class: "btn danger", text: r.disabled ? "Remove Rule" : "Revoke Rule" });
         remove.addEventListener("click", async () => { await window.domo.rulesRemove(r.ruleKey); renderRules(); });
         const caps = (r.capabilities || []).map((c) => el("span", { class: "cap", text: capText(c) }));
         return el("div", { class: "item" }, [
           el("div", { class: "row" }, [el("h4", { text: r.agentDisplay || r.agentId }), el("div", { class: "spacer" }), remove]),
           el("div", { class: "capchips" }, caps),
+          ...(r.disabled ? [el("p", { class: "faint", text:
+            "Disabled on Windows: this rule has sensitive permissions and now requires local presence for every request." })] : []),
         ]);
       })
     : [el("div", { class: "empty", text: "No always-allow rules." })];

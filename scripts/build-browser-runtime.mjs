@@ -5,7 +5,8 @@
  * ships: the runtime is @domo/browser-server (playwright-core) and the disguise
  * comes from a build-time pool (DESIGN.md §11a).
  *
- *   vendor/camoufox-browser/<arch>/Camoufox.app   (--browser: this arch only)
+ *   vendor/camoufox-browser/<arch>/Camoufox.app   (macOS --browser)
+ *   vendor/camoufox-browser/windows/<arch>/       (Windows --browser)
  *   vendor/camoufox-browser/universal/            (--browser-both: both arches
  *                                                  lipo-fused into one tree —
  *                                                  what `just package` bundles)
@@ -236,6 +237,73 @@ function fetchBrowser(arch) {
   log(`camoufox ${arch} install ready at ${installRoot}`);
 }
 
+/** Find one named regular file below a verified release extraction. */
+function onlyFileNamed(root, name) {
+  const found = [];
+  const visit = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) visit(p);
+      else if (entry.isFile() && entry.name.toLowerCase() === name.toLowerCase()) found.push(p);
+    }
+  };
+  visit(root);
+  if (found.length !== 1) throw new Error(`expected exactly one ${name} in the Camoufox release (found ${found.length})`);
+  return found[0];
+}
+
+/**
+ * Fetch a pinned Windows release into the layout camoufox-js uses on Windows:
+ * `version.json` and `camoufox.exe` at one install root.  The archive is
+ * checksum-verified before extraction and its entry names are rejected if they
+ * could escape the temporary directory.
+ */
+function fetchWindowsBrowser(arch) {
+  const asset = lock.camoufox.windows?.[arch];
+  if (!asset) {
+    throw new Error(
+      `no pinned Windows ${arch} Camoufox artifact exists for ${lock.camoufox.browserVersion}; ` +
+      "do not package this architecture until a reproducible signed artifact and sha256 are recorded",
+    );
+  }
+  const installRoot = path.join(browserDir, "windows", arch);
+  const marker = path.join(installRoot, ".sha256");
+  const markerValue = `${asset.sha256}:${PRUNE_VERSION}`;
+  if (fs.existsSync(marker) && fs.readFileSync(marker, "utf8") === markerValue &&
+      fs.existsSync(path.join(installRoot, "camoufox.exe"))) {
+    log(`Windows Camoufox ${arch} up to date`);
+    return installRoot;
+  }
+  const zipDest = path.join(downloadsDir, path.basename(new URL(asset.url).pathname));
+  download(asset.url, asset.sha256, zipDest);
+  const entries = capture("tar", ["-tf", zipDest]).split(/\r?\n/).filter(Boolean);
+  if (entries.some((entry) => path.isAbsolute(entry) || entry.split(/[\\/]+/).includes(".."))) {
+    throw new Error("Windows Camoufox archive contains an unsafe path");
+  }
+  const staging = fs.mkdtempSync(path.join(downloadsDir, "camoufox-win-"));
+  try {
+    log(`extracting Windows Camoufox (${arch})`);
+    run("tar", ["-xf", zipDest, "-C", staging]);
+    const executable = onlyFileNamed(staging, "camoufox.exe");
+    const sourceRoot = path.dirname(executable);
+    fs.rmSync(installRoot, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(installRoot), { recursive: true });
+    fs.renameSync(sourceRoot, installRoot);
+    const [, fullVersion] = lock.camoufox.browserVersion.split("/");
+    const dash = fullVersion.indexOf("-");
+    fs.writeFileSync(
+      path.join(installRoot, "version.json"),
+      JSON.stringify({ version: dash === -1 ? fullVersion : fullVersion.slice(0, dash), release: dash === -1 ? "" : fullVersion.slice(dash + 1) }),
+    );
+    fs.writeFileSync(marker, markerValue);
+    log(`Windows Camoufox ${arch} install ready at ${installRoot}`);
+    return installRoot;
+  } finally {
+    fs.rmSync(staging, { recursive: true, force: true });
+  }
+}
+
 /**
  * Fuse the two per-arch Camoufox install dirs into one universal tree at
  * vendor/camoufox-browser/universal — what `just package` bundles. lipo saves
@@ -449,34 +517,38 @@ function signCamoufox(arch, identity) {
  */
 const POOL_SIZE = Number(process.env.DOMO_FINGERPRINT_POOL_SIZE ?? "50");
 
-async function generateFingerprintPool(treeArch) {
+async function generateFingerprintPool(treeArch, osName = "macos") {
   const installRoot = path.join(browserDir, treeArch);
   // browsers/official/<folder>/Camoufox.app — the one the fetch created.
-  const official = path.join(installRoot, "browsers", "official");
-  const folder = fs.readdirSync(official)[0];
-  const app = path.join(official, folder, "Camoufox.app");
-  const version = JSON.parse(
-    fs.readFileSync(path.join(official, folder, "version.json"), "utf8"),
-  );
+  const windows = osName === "windows";
+  const official = windows ? null : path.join(installRoot, "browsers", "official");
+  const folder = windows ? null : fs.readdirSync(official)[0];
+  const app = windows ? null : path.join(official, folder, "Camoufox.app");
+  const version = JSON.parse(fs.readFileSync(
+    windows ? path.join(installRoot, "version.json") : path.join(official, folder, "version.json"),
+    "utf8",
+  ));
   // Shim in the layout camoufox-js expects: Camoufox.app + version.json
   // {version, release}. Ours writes {version, build}; translate `build`.
   // downloadsDir only exists as a side effect of download(); on a warm CI
   // cache the fetch is skipped and nothing else creates it, and mkdtemp
   // won't create the parent.
   fs.mkdirSync(downloadsDir, { recursive: true });
-  const shim = fs.mkdtempSync(path.join(downloadsDir, "cfx-shim-"));
-  fs.symlinkSync(app, path.join(shim, "Camoufox.app"));
-  fs.writeFileSync(
-    path.join(shim, "version.json"),
-    JSON.stringify({ version: version.version, release: version.build }),
-  );
-  process.env.CAMOUFOX_INSTALL_DIR = shim;
+  const shim = windows ? null : fs.mkdtempSync(path.join(downloadsDir, "cfx-shim-"));
+  if (shim) {
+    fs.symlinkSync(app, path.join(shim, "Camoufox.app"));
+    fs.writeFileSync(
+      path.join(shim, "version.json"),
+      JSON.stringify({ version: version.version, release: version.build }),
+    );
+  }
+  process.env.CAMOUFOX_INSTALL_DIR = shim ?? installRoot;
   const { launchOptions } = await import("camoufox-js");
 
-  log(`sampling ${POOL_SIZE} macOS fingerprints from ${treeArch}`);
+  log(`sampling ${POOL_SIZE} ${osName} fingerprints from ${treeArch}`);
   const entries = [];
   for (let i = 0; i < POOL_SIZE; i++) {
-    const o = await launchOptions({ os: "macos", headless: true, exclude_addons: ["UBO"] });
+    const o = await launchOptions({ os: osName, headless: true, exclude_addons: ["UBO"] });
     // Only the CAMOU_CONFIG chunks are the disguise; nothing else camoufox-js
     // put in env is a runtime dependency on macOS. firefoxUserPrefs and args
     // ride along; args is empty for this config shape, but keep it for safety.
@@ -487,7 +559,7 @@ async function generateFingerprintPool(treeArch) {
     const id = crypto.createHash("sha256").update(JSON.stringify(env)).digest("hex").slice(0, 16);
     entries.push({ id, env, firefoxUserPrefs: o.firefoxUserPrefs ?? {}, args: o.args ?? [] });
   }
-  fs.rmSync(shim, { recursive: true, force: true });
+  if (shim) fs.rmSync(shim, { recursive: true, force: true });
 
   const outDir = path.join(repoRoot, "packages", "browser-server");
   const out = path.join(outDir, "fingerprints.json");
@@ -502,8 +574,17 @@ async function generateFingerprintPool(treeArch) {
 try {
   const builtArches = [];
   if (wantBrowser) {
-    const hostArch = process.arch === "arm64" ? "arm64" : "x86_64";
-    if (wantBoth) {
+    if (process.platform === "win32") {
+      const hostArch = process.arch === "arm64" ? "arm64" : "x64";
+      if (wantBoth) {
+        fetchWindowsBrowser("x64");
+        fetchWindowsBrowser("arm64");
+        builtArches.push("windows/x64", "windows/arm64");
+      } else {
+        fetchWindowsBrowser(hostArch);
+        builtArches.push(`windows/${hostArch}`);
+      }
+    } else if (wantBoth) {
       // The per-arch trees are intermediates; the universal fuse is what gets
       // bundled (and therefore what gets the Developer ID signature).
       fetchBrowser("arm64");
@@ -516,18 +597,21 @@ try {
     }
   }
   // After the fetch/merge so freshly extracted trees are covered too.
-  patchCamoufoxDockPolicies();
+  if (process.platform === "darwin") patchCamoufoxDockPolicies();
 
   // The frozen fingerprint pool, sampled from whatever tree was just built.
-  if (builtArches.length) await generateFingerprintPool(builtArches[0]);
+  if (builtArches.length) await generateFingerprintPool(
+    builtArches[0],
+    process.platform === "win32" ? "windows" : "macos",
+  );
 
   // Signing is its own pass, cache-independent: a `just package` on an already
   // built tree must still produce Developer ID signatures, or notarization
   // rejects the ad-hoc ones. Without an identity we leave dev signatures alone.
   const identity = process.env.CODESIGN_IDENTITY;
-  if (identity) {
+  if (identity && process.platform === "darwin") {
     for (const a of builtArches) signCamoufox(a, identity);
-  } else {
+  } else if (process.platform === "darwin") {
     log("CODESIGN_IDENTITY not set — keeping existing/ad-hoc signatures (dev mode)");
   }
 } catch (error) {

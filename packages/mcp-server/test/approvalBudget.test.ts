@@ -36,7 +36,7 @@ function closeGate(): void {
 closeGate();
 
 const isApprovalWrite = (target: unknown) =>
-  typeof target === "string" && target.includes("/approvals/");
+  typeof target === "string" && /[/\\]approvals[/\\]/.test(target);
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import("node:fs/promises");

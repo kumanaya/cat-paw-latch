@@ -317,3 +317,141 @@ describe("the packaging hook refuses before it signs", () => {
     await expect(afterPack(contextFor(dir))).rejects.toThrow(/holds no Camoufox\.app/);
   });
 });
+
+describe("the Windows pack gate", () => {
+  // Same philosophy as the macOS keychain gate, per Windows payload: a
+  // release missing the vault's Credential Manager provider would silently
+  // downgrade every new vault to the key file, and one missing the Job
+  // Object cage would disable command execution entirely. Both refuse.
+  // The Windows camoufox runtime is not fetched yet, so its absence only
+  // warns (asserted by the passing case below).
+  let winDir: string;
+  beforeEach(() => {
+    winDir = fs.mkdtempSync(path.join(os.tmpdir(), "afterpack-win-"));
+  });
+  afterEach(() => {
+    fs.rmSync(winDir, { recursive: true, force: true });
+  });
+  const winContextFor = (appOutDir: string, arch?: number | string) => ({
+    appOutDir,
+    electronPlatformName: "win32",
+    ...(arch === undefined ? {} : { arch }),
+  });
+  const winResources = () => path.join(winDir, "resources");
+  const winAddon = (pkg: string, file: string) =>
+    path.join(winResources(), "app.asar.unpacked", "node_modules", "@domo", pkg, "build", "Release", file);
+  const winLauncher = () => winAddon("native-winsandbox", "winsandbox_launcher.exe");
+  // The smallest header the gate's PE reader accepts: DOS magic + e_lfanew +
+  // PE signature + machine. Everything else about the file is unread.
+  const winPeHeader = (machine: number) => {
+    const header = Buffer.alloc(64 + 6);
+    header.write("MZ", 0);
+    header.writeUInt32LE(64, 0x3c);
+    header.writeUInt32LE(0x00004550, 64);
+    header.writeUInt16LE(machine, 68);
+    return header;
+  };
+  const hostMachine = process.arch === "arm64" ? 0xaa64 : 0x8664;
+  const packWinAddons = () => {
+    for (const [pkg, file] of [
+      ["native-wincred", "wincred.node"],
+      ["native-hello", "winhello.node"],
+      ["native-winsandbox", "winsandbox.node"],
+      ["native-fs", "winfs.node"],
+    ] as const) {
+      fs.mkdirSync(path.dirname(winAddon(pkg, file)), { recursive: true });
+      fs.writeFileSync(winAddon(pkg, file), winPeHeader(hostMachine));
+    }
+    fs.writeFileSync(winLauncher(), winPeHeader(hostMachine));
+  };
+  const packWinBrowserAndProviders = () => {
+    const arch = process.arch === "arm64" ? "arm64" : "x64";
+    const browser = path.join(
+      winResources(), "browser-runtime", "camoufox", arch,
+      "browsers", "official", "fixture", "camoufox.exe",
+    );
+    fs.mkdirSync(path.dirname(browser), { recursive: true });
+    fs.writeFileSync(browser, winPeHeader(hostMachine));
+    for (const { command } of PROVIDERS) {
+      const provider = path.join(winResources(), "providers", command, arch, `${command}.exe`);
+      fs.mkdirSync(path.dirname(provider), { recursive: true });
+      fs.writeFileSync(provider, winPeHeader(hostMachine));
+    }
+  };
+
+  it.each([
+    ["native-wincred", "wincred.node"],
+    ["native-hello", "winhello.node"],
+    ["native-winsandbox", "winsandbox.node"],
+    ["native-fs", "winfs.node"],
+  ])("refuses a pack whose %s addon is absent", async (pkg, file) => {
+    packWinAddons();
+    fs.rmSync(winAddon(pkg, file));
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(new RegExp(`no ${pkg} addon`));
+  });
+
+  it.each([
+    ["native-wincred", "wincred.node"],
+    ["native-hello", "winhello.node"],
+    ["native-winsandbox", "winsandbox.node"],
+    ["native-fs", "winfs.node"],
+  ])("refuses a pack whose %s addon is empty", async (pkg, file) => {
+    packWinAddons();
+    fs.writeFileSync(winAddon(pkg, file), "");
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(new RegExp(`no ${pkg} addon`));
+  });
+
+  it("passes only with native addons, AppContainer, browser and providers for the target architecture", async () => {
+    packWinAddons();
+    packWinBrowserAndProviders();
+    await expect(afterPack(winContextFor(winDir))).resolves.toBeUndefined();
+  });
+
+  it("accepts electron-builder's numeric x64 architecture enum", async () => {
+    packWinAddons();
+    packWinBrowserAndProviders();
+    await expect(afterPack(winContextFor(winDir, 1))).resolves.toBeUndefined();
+  });
+
+  it("refuses a missing or wrong-arch Windows Camoufox payload", async () => {
+    packWinAddons();
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/no Windows Camoufox/);
+    packWinBrowserAndProviders();
+    const arch = process.arch === "arm64" ? "arm64" : "x64";
+    const browser = path.join(winResources(), "browser-runtime", "camoufox", arch,
+      "browsers", "official", "fixture", "camoufox.exe");
+    fs.writeFileSync(browser, winPeHeader(process.arch === "arm64" ? 0x8664 : 0xaa64));
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/Camoufox is not/);
+  });
+
+  it("refuses a missing or wrong-arch Windows provider", async () => {
+    packWinAddons();
+    packWinBrowserAndProviders();
+    const arch = process.arch === "arm64" ? "arm64" : "x64";
+    const provider = path.join(winResources(), "providers", PROVIDERS[0]!.command, arch, `${PROVIDERS[0]!.command}.exe`);
+    fs.rmSync(provider);
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/provider for/);
+    fs.writeFileSync(provider, winPeHeader(process.arch === "arm64" ? 0x8664 : 0xaa64));
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/provider is not/);
+  });
+
+  it("refuses a pack whose AppContainer launcher is absent or wrong-arch", async () => {
+    packWinAddons();
+    packWinBrowserAndProviders();
+    fs.rmSync(winLauncher());
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/no AppContainer launcher/);
+    fs.writeFileSync(winLauncher(), winPeHeader(process.arch === "x64" ? 0xaa64 : 0x8664));
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/launcher has a PE machine mismatch/);
+  });
+
+  it("refuses an addon built for the wrong arch", async () => {
+    // Same crafted header, stamped with the machine this host is not.
+    packWinAddons();
+    packWinBrowserAndProviders();
+    fs.writeFileSync(
+      winAddon("native-winsandbox", "winsandbox.node"),
+      winPeHeader(process.arch === "x64" ? 0xaa64 : 0x8664),
+    );
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/not .* \(PE machine mismatch\)/);
+  });
+});

@@ -82,7 +82,10 @@ describe("confinedToPlowFolder", () => {
   it("refuses a symlink inside the folder that points out of it", async () => {
     const secret = path.join(home, "secret");
     fs.mkdirSync(secret);
-    fs.symlinkSync(secret, path.join(root, "escape"));
+    // Directory links: junctions need no privilege on Windows and resolve
+    // the same way through realpath — the escape is identical either way.
+    if (process.platform === "win32") fs.symlinkSync(secret, path.join(root, "escape"), "junction");
+    else fs.symlinkSync(secret, path.join(root, "escape"));
     await expect(
       confinedToPlowFolder([{ kind: "fs.read", paths: [path.join(root, "escape/key")] }], root),
     ).resolves.toBe(false);
@@ -90,7 +93,8 @@ describe("confinedToPlowFolder", () => {
 
   it("refuses a symlinked ROOT — ~/Plow -> ~ must not confine the whole home", async () => {
     const link = path.join(home, "PlowLink");
-    fs.symlinkSync(home, link);
+    if (process.platform === "win32") fs.symlinkSync(home, link, "junction");
+    else fs.symlinkSync(home, link);
     await expect(
       confinedToPlowFolder([{ kind: "fs.read", paths: [path.join(link, "a.txt")] }], link),
     ).resolves.toBe(false);

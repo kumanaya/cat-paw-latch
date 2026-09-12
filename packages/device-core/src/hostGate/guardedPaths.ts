@@ -160,10 +160,21 @@ export function sipProtected(path: string): boolean {
  * of stderr), and a resolved `/Users/<name>` in a tool result is the owner's
  * account name in an approval-free response — the same leak the skill files
  * avoid (`imessageSkill.ts`).
+ *
+ * On Windows both separators fold and the remainder prints with `/`, so a
+ * fact reads the same on every host (`~/Plow/secret.txt`, never a profile
+ * path in either slash direction). POSIX filenames may legally contain a
+ * backslash, so the replacement runs win32-only.
  */
 export function tildeRelative(path: string, ownerHome: string): string {
-  const home = ownerHome.endsWith("/") ? ownerHome.slice(0, -1) : ownerHome;
+  const home = ownerHome.endsWith("/") || ownerHome.endsWith("\\") ? ownerHome.slice(0, -1) : ownerHome;
   if (home.length === 0) return path;
+  if (process.platform === "win32") {
+    const fold = (s: string) => s.replace(/\//g, "\\");
+    if (fold(path) === fold(home)) return "~";
+    if (fold(path).startsWith(fold(home) + "\\")) return "~" + path.slice(home.length).replace(/\\/g, "/");
+    return path;
+  }
   if (path === home) return "~";
   return path.startsWith(home + "/") ? "~" + path.slice(home.length) : path;
 }

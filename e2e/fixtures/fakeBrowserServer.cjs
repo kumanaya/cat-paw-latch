@@ -52,6 +52,8 @@
  *                     that holds five, so the oldest is pushed out
  *   click "#popup"     opens a second page on https://popup.example/pay
  *   click "#offsite"   navigates the page to https://offsite.example/lander
+ *   click "#file"      simulates an indirect navigation to a local file; the
+ *                      trusted session layer must lock it out
  *   click "#swallowed" fails the way a click something is covering does
  */
 "use strict";
@@ -204,6 +206,8 @@ function handle(cmd) {
       state.pages.push({ url: "https://popup.example/pay", title: "popup" });
     } else if (cmd.selector === "#offsite") {
       current().url = "https://offsite.example/lander";
+    } else if (cmd.selector === "#file") {
+      current().url = "file:///C:/Users/owner/secret.txt";
     }
     return { ok: true, frame: 0 };
   }

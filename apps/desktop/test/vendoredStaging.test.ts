@@ -43,13 +43,14 @@ afterEach(() => {
 
 /** Write `<root>/vendor/providers/demo/<arch>/demo` for both arches, plus the marker. */
 function stage(opts: { arm64?: string; x64?: string; version?: string } = {}) {
+  const name = process.platform === "win32" ? "demo.exe" : "demo";
   for (const [arch, fallback] of [
     ["arm64", "arm64-bytes"],
     ["x64", "x64-bytes"],
   ] as const) {
     const dir = path.join(root, "vendor/providers/demo", arch);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "demo"), opts[arch] ?? fallback);
+    fs.writeFileSync(path.join(dir, name), opts[arch] ?? fallback);
   }
   fs.writeFileSync(path.join(root, "vendor/providers/demo/VERSION"), `${opts.version ?? "1.2.3"}\n`);
 }
@@ -71,7 +72,7 @@ describe("isStaged", () => {
       false,
       () => {
         stage();
-        fs.rmSync(path.join(root, "vendor/providers/demo/x64/demo"));
+        fs.rmSync(path.join(root, "vendor/providers/demo/x64", process.platform === "win32" ? "demo.exe" : "demo"));
       },
     ],
     ["an arch's binary is empty", false, () => stage({ x64: "" })],

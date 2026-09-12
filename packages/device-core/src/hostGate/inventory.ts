@@ -16,6 +16,7 @@
 import { isoNow } from "@domo/protocol";
 import { fullDiskProbePaths, probeFullDiskAccessDetail, FullDiskProbeResult } from "./fullDiskAccess.js";
 import { AutomationStatus, HostProbes, PermissionStatus, QueryablePermission } from "./probes.js";
+import { probeWindowsFolderAccessDetail } from "./windows.js";
 
 export interface AutomationApp {
   name: string;
@@ -93,6 +94,9 @@ export interface InventoryDeps {
   /** Runs argv through the real sandboxed executor. Null where there is
    *  none (a non-Mac test host): the sandbox rows say so. */
   runSandboxed: ChildRunner | null;
+  /** The trivial argv the sandbox self-check runs. `/usr/bin/true` on macOS;
+   *  the caller passes the platform's own no-op elsewhere. */
+  sandboxProbeArgv?: string[];
   /** The vault's key state, as the vault reports it. Null when this Mac has
    *  no vault (no browser runtime). */
   vaultKey: (() => { status: string; reason?: string }) | null;
@@ -105,9 +109,17 @@ export interface InventoryDeps {
 /** Take the snapshot. Every row is independent, so they run together. */
 export async function hostInventory(deps: InventoryDeps): Promise<HostInventory> {
   const targets = deps.automationTargets ?? AUTOMATION_TARGETS;
+  const onWindows = process.platform === "win32";
+  // On Windows there is no Full Disk Access switch; the row answers the
+  // closest honest question — whether the guarded user folders list —
+  // and the diagnosis (not this row) owns write gates like CFA. An
+  // explicit path override (tests, diagnostics) still runs as given.
+  const useWindowsFolders = onWindows && deps.fullDiskPaths === undefined;
   const fdaPaths = deps.fullDiskPaths ?? fullDiskProbePaths(deps.ownerHome);
   const [fda, automation, permissions, sandbox] = await Promise.all([
-    probeFullDiskAccessDetail(fdaPaths),
+    useWindowsFolders
+      ? probeWindowsFolderAccessDetail(deps.ownerHome)
+      : probeFullDiskAccessDetail(fdaPaths),
     Promise.all(
       targets.map(async (target) => ({ target, status: await deps.probes.automationStatus(target) })),
     ),
@@ -117,13 +129,15 @@ export async function hostInventory(deps: InventoryDeps): Promise<HostInventory>
         status: await deps.probes.permissionStatus(permission),
       })),
     ),
-    sandboxCheck(deps.runSandboxed),
+    sandboxCheck(deps.runSandboxed, deps.sandboxProbeArgv ?? ["/usr/bin/true"]),
   ]);
   // Attribution is checked only once FDA is known granted, and against the
   // very file the app's own probe just opened: any other file could be
-  // missing, and a missing file proves nothing about attribution.
-  const opened = fda.results.find((r) => r.outcome === "ok")?.path ?? null;
-  const attribution = await attributionCheck(deps.runSandboxed, fda.granted ? opened : null);
+  // missing, and a missing file proves nothing about attribution. Windows
+  // has no responsible-process inheritance to check, so the row stays
+  // not_applicable on the folder-probe path.
+  const opened = useWindowsFolders ? null : (fda.results.find((r) => r.outcome === "ok")?.path ?? null);
+  const attribution = await attributionCheck(deps.runSandboxed, fda.granted && !useWindowsFolders ? opened : null);
   return {
     checked_at: isoNow(),
     full_disk_access: { granted: fda.granted, probes: fda.results },
@@ -138,10 +152,13 @@ export async function hostInventory(deps: InventoryDeps): Promise<HostInventory>
   };
 }
 
-async function sandboxCheck(run: ChildRunner | null): Promise<HostInventory["sandbox"]> {
+async function sandboxCheck(
+  run: ChildRunner | null,
+  probeArgv: string[],
+): Promise<HostInventory["sandbox"]> {
   if (run === null) return { status: "failed", detail: "no sandboxed executor on this host" };
   try {
-    const result = await run(["/usr/bin/true"]);
+    const result = await run(probeArgv);
     return result.exitCode === 0
       ? { status: "ok", detail: null }
       : { status: "failed", detail: `exit ${result.exitCode ?? -1}: ${result.output.trim()}`.trim() };

@@ -190,7 +190,7 @@ execute *in-process* in the device app — trusted code, bounds-checked against
 the approved paths (canonicalized, symlink- and `..`-safe), inherently audited.
 Only `plow_run_command` runs third-party code, and only it gets the cage.
 
-**Seatbelt (`sandbox-exec`) with a generated profile.** The profile is not
+**Seatbelt (`sandbox-exec`) with a generated profile — on macOS.** The profile is not
 authored by anyone — it is *mechanically derived* from the approved capability
 set:
 
@@ -250,6 +250,29 @@ protected folders at the host-app level (§6a says how that is surfaced); the
 upgrade path for hostile workloads is a Virtualization.framework VM. A
 dry-run `(trace)` mode to show the approver what a command *would* touch is
 a v2 item.
+
+**On Windows the cage is a Job Object, not a seatbelt profile**
+(`@domo/native-winsandbox`, `executor.ts`). Each run gets one job with
+kill-on-close plus a process cap: the reaper's guarantee (a run the app
+abandons cannot outlive it as a detached tree) holds, and a fork bomb does
+not. What the job is NOT: file confinement and network gating have no Job
+equivalent. File writes stay approval-scoped — the in-process file tools are
+bounds-checked, and `grants()` answers the approval on Windows rather than a
+cage that is not there, so `outside_approved_bound` still names a run that
+left its set. The diagnosis says so explicitly: facts carry
+`sandbox_kind` (`seatbelt`/`job`/`none`), and under a job the bound verdicts
+name the approval, never a profile. The residual (a command writing outside
+its approved paths is not stopped, only diagnosed) is documented, not hidden.
+Secret files, meanwhile, do not trust the inherited profile DACL: every one
+the app writes (key blob, item store, settings, identity, approvals, audit
+log) is locked to a single owner-only ACE via `@domo/native-fs`, enforced in
+the packaged app (afterPack refuses a pack without it) and warn-once
+elsewhere. Two more Windows shapes, both measured: spawned console tools need `windowsHide` (a detached
+process has no console, under which they exit at once having done nothing),
+and a run's whole tree ends with the run — backgrounded jobs die with it, so
+long-lived servers belong in a service. `plow_run_applescript` does not exist
+there (no osascript), and `apple_events: true` is refused at the tool
+boundary rather than approved for a capability nothing honors.
 
 ## 6a. Host gates: when the Mac itself says no
 
@@ -472,7 +495,8 @@ Swift sources; none of it ships.
 ## 9. On-disk layout
 
 ```
-$DOMO_HOME (default ~/Library/Application Support/Plow-Latch)
+$DOMO_HOME (default ~/Library/Application Support/Plow-Latch on macOS,
+%APPDATA%/Plow-Latch on Windows — Electron's appData on each)
 ├── app/settings.json                    # 0600; the relay credential, sealed
 ├── app/telemetry.json                   # the install id telemetry reports under
 ├── app/crash-report.json                # one spooled crash, removed once sent
@@ -798,21 +822,28 @@ The vault is a local encrypted store: items in `items.json` (every field a
 Bitwarden-format EncString — the format outlived the Bitwarden removal because
 it is sound, already frozen by tests, and keeping it made migration a verbatim
 ciphertext copy),
-and one 64-byte master key rooted in the macOS Keychain via `vaultKeyStore.ts`.
+and one 64-byte master key rooted in the OS secret store via `vaultKeyStore.ts`.
 There is no vault server, no bundled `bw`, no web vault and no vault account
-any more; ~470 MB of payload left the app with them. Three providers can hold
+any more; ~470 MB of payload left the app with them. Five providers can hold
 the key, chosen once at write time and recorded in the key blob:
 
 1. **SecItem + access group** (`@domo/native-keychain`, group
    `3559PD337Z.co.plow.vault`, service `co.plow.vault` — both frozen literals)
-   — the packaged, signed app. The access group, not the bundle id, is what
+   — the packaged, signed macOS app. The access group, not the bundle id, is what
    the item is keyed to, so a rename or bundle-id change cannot orphan a key.
    Chosen only when the entitlement is real (packaged builds; the probe falls
    through otherwise).
-2. **`safeStorage` under the frozen identity** — `just app`: the stock
+2. **Windows Credential Manager** (`@domo/native-wincred`,
+   `co.plow.vault/<unique account>`) — the packaged Windows app, same
+   get/set/probe contract, same unique-account-per-vault rule, same
+   packaged-only gate.
+3. **Linux Secret Service** (`secret-tool`, `service`/`account` attributes) —
+   wherever a daemon answers; a headless run without one lands on the key
+   file, like everywhere without a store.
+4. **`safeStorage` under the frozen identity** — `just app`: the stock
    Electron binary has no entitlement, and safeStorage's Keychain item is at
    least ACL-bound to the binary.
-3. **A 0600 key file** — tests and anything with neither. Hermetic by
+5. **A 0600 key file** — tests and anything with neither. Hermetic by
    construction; the file provider is what vitest exercises.
 
 Migration from the Bitwarden vault (`vaultMigrate.ts`, permanent by decision):

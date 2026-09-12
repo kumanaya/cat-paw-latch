@@ -99,8 +99,24 @@ const GOG = {
       binary: "a5a1b2715d60c1112f0c06f79b919fe7cf58c9431e3fab27d50dd5d11be15ac8",
     },
   },
+  windowsArches: {
+    arm64: {
+      asset: "windows_arm64",
+      file: "gog.exe",
+      sha256: "a8e205c7f532e97f6b83e5c6241387ac5c01db0227e22e3d940c76b390c0e9ce",
+      binary: "46f5c0ac2f931f6d5b92568909b16af00bce9e2bf053bcc50e7514272fb2d163",
+    },
+    x64: {
+      asset: "windows_amd64",
+      file: "gog.exe",
+      sha256: "070b5675621dc5f90d8d9bc3ab959e77e5c76ba196dbc979d395471687b94f03",
+      binary: "29d7d92b050d0c7bb67527de80a0393ce142cba2b5fa88ac83edde91344ce116",
+    },
+  },
   url: (version, asset) =>
     `https://github.com/openclaw/gogcli/releases/download/v${version}/gogcli_${version}_${asset}.tar.gz`,
+  windowsUrl: (version, asset) =>
+    `https://github.com/openclaw/gogcli/releases/download/v${version}/gogcli_${version}_${asset}.zip`,
   probe: gogNoNegatableFlags,
 };
 

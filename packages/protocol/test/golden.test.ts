@@ -89,6 +89,10 @@ describe("intent / grant / rule", () => {
   });
 
   it("rule key matches", () => {
+    // The frozen intent's capability paths are macOS-shaped; a Windows
+    // canonicalize cannot reproduce those bytes (see "rule keys" below for
+    // the platform-native counterpart).
+    if (process.platform === "win32") return;
     expect(intentRuleKey(f.intent as Intent)).toBe(f.ruleKey);
   });
 
@@ -118,19 +122,48 @@ describe("rule keys", () => {
   const { cases } = fixture("rulekeys.json");
   for (const c of cases) {
     it(c.name, () => {
+      // The frozen vectors are macOS-path-shaped (POSIX absolutes a Windows
+      // canonicalize cannot and must not reproduce). Windows pins the same
+      // PROPERTIES — stability, argv-sensitivity, reason-stripping — over
+      // real temp paths in the case below instead of these bytes.
+      if (process.platform === "win32") return;
       expect(RuleKey.compute(c.agentId, c.deviceId, c.capabilitiesA as Capability[])).toBe(c.ruleKey);
       if (c.capabilitiesB) {
         expect(RuleKey.compute(c.agentId, c.deviceId, c.capabilitiesB as Capability[])).toBe(c.ruleKey);
       }
     });
   }
+
+  it.skipIf(process.platform !== "win32")("rule keys are stable and argv-sensitive on Windows paths", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-rulekey-"));
+    try {
+      const read = { kind: "fs.read", paths: [path.join(dir, "in")] } as Capability;
+      const execA = { kind: "process.exec", argv: ["git", "status"], cwd: dir } as Capability;
+      const execB = { kind: "process.exec", argv: ["git", "push"], cwd: dir } as Capability;
+      const k1 = RuleKey.compute("a", "d", [read, execA]);
+      expect(RuleKey.compute("a", "d", [read, execA])).toBe(k1);
+      // Reasons never join the key, order never matters, argv does.
+      const withReason = { kind: "fs.read", paths: [path.join(dir, "in")], reason: "why" } as Capability;
+      expect(RuleKey.compute("a", "d", [execA, withReason])).toBe(k1);
+      expect(RuleKey.compute("a", "d", [read, execB])).not.toBe(k1);
+      // NTFS is case-insensitive: one place in another spelling is one rule,
+      // not a second prompt.
+      const upperRead = { kind: "fs.read", paths: [path.join(dir, "in").toUpperCase()] } as Capability;
+      expect(RuleKey.compute("a", "d", [upperRead, execA])).toBe(k1);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("path canonicalization", () => {
   const f = fixture("pathutil.json");
   const skip = (c: any) =>
     (!c.input.startsWith("/") && process.cwd() !== f.cwdAtGeneration) ||
-    (process.platform !== "darwin" && c.canonical.startsWith("/private/"));
+    (process.platform !== "darwin" && c.canonical.startsWith("/private/")) ||
+    // POSIX absolutes cannot resolve on Windows (no drive, no /private);
+    // Windows canonicalization is pinned by the temp-path cases below.
+    (process.platform === "win32" && c.input.startsWith("/"));
 
   for (const c of f.cases) {
     it(c.input, () => {
@@ -146,6 +179,18 @@ describe("path canonicalization", () => {
   // the synchronous one if it produces the SAME BYTES — canonical paths are
   // what the sandbox and the rule keys are computed from.
   describe("the async variant is byte-identical", () => {
+    /** File symlinks need SeCreateSymbolicLinkPrivilege (or Developer Mode)
+     *  on Windows. Where the machine cannot make one, the symlink assertions
+     *  have nothing to resolve and are skipped — the lexical cases still run. */
+    const tryFileSymlink = (target: string, link: string): boolean => {
+      try {
+        fs.symlinkSync(target, link);
+        return true;
+      } catch (error) {
+        if (process.platform === "win32" && (error as { code?: unknown })?.code === "EPERM") return false;
+        throw error;
+      }
+    };
     for (const c of f.cases) {
       it(c.input, async () => {
         if (skip(c)) return;
@@ -165,9 +210,10 @@ describe("path canonicalization", () => {
         const target = path.join(base, "real.txt");
         fs.writeFileSync(target, "x");
         const link = path.join(base, "link.txt");
-        fs.symlinkSync(target, link);
-        expect(await canonicalizeAsync(link)).toBe(canonicalize(link));
-        expect(await canonicalizeAsync(link)).toBe(canonicalize(target));
+        if (tryFileSymlink(target, link)) {
+          expect(await canonicalizeAsync(link)).toBe(canonicalize(link));
+          expect(await canonicalizeAsync(link)).toBe(canonicalize(target));
+        }
       } finally {
         fs.rmSync(base, { recursive: true, force: true });
       }
@@ -185,12 +231,12 @@ describe("path canonicalization", () => {
       try {
         fs.mkdirSync(path.join(root, "sub"));
         fs.writeFileSync(path.join(outside, "target.txt"), "leak");
-        fs.symlinkSync(path.join(outside, "target.txt"), path.join(root, "link.txt"));
+        const linkOk = tryFileSymlink(path.join(outside, "target.txt"), path.join(root, "link.txt"));
         const cases = [
           path.join(root, "sub"),
           path.join(root, "sub/new.txt"),
           path.join(root, "sub/../escape.txt"),
-          path.join(root, "link.txt"), // resolves outside — must be refused
+          ...(linkOk ? [path.join(root, "link.txt")] : []), // resolves outside — must be refused
           path.join(outside, "target.txt"),
           root,
           "/etc/hosts",
@@ -199,10 +245,60 @@ describe("path canonicalization", () => {
           expect(await isWithinRootsAsync(c, [root])).toBe(isWithinRoots(c, [root]));
         }
         // And the one that matters is actually refused, not merely agreed on.
-        expect(await isWithinRootsAsync(path.join(root, "link.txt"), [root])).toBe(false);
+        if (linkOk) {
+          expect(await isWithinRootsAsync(path.join(root, "link.txt"), [root])).toBe(false);
+        }
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
         fs.rmSync(outside, { recursive: true, force: true });
+      }
+    });
+
+    // Red-team: NTFS is case-insensitive, so the scope check must be too.
+    // Before the Windows fold, `c:\dir\file` against an approved `C:\Dir`
+    // refused a legitimate call (false refusal, never an escape — check and
+    // use resolve to the same file either way). Sibling-prefix names,
+    // parents, and `\\?\` spellings must still refuse, without throwing.
+    it.skipIf(process.platform !== "win32")("scope holds across case variants, still refuses the rest", async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "domo-case-"));
+      const sibling = root + "-evil";
+      fs.mkdirSync(sibling);
+      try {
+        fs.mkdirSync(path.join(root, "Sub"));
+        fs.writeFileSync(path.join(root, "Sub", "MiXeD.txt"), "x");
+        const inside = [
+          path.join(root, "Sub", "MiXeD.txt"),
+          path.join(root, "Sub", "MiXeD.txt").toLowerCase(),
+          path.join(root, "Sub", "MiXeD.txt").toUpperCase(),
+          path.join(root, "SUB", "mixed.TXT"),
+          path.join(root, "sub", "new-target.txt"), // not existing yet (write target)
+          path.join(root, "SUB", "NEW-TARGET.TXT"),
+        ];
+        const insideRoots = [root, root.toLowerCase(), root.toUpperCase()];
+        for (const c of inside) {
+          for (const r of insideRoots) {
+            expect(isWithinRoots(c, [r])).toBe(true);
+            expect(await isWithinRootsAsync(c, [r])).toBe(true);
+          }
+        }
+        const refuse: [string, string][] = [
+          [sibling, root], // prefix sibling, not a child
+          [path.dirname(root), root], // parent
+          [path.join(root, "Sub", "MiXeD.txt"), sibling], // inside one place is outside another
+        ];
+        for (const [c, r] of refuse) {
+          expect(isWithinRoots(c, [r])).toBe(false);
+          expect(await isWithinRootsAsync(c, [r])).toBe(false);
+        }
+        // The long-path prefix names the same file: inside, and — the point
+        // of this case — the sync/async pair agrees on it. Before the
+        // winLexical strip, sync threw (fail-closed) while async resolved.
+        const long = `\\\\?\\${path.join(root, "Sub", "MiXeD.txt")}`;
+        expect(isWithinRoots(long, [root])).toBe(true);
+        expect(await isWithinRootsAsync(long, [root])).toBe(true);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+        fs.rmSync(sibling, { recursive: true, force: true });
       }
     });
   });

@@ -70,12 +70,22 @@ files:
   - "!node_modules/playwright-core/cli.js"
   # native-keychain and native-credential-import ship only the prebuilt addon
   # and its loader; the gyp sources and install scripts are build-time.
+  # native-wincred and native-winsandbox likewise (Windows-only addons,
+  # skipped everywhere else by their install scripts).
   - "!node_modules/@domo/native-keychain/scripts/**"
   - "!node_modules/@domo/native-keychain/src/**"
   - "!node_modules/@domo/native-credential-import/scripts/**"
   - "!node_modules/@domo/native-credential-import/src/**"
   - "!node_modules/@domo/native-permissions/scripts/**"
   - "!node_modules/@domo/native-permissions/src/**"
+  - "!node_modules/@domo/native-wincred/scripts/**"
+  - "!node_modules/@domo/native-wincred/src/**"
+  - "!node_modules/@domo/native-hello/scripts/**"
+  - "!node_modules/@domo/native-hello/src/**"
+  - "!node_modules/@domo/native-winsandbox/scripts/**"
+  - "!node_modules/@domo/native-winsandbox/src/**"
+  - "!node_modules/@domo/native-fs/scripts/**"
+  - "!node_modules/@domo/native-fs/src/**"
   # Every consumer of zod and @modelcontextprotocol/* in the app is ESM, so the
   # parallel CJS builds are never resolved; zod's src/ is TypeScript source
   # shipped for sourcemap tooling only.
@@ -113,6 +123,10 @@ electronLanguages:
 # (a root devDependency) and never collected.
 asarUnpack:
   - "**/node_modules/@domo/browser-server/**"
+  # The AppContainer launcher is an executable, so it cannot live inside the
+  # asar. Keep the addon beside it too: executor resolves both from this one
+  # unpacked package and refuses command execution if either is absent.
+  - "**/node_modules/@domo/native-winsandbox/**"
   - "**/node_modules/playwright-core/**"
   - "**/node_modules/node-sqlite3-wasm/**"
 
@@ -134,9 +148,6 @@ extraResources:
     to: LICENSE
   - from: ../../NOTICE
     to: NOTICE
-  - from: ../../vendor/camoufox-browser/universal
-    to: browser-runtime/camoufox
-    filter: ["**/*", "!.sha256"]
   # Every vendored provider CLI, per-arch, in ONE entry — the payloads live
   # under vendor/providers/<command>/<arch>/, so adding a provider edits nothing
   # here. resolveVendoredBinary looks the arch up by process.arch, so those
@@ -161,6 +172,10 @@ extraResources:
 
 mac:
   icon: ../../artwork/domo-desktop-icon.png
+  extraResources:
+    - from: ../../vendor/camoufox-browser/universal
+      to: browser-runtime/camoufox
+      filter: ["**/*", "!.sha256"]
   category: public.app-category.developer-tools
   # The DMG is what humans download; the ZIP is what Squirrel.Mac (via
   # electron-updater) applies as an update — auto-update on macOS cannot
@@ -227,7 +242,39 @@ mac:
 
 # Re-sign browser-runtime after the universal merge (which rewrites nested
 # Info.plists and breaks their seals) and before signing/notarization.
+beforePack: build/beforePack.cjs
 afterPack: build/afterPack.cjs
+
+# Windows: the NSIS installer plus the unpacked tree electron-updater consumes
+# (Squirrel.Windows reads RELEASES + .nupkg beside the installer). No
+# Authenticode identity is pinned here — CI signs with its own cert, and an
+# unsigned local pack still installs and runs for manual checks. The native
+# surface on Windows is wincred (Credential Manager) + winsandbox (Job
+# Objects); the macOS keychain/permissions/credential-import addons skip
+# their builds off darwin, so they pack as loaders-only and stay inert.
+win:
+  # electron-updater validates every offered update against this exact
+  # certificate publisher before NSIS is allowed to apply it.
+  verifyUpdateCodeSignature: true
+  # Native addons and DLLs are executable code too.  Signing only `.exe`
+  # leaves a replaceable in-process payload outside the release trust chain.
+  signExts: [".exe", ".dll", ".node"]
+  signtoolOptions:
+    publisherName: "The Plow Collective, Inc."
+    signingHashAlgorithms: [sha256]
+    rfc3161TimeStampServer: "http://timestamp.digicert.com"
+  extraResources:
+    - from: ../../vendor/camoufox-browser/windows
+      to: browser-runtime/camoufox
+      filter: ["**/*", "!.sha256"]
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  artifactName: Plow-Latch-${version}-${arch}.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
 
 dmg:
   # No ${arch}: the only DMG is universal, and this name is the public

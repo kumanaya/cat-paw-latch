@@ -151,6 +151,32 @@ package profile="domo-notary": _main-only (_package profile "")
 # Runs from any checkout; output lands in THIS checkout's apps/desktop/release/.
 package-unnotarized: (_package "domo-notary" "-c.mac.notarize=false")
 
+# Package for Windows: NSIS installer + unpacked tree in
+# apps/desktop/release/, unsigned unless the caller signs. Run on Windows —
+# the wincred/winsandbox addons compile for the packaging host, and
+# afterPack refuses a pack whose addon arch does not match the target.
+# No notarization concept; no browser runtime yet (afterPack warns).
+# A node script (scripts/package-win.mjs) so the recipe shell differs
+# nothing per host.
+package-win: build
+    node scripts/fetch-vendored.mjs --all
+    node scripts/build-browser-runtime.mjs --browser-both
+    node scripts/package-win.mjs
+
+# Early signed installer validation for an x64 test machine. This is not a
+# substitute for `package-win`: the full release still requires ARM64 too.
+package-win-x64: build
+    node scripts/fetch-vendored.mjs --all
+    node scripts/build-browser-runtime.mjs --browser
+    node scripts/package-win.mjs --arch x64
+
+# Must run on a native ARM64 Windows host. It intentionally fails before a
+# package is made until a pinned Camoufox ARM64 runtime exists.
+package-win-arm64: build
+    node scripts/fetch-vendored.mjs --all
+    node scripts/build-browser-runtime.mjs --browser
+    node scripts/package-win.mjs --arch arm64
+
 # Every package run — notarized or not — mints its version: major.minor from
 # apps/desktop's package.json + a UTC timestamp patch (0.1.202608121530),
 # stamped via extraMetadata into the app, the feed, and the artifact names,
@@ -191,8 +217,7 @@ _package profile flags: build
 # Version and build are read back from the packaged app so there is exactly
 # one clock: the one `package` stamped. s3_profile "" uses ambient AWS
 # credentials (CI's OIDC role).
-release profile="domo-notary" s3_profile="plow": _main-only
-    @just package "{{profile}}"; \
+release profile="domo-notary" s3_profile="plow": _main-only    @just package "{{profile}}"; \
     plist="{{root}}/apps/desktop/release/mac-universal/Plow Latch.app/Contents/Info.plist"; \
     version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"; \
     build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"; \

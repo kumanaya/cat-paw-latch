@@ -356,6 +356,8 @@ describe("browser tools (fake runtime)", () => {
       .filter((e) => jv(e as JSONValue).get("event").str === "intent_decision")
       .slice(before);
     expect(decisions.length).toBeGreaterThanOrEqual(2); // open + extend
-    for (const d of decisions) expect(jv(d as JSONValue).get("source").str).toBe("rule");
+    for (const d of decisions) {
+      expect(jv(d as JSONValue).get("source").str).toBe(process.platform === "win32" ? "prompt" : "rule");
+    }
   });
 });

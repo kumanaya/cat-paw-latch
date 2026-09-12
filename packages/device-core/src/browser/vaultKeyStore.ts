@@ -2,22 +2,26 @@
  * Where the vault's one master key lives.
  *
  * The vault keeps its items in an encrypted local file (vaultStore.ts); this
- * is the key that file is useless without, rooted in the macOS Keychain. Three
- * providers, because three environments run this code and each has a best
- * available home for a secret:
+ * is the key that file is useless without, rooted in the OS secret store.
+ * Four providers, because each environment has a best available home:
  *
  *   1. `secitem`     — a generic password in the data-protection Keychain via
  *                      @domo/native-keychain, under our own access group. The
- *                      packaged, signed app uses this: the access group (not
- *                      the bundle id) is what the item is keyed to, so the app
- *                      can be renamed or re-identified without orphaning keys.
- *   2. `safestorage` — Electron's safeStorage under the frozen identity in
- *                      vaultKeychain.ts. What `just app` uses: the stock
- *                      Electron binary carries no entitlement, so SecItem with
- *                      a group refuses it, and safeStorage (whose Keychain
+ *                      packaged, signed macOS app uses this: the access group
+ *                      (not the bundle id) is what the item is keyed to, so the
+ *                      app can be renamed or re-identified without orphaning keys.
+ *   2. `wincred`     — a generic credential in Windows Credential Manager via
+ *                      @domo/native-wincred, under `service/account`. The
+ *                      packaged Windows app uses this. Same shape as SecItem:
+ *                      a unique per-vault account minted at first write.
+ *   3. `safestorage` — Electron's safeStorage under the frozen identity in
+ *                      vaultKeychain.ts (DPAPI on Windows, Secret Service on
+ *                      Linux, Keychain on macOS). What `just app` uses: the
+ *                      stock Electron binary carries no entitlement, so SecItem
+ *                      with a group refuses it, and safeStorage (whose Keychain
  *                      item is ACL-bound to the binary) is the strongest thing
- *                      left.
- *   3. `file`        — the key itself in a 0600 file. Tests and any run with
+ *                      left on macOS.
+ *   4. `file`        — the key itself in a 0600 file. Tests and any run with
  *                      neither Electron nor the addon. Same posture as
  *                      vaultSecretStore's fallback, for the same reason:
  *                      outside the app there is nothing better to offer.
@@ -27,6 +31,21 @@
  * silently re-read through another. "Empty" (no blob) and "locked" (a blob we
  * cannot open) stay distinct facts — see vaultSecretStore.ts for the incident
  * that rule comes from.
+ *
+ * Key material in memory — what can be wiped and what cannot:
+ *
+ * - The key is never cached: LocalVault and BrokerCore re-read it per call
+ *   (localVault.ts), so its lifetime is one operation plus the GC tail.
+ * - Wipable: Buffers this code owns outright. Migration wipes its dead
+ *   intermediates (masterKeys' internal, the derived halves per attempt, the
+ *   user key once filed, org keys and the private DER once rewrapped) via
+ *   wipeKeyMaterial — never a splitKey half, which aliases the caller's key.
+ * - Unwipable: every hex string the key crosses. native.get, decryptString
+ *   and the file read all hand back strings, and strings are immutable — the
+ *   hex lives until GC. Same for the legacy account password in migration.
+ * - Residual: the GC tail above, plus locked memory (no mlock from JS).
+ *   Holding the key in locked memory with a workstation-lock wipe is the
+ *   native-hello phase's job, where an addon can own the bytes end to end.
  */
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -35,6 +54,7 @@ import { createRequire } from "node:module";
 import { writeFileDurable } from "./durableFile.js";
 import { safeStorage } from "./vaultSecretStore.js";
 import { vaultStoreIdentity } from "./vaultKeychain.js";
+import { linuxSecret, linuxSecretEligible } from "./linuxSecret.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // DO NOT CHANGE THESE STRINGS. They are what every SecItem-stored vault key is
@@ -52,9 +72,11 @@ export const VAULT_KEY_BYTES = 64;
 
 const FILE_NAME = "vault-key.enc";
 
-// Blob markers. KSEC1 carries no key material — the key is in the Keychain and
-// the blob only records which account name it is filed under.
+// Blob markers. KSEC1/KWIN1 carry no key material — the key is in the OS
+// secret store and the blob only records which account name it is filed under.
 const M_SECITEM = "KSEC1";
+const M_WINCREED = "KWIN1";
+const M_LINUX_SECRET = "KLIN1";
 const M_SAFESTORAGE = "KENC1";
 const M_FILE = "KRAW1";
 
@@ -69,7 +91,13 @@ interface NativeKeychain {
   probe(service: string, group: string): "ok" | "missing-entitlement" | "unavailable";
 }
 
-/** The addon when it is built and we are on a Mac, else null. */
+interface NativeWinCred {
+  get(service: string, account: string): string | null;
+  set(service: string, account: string, value: string): void;
+  probe(service: string): "ok" | "unavailable";
+}
+
+/** The macOS addon when it is built and we are on a Mac, else null. */
 function nativeKeychain(): NativeKeychain | null {
   try {
     const require_ = createRequire(import.meta.url);
@@ -79,10 +107,20 @@ function nativeKeychain(): NativeKeychain | null {
   }
 }
 
+/** The Windows addon when it is built and we are on Windows, else null. */
+function nativeWinCred(): NativeWinCred | null {
+  try {
+    const require_ = createRequire(import.meta.url);
+    return require_("@domo/native-wincred") as NativeWinCred | null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Whether the SecItem provider may be CHOSEN for a new key. Only the packaged,
- * signed app: it is the one process whose entitlement makes the access group
- * real. `just app` (stock Electron, unpackaged) deliberately lands on
+ * signed macOS app: it is the one process whose entitlement makes the access
+ * group real. `just app` (stock Electron, unpackaged) deliberately lands on
  * safeStorage, and a test process must never write into the developer's real
  * login Keychain — hermeticity is the same rule as DOMO_HOME.
  * DOMO_VAULT_KEY_PROVIDER overrides for tests and diagnostics.
@@ -90,6 +128,26 @@ function nativeKeychain(): NativeKeychain | null {
 function secItemEligible(): boolean {
   const forced = process.env.DOMO_VAULT_KEY_PROVIDER;
   if (forced) return forced === "secitem";
+  if (process.platform !== "darwin") return false;
+  try {
+    const require_ = createRequire(import.meta.url);
+    const electron = require_("electron") as { app?: { isPackaged?: boolean } };
+    return electron?.app?.isPackaged === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Whether the Credential Manager provider may be CHOSEN for a new key.
+ * Only the packaged Windows app: an unpackaged dev run shares the user's
+ * credential store with nothing at stake and must not mint durable secrets
+ * there — it lands on safeStorage (DPAPI) instead. Same override switch.
+ */
+function winCredEligible(): boolean {
+  const forced = process.env.DOMO_VAULT_KEY_PROVIDER;
+  if (forced) return forced === "wincred";
+  if (process.platform !== "win32") return false;
   try {
     const require_ = createRequire(import.meta.url);
     const electron = require_("electron") as { app?: { isPackaged?: boolean } };
@@ -124,6 +182,14 @@ export class VaultKeyStore {
   private lockedReason(): "no-storage" | "undecryptable" {
     const marker = this.marker();
     if (marker === M_SECITEM && !nativeKeychain()) return "no-storage";
+    if (marker === M_WINCREED && !nativeWinCred()) return "no-storage";
+    if (marker === M_LINUX_SECRET) {
+      try {
+        return linuxSecret().probe(VAULT_KEY_SERVICE) === "ok" ? "undecryptable" : "no-storage";
+      } catch {
+        return "no-storage";
+      }
+    }
     if (marker === M_SAFESTORAGE && !safeStorage()) return "no-storage";
     return "undecryptable";
   }
@@ -165,6 +231,26 @@ export class VaultKeyStore {
         const hex = native.get(VAULT_KEY_SERVICE, meta.account ?? this.account, VAULT_KEY_ACCESS_GROUP);
         return hex ? this.checked(Buffer.from(hex, "hex")) : null;
       }
+      if (marker === M_WINCREED) {
+        const native = nativeWinCred();
+        if (!native) return null;
+        // Same record-the-account rule as SecItem: two DOMO_HOMEs on one
+        // Windows user must not resolve to one credential.
+        const meta = JSON.parse(body.toString("utf8")) as { account?: string };
+        const hex = native.get(VAULT_KEY_SERVICE, meta.account ?? this.account);
+        return hex ? this.checked(Buffer.from(hex, "hex")) : null;
+      }
+      if (marker === M_LINUX_SECRET) {
+        if (process.platform !== "linux") return null;
+        // Same record-the-account rule: attributes address the item.
+        const meta = JSON.parse(body.toString("utf8")) as { account?: string };
+        try {
+          const hex = linuxSecret().get(VAULT_KEY_SERVICE, meta.account ?? this.account);
+          return hex ? this.checked(Buffer.from(hex, "hex")) : null;
+        } catch {
+          return null;
+        }
+      }
       if (marker === M_SAFESTORAGE) {
         const s = safeStorage();
         if (!s) return null;
@@ -184,10 +270,10 @@ export class VaultKeyStore {
   }
 
   /**
-   * File the key under the best provider this environment has. Keychain first,
-   * blob second: a crash in between leaves an orphaned Keychain item (harmless,
-   * overwritten by the retry), never a blob pointing at a key that was never
-   * stored.
+   * File the key under the best provider this environment has. OS secret
+   * store first, blob second: a crash in between leaves an orphaned secret
+   * (harmless, overwritten by the retry), never a blob pointing at a key
+   * that was never stored.
    */
   writeKey(key: Buffer): void {
     if (key.length !== VAULT_KEY_BYTES) {
@@ -205,6 +291,24 @@ export class VaultKeyStore {
       const account = `${this.account} ${crypto.randomUUID()}`;
       native.set(VAULT_KEY_SERVICE, account, VAULT_KEY_ACCESS_GROUP, hex);
       this.writeBlob(M_SECITEM, Buffer.from(JSON.stringify({ account })));
+      return;
+    }
+    const wincred = winCredEligible() ? nativeWinCred() : null;
+    if (wincred && wincred.probe(VAULT_KEY_SERVICE) === "ok") {
+      // Same unique-account rule as SecItem: two packaged homes on one
+      // Windows user must not share one credential.
+      const account = `${this.account} ${crypto.randomUUID()}`;
+      wincred.set(VAULT_KEY_SERVICE, account, hex);
+      this.writeBlob(M_WINCREED, Buffer.from(JSON.stringify({ account })));
+      return;
+    }
+    const linsec = linuxSecretEligible() ? linuxSecret() : null;
+    if (linsec && linsec.probe(VAULT_KEY_SERVICE) === "ok") {
+      // Same unique-account rule: two homes on one Linux user must not
+      // share one Secret Service item.
+      const account = `${this.account} ${crypto.randomUUID()}`;
+      linsec.set(VAULT_KEY_SERVICE, account, hex);
+      this.writeBlob(M_LINUX_SECRET, Buffer.from(JSON.stringify({ account })));
       return;
     }
     const s = safeStorage();

@@ -51,20 +51,24 @@ function fakePayload(): { resources: string; root: string; binary: string } {
   const resources = fs.mkdtempSync(path.join(os.tmpdir(), "domo-runtime-"));
   dirs.push(resources);
   const root = path.join(resources, "browser-runtime");
-  const app = path.join(
-    root,
-    "camoufox",
-    "browsers",
-    "official",
-    "152.0.4-beta.28-universal",
-    "Camoufox.app",
-    "Contents",
-    "MacOS",
-  );
-  fs.mkdirSync(app, { recursive: true });
-  const binary = path.join(app, "camoufox");
+  const official = path.join(root, "camoufox", "browsers", "official", "152.0.4-beta.28");
+  const binary = process.platform === "win32"
+    ? path.join(official, "camoufox.exe")
+    : path.join(official, "Camoufox.app", "Contents", "MacOS", "camoufox");
+  fs.mkdirSync(path.dirname(binary), { recursive: true });
   fs.writeFileSync(binary, "");
   return { resources, root, binary };
+}
+
+function fakeWindowsPayload(): { resources: string; binary: string } {
+  const resources = fs.mkdtempSync(path.join(os.tmpdir(), "domo-win-runtime-"));
+  dirs.push(resources);
+  const binary = path.join(
+    resources, "browser-runtime", "camoufox", process.arch, "camoufox.exe",
+  );
+  fs.mkdirSync(path.dirname(binary), { recursive: true });
+  fs.writeFileSync(binary, "");
+  return { resources, binary };
 }
 
 describe("resolveBrowserRuntime", () => {
@@ -89,6 +93,11 @@ describe("resolveBrowserRuntime", () => {
 
   it("points playwright at the bundled Camoufox binary", () => {
     const { resources, binary } = fakePayload();
+    expect(resolveBrowserRuntime(resources)!.executablePath).toBe(binary);
+  });
+
+  it.skipIf(process.platform !== "win32")("finds the direct Windows camoufox.exe install layout", () => {
+    const { resources, binary } = fakeWindowsPayload();
     expect(resolveBrowserRuntime(resources)!.executablePath).toBe(binary);
   });
 

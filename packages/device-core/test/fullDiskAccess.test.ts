@@ -37,8 +37,9 @@ describe("probeFullDiskAccess", () => {
   });
 
   // Root opens a 0o000 file anyway, so this case would assert the wrong thing
-  // there; the suite runs as a user everywhere that matters.
-  it.skipIf(process.getuid?.() === 0)(
+  // there; the suite runs as a user everywhere that matters. Windows ACLs do
+  // not express Unix mode bits at all, so a chmod refusal is unmakable there.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
     "reports not granted when the probe exists but the open is refused",
     async () => {
       const refused = path.join(dir, "protected.db");
@@ -48,7 +49,10 @@ describe("probeFullDiskAccess", () => {
     },
   );
 
-  it("defaults to TCC-protected files in the real home, Messages among them", () => {
+  // The default list is macOS paths joined for the host: pinned darwin-only,
+  // since path.join spells them with backslashes on Windows. Windows reads
+  // its own folder list instead (hostGate/windows.ts).
+  it.skipIf(process.platform !== "darwin")("defaults to TCC-protected files in the real home, Messages among them", () => {
     const paths = fullDiskProbePaths("/Users/probe");
     expect(paths).toContain("/Users/probe/Library/Messages/chat.db");
     for (const p of paths) expect(p.startsWith("/Users/probe/Library/")).toBe(true);

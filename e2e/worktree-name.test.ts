@@ -13,6 +13,19 @@ import { afterAll, describe, expect, it } from "vitest";
 
 const script = fileURLToPath(new URL("../scripts/worktree-name.sh", import.meta.url));
 
+// The contract under test is a POSIX shell script: without a shell (a
+// Windows box with no Git Bash on PATH) there is nothing to run. Probed at
+// collection, like the openssl probe in transport's websocket suite.
+function shellAvailable(): boolean {
+  try {
+    execFileSync("sh", ["-c", "exit 0"], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+const HAVE_SH = shellAvailable();
+
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "domo-wt-"));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
@@ -36,7 +49,7 @@ function makeRepo(dir: string): string {
   return repo;
 }
 
-describe("worktree-name.sh", () => {
+describe.skipIf(!HAVE_SH)("worktree-name.sh", () => {
   it("prints nothing in a main checkout and outside a repo", () => {
     const repo = makeRepo("plain");
     expect(nameIn(repo)).toBe("");

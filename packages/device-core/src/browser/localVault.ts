@@ -34,9 +34,12 @@ import { totpCode, totpKeyEquals, totpParams, type TotpCode } from "./vaultTotp.
 import { VaultKeyStore } from "./vaultKeyStore.js";
 import { VaultStore } from "./vaultStore.js";
 import { openVaultKey } from "./vaultMigrate.js";
+import { AllowPresence, type PresenceGate } from "../windowsPresence.js";
 
 export class LocalVault {
   private readonly store: VaultStore;
+  /** The Windows desktop supplies WindowsPresenceGate for production. */
+  presence: PresenceGate = new AllowPresence();
 
   constructor(
     private readonly dir: string,
@@ -55,6 +58,10 @@ export class LocalVault {
    */
   private open(): VaultKey {
     return splitKey(openVaultKey(this.dir, this.keyStore, this.store));
+  }
+
+  private async present(): Promise<void> {
+    if (!(await this.presence.verify("vault"))) throw new Error("the owner did not confirm access to this vault");
   }
 
   /**
@@ -80,6 +87,7 @@ export class LocalVault {
 
   /** Everything in the vault, in the clear except the secrets themselves. */
   async list(): Promise<VaultItemSummary[]> {
+    await this.present();
     const key = this.open();
     // An item of a type this app cannot hold makes the listing fail, and the
     // tab says so. Skipping it quietly was worse: a vault holding only such an
@@ -95,6 +103,7 @@ export class LocalVault {
    * inside `decryptHaystack` — a gated item matches on its open fields only.
    */
   async search(query: string): Promise<string[]> {
+    await this.present();
     const key = this.open();
     const words = searchWords(query);
     return this.store.readAll()
@@ -104,6 +113,7 @@ export class LocalVault {
 
   /** One whole item, with its secret values null — what a form is filled from. */
   async read(itemId: string): Promise<VaultItem> {
+    await this.present();
     const key = this.open();
     return decryptItem(await this.cleared(this.cipher(itemId)), key);
   }
@@ -113,6 +123,7 @@ export class LocalVault {
    * no page to bind it to, so the audit line says so rather than naming a site.
    */
   async reveal(itemId: string, field: string): Promise<string> {
+    await this.present();
     const key = this.open();
     const value = decryptField(await this.cleared(this.cipher(itemId)), key, field);
     this.audit(itemId, field, "SHOWN in app");
@@ -121,6 +132,7 @@ export class LocalVault {
 
   /** The code this item's authenticator key is showing right now. */
   async totp(itemId: string): Promise<TotpCode> {
+    await this.present();
     const key = this.open();
     const stored = decryptField(await this.cleared(this.cipher(itemId)), key, "totp");
     const code = totpCode(stored);
@@ -151,6 +163,7 @@ export class LocalVault {
     itemId: string,
     candidate: { password: string; totp: string },
   ): Promise<{ password: boolean; totp: boolean; revision: string }> {
+    await this.present();
     const key = this.open();
     const cipher = await this.cleared(this.cipher(itemId));
     const stored = (field: string): string => {
@@ -169,6 +182,7 @@ export class LocalVault {
 
   /** Create an item, or change one that is already there. */
   async save(input: VaultItemInput): Promise<{ id: string; title: string }> {
+    await this.present();
     const key = this.open();
     const existing = input.itemId ? await this.cleared(this.cipher(input.itemId)) : null;
     const type = existing?.type ?? TYPE_CODE[input.type ?? "login"];
@@ -220,6 +234,7 @@ export class LocalVault {
   /** Throw an item away. Final: there is no server-side trash any more, which
    * the confirm dialog in front of this is expected to say. */
   async remove(itemId: string): Promise<void> {
+    await this.present();
     this.open(); // a locked vault refuses deletes too
     this.store.remove(itemId);
     this.audit(itemId, "(item)", "DELETED");

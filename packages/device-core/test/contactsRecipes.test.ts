@@ -93,7 +93,9 @@ const byName = (fragment: string): string[][] =>
 const forRecord = (sql: string, id: string): string[][] =>
   query(store, sql.replaceAll(CONTACTS_RECORD_PLACEHOLDER, id));
 
-describe("the contacts recipes the skill publishes", () => {
+// Built and read through /usr/bin/sqlite3 against macOS-shaped stores
+// (~/Library/…): a mac-machine suite, like its imessage/whatsapp siblings.
+describe.skipIf(process.platform !== "darwin")("the contacts recipes the skill publishes", () => {
   it("finds a record by a name fragment — identity columns only, ZNAME included", () => {
     const rows = byName("applese");
     expect(rows.length).toBe(1);

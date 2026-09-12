@@ -34,6 +34,9 @@ describe("VaultKeyStore", () => {
   });
 
   it("stores the key file 0600 — the file provider's whole floor", () => {
+    // Unix mode bits do not exist on Windows (ACLs instead, and Node
+    // reports 0o666); the OS-store providers are the floor there.
+    if (process.platform === "win32") return;
     const dir = tempDir();
     new VaultKeyStore(dir, "test").createKey();
     const mode = fs.statSync(path.join(dir, "vault-key.enc")).mode & 0o777;
@@ -63,6 +66,26 @@ describe("VaultKeyStore", () => {
     const dir = tempDir();
     fs.writeFileSync(path.join(dir, "vault-key.enc"), 'KSEC1{"account":"x"}');
     const store = new VaultKeyStore(dir, "test");
+    expect(store.readKey()).toBeNull();
+    expect(store.state().status).toBe("locked");
+  });
+
+  it("reports a Credential Manager blob as LOCKED without its key", () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, "vault-key.enc"), 'KWIN1{"account":"x"}');
+    const store = new VaultKeyStore(dir, "test");
+    expect(store.readKey()).toBeNull();
+    // no-storage where the addon was never built, undecryptable where it
+    // was but the account is gone — either way locked, never a key.
+    expect(store.state().status).toBe("locked");
+  });
+
+  it("reports a Secret Service blob as LOCKED when no daemon answers", () => {
+    const dir = tempDir();
+    fs.writeFileSync(path.join(dir, "vault-key.enc"), 'KLIN1{"account":"x"}');
+    const store = new VaultKeyStore(dir, "test");
+    // No daemon on this host (or the wrong platform entirely): the blob
+    // exists and will not open — locked, never empty, never a key.
     expect(store.readKey()).toBeNull();
     expect(store.state().status).toBe("locked");
   });

@@ -24,11 +24,13 @@ import {
   createDomoMcpServer,
   DomoMcpServer,
   HOST_GATE_NOTE,
+  HOST_TOOLING,
   MACOS_TOOLING,
   SERVER_IDENTITY,
   SERVER_INSTRUCTIONS,
   SKILL_FOOTER,
   TOOLS,
+  WINDOWS_TOOLING,
 } from "@domo/mcp-server";
 import { parse, rpc } from "./client.js";
 import { bareToolNames } from "./toolNames.js";
@@ -104,8 +106,9 @@ describe("the server tells the agent what it is for", () => {
   });
 
   it("the instructions draw the boundary and say what to do with a pending handle", () => {
-    // Whose machine this is, and whose it is not.
-    expect(SERVER_INSTRUCTIONS).toMatch(/user's own Mac/);
+    // Whose machine this is, and whose it is not. macOS says Mac, Windows
+    // says PC — the word follows the host.
+    expect(SERVER_INSTRUCTIONS).toMatch(process.platform === "win32" ? /user's own PC/ : /user's own Mac/);
     expect(SERVER_INSTRUCTIONS).toMatch(/your workspace/i);
     // The approval contract: say something, poll, do not ask twice.
     expect(SERVER_INSTRUCTIONS).toMatch(/pending handle/);
@@ -120,12 +123,20 @@ describe("the server tells the agent what it is for", () => {
   it("the instructions say what a blocked result is, and is not, and what to do", () => {
     expect(SERVER_INSTRUCTIONS).toMatch(/status 'blocked'/);
     expect(SERVER_INSTRUCTIONS).toMatch(/not the user saying no/i);
-    expect(SERVER_INSTRUCTIONS).toMatch(/permission dialog waiting on the Mac's screen/i);
+    if (process.platform === "win32") {
+      // No dialog ever parks a Windows refusal, so the instructions name
+      // the gates that do refuse instead of one that cannot happen.
+      expect(SERVER_INSTRUCTIONS).toMatch(/Controlled Folder Access|Windows gate/);
+      expect(SERVER_INSTRUCTIONS).not.toMatch(/permission dialog waiting on/i);
+      expect(SERVER_INSTRUCTIONS).not.toMatch(/'running' with a 'diagnosis'/);
+    } else {
+      expect(SERVER_INSTRUCTIONS).toMatch(/permission dialog waiting on the Mac's screen/i);
+      expect(SERVER_INSTRUCTIONS).toMatch(/'running' with a 'diagnosis'/);
+    }
     expect(SERVER_INSTRUCTIONS).toMatch(/'owner_action' sentence word for word/);
     expect(SERVER_INSTRUCTIONS).toMatch(/do not retry/i);
     expect(SERVER_INSTRUCTIONS).toMatch(/do not reword the goal/i);
     expect(SERVER_INSTRUCTIONS).toMatch(/'likely' or 'unknown'/);
-    expect(SERVER_INSTRUCTIONS).toMatch(/'running' with a 'diagnosis'/);
   });
 
   // It is guidance to a model, not a grant. Nothing here may read as "ask
@@ -167,9 +178,16 @@ describe("the skill contribution footer", () => {
 describe("every tool with a strong built-in alternative says whose Mac this is", () => {
   // The three where the agent's own tool is obvious, frictionless, and wrong:
   // its sandbox filesystem, its sandbox shell, its own web fetch.
-  for (const tool of ["plow_read_file", "plow_write_file", "plow_run_command", "plow_run_applescript", "plow_browser_open"]) {
+  // `plow_run_applescript` is macOS-only: present on darwin, absent elsewhere.
+  const namedTools =
+    process.platform === "darwin"
+      ? ["plow_read_file", "plow_write_file", "plow_run_command", "plow_run_applescript", "plow_browser_open"]
+      : ["plow_read_file", "plow_write_file", "plow_run_command", "plow_browser_open"];
+  for (const tool of namedTools) {
     it(`${tool} names the user's own machine`, async () => {
-      expect(await descriptions(makeServer()).then((d) => d[tool])).toMatch(/user's own Mac/);
+      expect(await descriptions(makeServer()).then((d) => d[tool])).toMatch(
+        process.platform === "win32" ? /user's own PC/ : /user's own Mac/,
+      );
     });
   }
 
@@ -181,12 +199,19 @@ describe("every tool with a strong built-in alternative says whose Mac this is",
 
   it("plow_run_command leads with when to choose it, names Latch, not the sandbox", async () => {
     const d = await descriptions(makeServer());
-    // The sandbox is still stated — it is true and the agent needs it — but it
-    // no longer opens the description, where it read as "this one is worse".
-    expect(d.plow_run_command).toMatch(/seatbelt sandbox/);
-    expect(d.plow_run_command.indexOf("own Mac")).toBeLessThan(d.plow_run_command.indexOf("sandbox"));
+    if (process.platform === "win32") {
+      // The cage is a Job Object, and the machine leads over the mechanism
+      // the same way: what it is for first, how it is caged second.
+      expect(d.plow_run_command).toMatch(/Job Object/);
+      expect(d.plow_run_command.indexOf("own PC")).toBeLessThan(d.plow_run_command.indexOf("Job Object"));
+    } else {
+      // The sandbox is still stated — it is true and the agent needs it — but it
+      // no longer opens the description, where it read as "this one is worse".
+      expect(d.plow_run_command).toMatch(/seatbelt sandbox/);
+      expect(d.plow_run_command.indexOf("own Mac")).toBeLessThan(d.plow_run_command.indexOf("sandbox"));
+    }
     // "Use Latch to …" is how owners phrase it; the run-command copy names it.
-    // The tooling list (incl. `say`) is pinned via MACOS_TOOLING by the seam
+    // The tooling list (incl. `say`) is pinned via HOST_TOOLING by the seam
     // test below, so it is not re-asserted here.
     expect(d.plow_run_command).toMatch(/\bLatch\b/);
   });
@@ -205,8 +230,20 @@ describe("every tool with a strong built-in alternative says whose Mac this is",
 
 });
 
+describe.skipIf(process.platform !== "win32")("Windows MCP copy", () => {
+  it("never advertises this PC as a Mac or names macOS-only controls", () => {
+    const manifest = JSON.stringify(TOOLS);
+    expect(manifest).not.toMatch(/\bMac\b/);
+    expect(manifest).not.toMatch(/\bmacOS\b/);
+  });
+});
+
 describe("every tool this Mac can stop says so", () => {
-  for (const tool of ["plow_read_file", "plow_write_file", "plow_run_command", "plow_run_applescript"]) {
+  const stoppable =
+    process.platform === "darwin"
+      ? ["plow_read_file", "plow_write_file", "plow_run_command", "plow_run_applescript"]
+      : ["plow_read_file", "plow_write_file", "plow_run_command"];
+  for (const tool of stoppable) {
     it(`${tool} carries the blocked sentence`, async () => {
       const d = await descriptions(makeServer());
       expect(d[tool]).toContain(BLOCKED_COPY);
@@ -214,7 +251,7 @@ describe("every tool this Mac can stop says so", () => {
     });
   }
 
-  it("the script tool says why it exists, how it takes values, and where a sandboxed refusal goes", async () => {
+  it.skipIf(process.platform !== "darwin")("the script tool says why it exists, how it takes values, and where a sandboxed refusal goes", async () => {
     const d = await descriptions(makeServer());
     expect(d.plow_run_applescript).toMatch(/rather than plow_run_command with osascript/);
     expect(d.plow_run_applescript).toMatch(/in 'args', read as `on run argv`/);
@@ -224,10 +261,28 @@ describe("every tool this Mac can stop says so", () => {
     expect(d.plow_get_output).toMatch(/plow_run_applescript/);
   });
 
-  it("plow_run_command explains a running result that carries a diagnosis", async () => {
+  it.skipIf(process.platform === "darwin")("without the script tool nothing points at it", async () => {
+    // macOS-only tool, macOS-only pointers: on Windows no copy may name a
+    // tool the surface does not advertise.
+    const d = await descriptions(makeServer());
+    expect(d.plow_run_applescript).toBeUndefined();
+    expect(d.plow_run_command).not.toMatch(/with_plow_run_applescript/);
+    expect(d.plow_run_command).not.toMatch(/osascript/);
+    expect(d.plow_get_output).not.toMatch(/applescript/i);
+  });
+
+  it.skipIf(process.platform === "win32")("plow_run_command explains a running result that carries a diagnosis", async () => {
     const d = await descriptions(makeServer());
     expect(d.plow_run_command).toMatch(/still 'running' but carries a 'diagnosis'/);
     expect(d.plow_run_command).toMatch(/leave it running/);
+  });
+
+  it.skipIf(process.platform !== "win32")("plow_run_command says the tree ends with the run", async () => {
+    // No dialog ever parks a Windows run, so there is no parked sentence —
+    // instead the copy states the Job Object guarantee that replaces it.
+    const d = await descriptions(makeServer());
+    expect(d.plow_run_command).not.toMatch(/still 'running' but carries a 'diagnosis'/);
+    expect(d.plow_run_command).toMatch(/whole tree ends with the run/);
   });
 
   it("plow_device_status is for the user's question or after a block — never a way to avoid trying", async () => {
@@ -374,8 +429,9 @@ describe("the handshake says what this server is", () => {
     expect(info?.name).toBe("plow-latch");
     expect(info?.title).toMatch(/Plow Latch/);
     // The one field MCP has for "what is this server FOR". It has to name
-    // whose machine this is; an empty one was the whole finding.
-    expect(info?.description).toMatch(/own Mac/i);
+    // whose machine this is; an empty one was the whole finding. macOS says
+    // Mac, Windows says PC — the word follows the host.
+    expect(info?.description).toMatch(process.platform === "win32" ? /own PC/i : /own Mac/i);
     expect(info?.websiteUrl).toMatch(/^https:\/\//);
   });
 
@@ -425,8 +481,12 @@ describe("every tool says what kind of tool it is", () => {
       hint: "openWorldHint" as const,
       what: "reach the open internet",
       // A script reaches out through the app it drives — Mail sends, Safari
-      // browses — so it is as open-world as a command with network.
-      tools: ["plow_browser", "plow_browser_open", "plow_browser_request", "plow_run_applescript", "plow_run_command"],
+      // browses — so it is as open-world as a command with network. macOS-only,
+      // like the tool itself.
+      tools:
+        process.platform === "darwin"
+          ? ["plow_browser", "plow_browser_open", "plow_browser_request", "plow_run_applescript", "plow_run_command"]
+          : ["plow_browser", "plow_browser_open", "plow_browser_request", "plow_run_command"],
     },
   ])("the tools that $what are exactly the ones marked $hint", async ({ hint, tools }) => {
     const marked = (await listed(makeServer()))
@@ -486,24 +546,30 @@ describe("what the agent-facing copy must and must not say", () => {
   /**
    * Pins the SEAM, not the words. Grepping the instructions for /mdfind/ was
    * the obvious assertion and it stopped meaning anything the moment one
-   * constant fed both strings: dropping `${MACOS_TOOLING}` from
+   * constant fed both strings: dropping the tooling list from
    * plow_run_command's description — the plausible edit when the mach-lookup
    * TODO forces a rewrite — would ship green while the tool that actually runs
-   * the commands named no tooling at all.
+   * the commands named no tooling at all. The list is per-OS (HOST_TOOLING).
    */
   it("both copy homes interpolate the one tooling list", async () => {
-    expect(SERVER_INSTRUCTIONS).toContain(MACOS_TOOLING);
-    expect((await descriptions(makeServer())).plow_run_command).toContain(MACOS_TOOLING);
+    expect(SERVER_INSTRUCTIONS).toContain(HOST_TOOLING);
+    expect((await descriptions(makeServer())).plow_run_command).toContain(HOST_TOOLING);
   });
 
   /**
    * Content, not seam — its own case so a failure names what broke. Every tool
-   * here was RUN under the generated profile; executor.ts's mach-lookup note
-   * governs the same set, so dropping the clipboard pair must not ship green.
+   * here was RUN under the cage it is named for; executor.ts's mach-lookup note
+   * governs the macOS set, so dropping the clipboard pair must not ship green.
    */
-  it("the tooling list names every tool verified under the profile", () => {
+  it.skipIf(process.platform !== "darwin")("the macOS tooling list names every tool verified under the profile", () => {
     for (const tool of ["mdfind", "sips", "pbcopy", "pbpaste"]) {
       expect(MACOS_TOOLING).toContain(tool);
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("the Windows tooling list names every tool verified in the job", () => {
+    for (const tool of ["where", "powershell", "Get-ChildItem", "dir", "clip"]) {
+      expect(WINDOWS_TOOLING).toContain(tool);
     }
   });
 

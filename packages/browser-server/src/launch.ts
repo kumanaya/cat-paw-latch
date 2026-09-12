@@ -122,11 +122,97 @@ function sleepSync(ms: number): void {
 }
 
 /** Publish a pin under a lock so concurrent callers all adopt one pick — the sole
- * writer of the pin (first launch, and replacing a stale/corrupt one alike). The
- * winner of an exclusive-create on `<pin>.lock` writes the pin via a temp file +
- * atomic rename (so no caller ever reads a partial file); the losers wait and
- * read the winner's entry. A lock a crashed writer left is reclaimed after a
- * timeout, so the mechanism self-heals. */
+ *  writer of the pin (first launch, and replacing a stale/corrupt one alike). The
+ *  winner of an exclusive-create on `<pin>.lock` writes the pin via a temp file +
+ *  atomic rename (so no caller ever reads a partial file); the losers wait and
+ *  read the winner's entry.
+ *
+ *  The lock carries a heartbeat, not a fixed steal deadline: the holder
+ *  refreshes its mtime through the critical section, and a waiter steals only
+ *  a lock older than `LOCK_STALE_MS` — a crashed holder's, never a live but
+ *  slow one's. A fixed "wait this long, then take it" deadline diverges on a
+ *  slow host (two holders publish two pins); mtime converges, because only a
+ *  holder that stopped touching can be stolen from. A lock a crashed writer
+ *  left still self-heals once it goes stale.
+ *
+ *  Windows needs both halves of this: process startup there is slow enough
+ *  that forty racers span seconds, and rename-over-open fails transiently
+ *  (a concurrent reader, a scanner), so the publish retries briefly and a
+ *  republisher adopts whatever is on disk rather than failing a launch. */
+const LOCK_STALE_MS = 5000;
+
+/** Temporary race tracing (DOMO_DEBUG_PIN=1): pid-stamped lock events on stderr. */
+function pinTrace(...args: unknown[]): void {
+  if (process.env.DOMO_DEBUG_PIN === "1") {
+    process.stderr.write(`[pin:${process.pid}] ${args.join(" ")}\n`);
+  }
+}
+
+/** Refresh the lock's mtime: proof this holder is alive. Best effort — a
+ *  stolen lock is already someone else's to touch. */
+function touchLock(lock: string): void {
+  try {
+    const now = new Date();
+    fs.utimesSync(lock, now, now);
+  } catch {
+    /* stolen or gone; the waiter logic sorts it out */
+  }
+}
+
+/** Whether this process still owns the lock: its content is our pid. A
+ *  thief that stole a stale-looking lock replaces the file, so publishing
+ *  under a stolen lock would fork the pin — check before the rename. */
+function ownsLock(lock: string): boolean {
+  try {
+    return fs.readFileSync(lock, "utf8") === String(process.pid);
+  } catch {
+    return false;
+  }
+}
+
+/** Drop a temp file that a failed publish left behind. */
+function dropTmp(tmp: string): void {
+  try {
+    fs.rmSync(tmp, { force: true });
+  } catch {
+    /* still theirs to clean, or already gone */
+  }
+}
+
+/** Adopt the winner's pin if one lands, bounded — then last-resort our own
+ *  pick, which matches the cannot-lock branch. Unpublished picks never leave
+ *  silently: every path through here prefers a pin that is on disk.
+ *
+ *  Releases the lock on entry: an adopter publishes nothing, so holding it
+ *  only starves the process that would. (The holder's finally unlinks again
+ *  harmlessly.) */
+function adoptPinned(
+  readPinned: () => FingerprintEntry | undefined,
+  chosen: FingerprintEntry,
+  tmp: string,
+  lock: string,
+): FingerprintEntry {
+  try {
+    fs.unlinkSync(lock);
+  } catch {
+    /* already gone */
+  }
+  const adoptUntil = Date.now() + LOCK_STALE_MS;
+  for (;;) {
+    const adopted = readPinned();
+    if (adopted) {
+      dropTmp(tmp);
+      return adopted;
+    }
+    if (Date.now() > adoptUntil) {
+      dropTmp(tmp);
+      return chosen;
+    }
+    touchLock(lock);
+    sleepSync(50);
+  }
+}
+
 function repairPin(
   pinPath: string,
   chosen: FingerprintEntry,
@@ -134,34 +220,117 @@ function repairPin(
   readPinned: () => FingerprintEntry | undefined,
 ): FingerprintEntry {
   const lock = `${pinPath}.lock`;
-  const stealAfter = Date.now() + 2000;
   for (;;) {
     const valid = readPinned();
-    if (valid) return valid; // the winner already published — adopt it
+    if (valid) {
+      pinTrace("adopt-loop", valid.id);
+      return valid; // the winner already published — adopt it
+    }
     try {
       fs.writeFileSync(lock, String(process.pid), { flag: "wx", mode: 0o600 });
+      pinTrace("acquired-lock");
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") return chosen; // cannot lock
-      // Another process holds the lock. Wait, then retry — adopting its pin, or
-      // reclaiming the lock if it looks abandoned.
-      if (Date.now() > stealAfter) {
+      const code = (e as NodeJS.ErrnoException).code;
+      // EEXIST is the lock held; EPERM/EBUSY/EACCES on the create itself is
+      // contention with a scanner, not a verdict — wait it out like a held
+      // lock, because returning our own pick here forks the pin. Anything
+      // else (a directory that will never take a file) cannot lock, ever.
+      if (code !== "EEXIST" && code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") {
+        return chosen; // cannot lock
+      }
+      // Another process holds the lock. Steal only a STALE one — a live
+      // holder's heartbeat keeps its mtime fresh no matter how slow the
+      // host is. A missing mtime means the lock vanished mid-read: retry.
+      let stale = false;
+      try {
+        stale = Date.now() - fs.statSync(lock).mtimeMs > LOCK_STALE_MS;
+      } catch {
+        continue;
+      }
+      if (stale) {
+        pinTrace("stealing-lock");
         try {
           fs.unlinkSync(lock);
         } catch {
           /* someone else reclaimed it first */
         }
       }
-      sleepSync(15);
+      sleepSync(50);
       continue;
     }
     // We hold the lock: repair once, unless a prior holder already did.
+    touchLock(lock);
     try {
       const again = readPinned();
-      if (again) return again;
+      if (again) {
+        pinTrace("again-adopt", again.id);
+        return again;
+      }
       const tmp = `${pinPath}.${process.pid}.${crypto.randomInt(1_000_000_000)}`;
-      fs.writeFileSync(tmp, payload, { mode: 0o600 });
-      fs.renameSync(tmp, pinPath);
-      return chosen;
+      // The temp write can meet the same transient contention as the lock
+      // create (a scanner holding the name): retry it rather than crash a
+      // launch. Persistent failure adopts — someone else may still publish.
+      const writeUntil = Date.now() + LOCK_STALE_MS;
+      let written = false;
+      while (!written) {
+        try {
+          fs.writeFileSync(tmp, payload, { mode: 0o600 });
+          written = true;
+        } catch (e) {
+          const code = (e as NodeJS.ErrnoException).code;
+          pinTrace("tmp-write-fail", code);
+          if ((code !== "EPERM" && code !== "EBUSY" && code !== "EACCES") || Date.now() > writeUntil) {
+            return adoptPinned(readPinned, chosen, tmp, lock);
+          }
+          touchLock(lock);
+          sleepSync(50);
+        }
+      }
+      touchLock(lock);
+      // Fencing: a waiter may have stolen the lock while a syscall stalled
+      // (Windows stalls one for seconds under load). Publishing under a
+      // stolen lock forks the pin — two holders, two ids — so a holder
+      // that lost its name adopts instead of publishing.
+      if (!ownsLock(lock)) {
+        pinTrace("lost-ownership-adopting");
+        return adoptPinned(readPinned, chosen, tmp, lock);
+      }
+      const publishUntil = Date.now() + LOCK_STALE_MS;
+      let published = false;
+      while (!published) {
+        try {
+          fs.renameSync(tmp, pinPath);
+          published = true;
+        } catch (e) {
+          const code = (e as NodeJS.ErrnoException).code;
+          const retryable = code === "EPERM" || code === "EBUSY" || code === "EACCES";
+          // A republisher may have landed one while this rename failed:
+          // converge on it rather than overwrite it a moment later.
+          const adopted = readPinned();
+          if (adopted) {
+            dropTmp(tmp);
+            return adopted;
+          }
+          if (!ownsLock(lock)) return adoptPinned(readPinned, chosen, tmp, lock);
+          if (!retryable || Date.now() > publishUntil) break;
+          touchLock(lock);
+          sleepSync(50);
+        }
+      }
+      if (published) {
+        // Converge on what is actually on disk: a thief that won a heartbeat
+        // race publishes a microsecond later, and last-writer is the one
+        // every later reader adopts.
+        dropTmp(tmp);
+        const settled = readPinned() ?? chosen;
+        pinTrace("published-returning", settled.id);
+        return settled;
+      }
+      // The disk would not take the publish: adopt the winner's pin if one
+      // lands, bounded — then last-resort our own pick, which matches the
+      // cannot-lock branch above. Unpublished picks never leave silently:
+      // every path through here prefers a pin that is on disk.
+      return adoptPinned(readPinned, chosen, tmp, lock);
     } finally {
       try {
         fs.unlinkSync(lock);

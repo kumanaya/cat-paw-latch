@@ -9,6 +9,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { lockdownSecretFile } from "@domo/device-core";
 
 /**
  * How the credential is encrypted at rest, when the OS offers a way.
@@ -228,6 +229,28 @@ function settingsPath(home: string): string {
   return path.join(home, "app/settings.json");
 }
 
+/**
+ * How the relay credential rests on disk, read off the file itself rather
+ * than a loaded object: `sealed` (a codec ciphertext), `plaintext` (a
+ * credential with no seal — codec absent), or `empty` (nothing to protect,
+ * or no file at all). The boot sequence audits `plaintext` where one stands,
+ * so the finding is visible in the Audit tab, not just the terminal warning
+ * saveSettings logs.
+ */
+export function credentialStorage(home: string): "sealed" | "plaintext" | "empty" {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(settingsPath(home), "utf8"));
+  } catch {
+    return "empty";
+  }
+  if (!parsed || typeof parsed !== "object") return "empty";
+  const rec = parsed as Record<string, unknown>;
+  if (typeof rec.relayCredentialEnc === "string" && rec.relayCredentialEnc !== "") return "sealed";
+  if (typeof rec.relayCredential === "string" && rec.relayCredential.trim() !== "") return "plaintext";
+  return "empty";
+}
+
 export function loadSettings(home: string): Settings {
   const defaults: Settings = {
     relayCredential: "",
@@ -353,6 +376,10 @@ export function saveSettings(home: string, settings: Settings): void {
     fs.fsyncSync(descriptor);
     fs.closeSync(descriptor);
     descriptor = null;
+    // Owner-only ACL on Windows, before the rename carries it into place
+    // (the existing catch below already removes the tmp and throws, so a
+    // lockdown failure leaves no loose secret behind).
+    lockdownSecretFile(temporary);
     fs.renameSync(temporary, file);
   } catch (error) {
     if (descriptor !== null) {

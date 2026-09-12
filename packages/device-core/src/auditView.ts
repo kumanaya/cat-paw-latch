@@ -715,6 +715,12 @@ function describeStep(e: JSONValue): AuditStep {
   let state: StepState = "neutral";
   switch (event) {
     case "device_started": text = "Device started"; break;
+    case "workstation_locked": text = "Workstation locked"; break;
+    case "workstation_unlocked": text = "Workstation unlocked"; break;
+    case "credential_stored_plaintext":
+      text = "Relay credential is stored unencrypted — no OS keychain available";
+      state = "bad";
+      break;
     case "access_request": text = `Access requested — ${ev.get("goals").str ?? ""}`; break;
     case "access_decision":
       text = ev.get("approved").bool ? "Access granted" : "Access denied";

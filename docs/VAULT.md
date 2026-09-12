@@ -129,12 +129,12 @@ hold them (`decryptRaw`).
 ## The master key (`vaultKeyStore.ts`)
 
 One 64 random bytes: the first 32 are the AES key, the last 32 the HMAC key
-(`splitKey`). It is minted on the vault's first use and never rotates. Three
+(`splitKey`). It is minted on the vault's first use and never rotates. Five
 providers can hold it; the provider is chosen once at write time and recorded
 in the blob's marker, so a key written under one provider is never silently
 re-read through another:
 
-1. **`KSEC1` — SecItem + access group** (packaged app only). The key is a
+1. **`KSEC1` — SecItem + access group** (packaged macOS app only). The key is a
    generic password in the data-protection Keychain: service `co.plow.vault`,
    access group `3559PD337Z.co.plow.vault` — both frozen literals, chosen so
    the item is keyed to our signing identity's group rather than to a bundle
@@ -145,19 +145,34 @@ re-read through another:
    can select it — the runtime probe returns `missing-entitlement` everywhere
    else and the store falls through. Gated to `app.isPackaged` besides, so a
    dev run or a test can never write into the real login Keychain.
-2. **`KENC1` — Electron `safeStorage`** (`just app`). The blob is the key
-   wrapped by safeStorage, whose own AES key sits in the login Keychain under
-   the frozen `VAULT_STORE_IDENTITY` (see `vaultKeychain.ts` — the identity
-   is a literal, not the app name, for reasons that file explains at length)
-   and is ACL-bound to the Electron binary.
-3. **`KRAW1` — a 0600 file** (tests, anything with neither). The key itself,
+2. **`KWIN1` — Windows Credential Manager** (packaged Windows app only).
+   The key is a generic credential `co.plow.vault/<unique account>` via
+   `packages/native-wincred` (`CredRead`/`CredWrite`, same get/set/probe
+   contract as the Keychain addon). Gated to `app.isPackaged` for the same
+   reason as SecItem: a dev run lands on DPAPI-backed safeStorage instead.
+3. **`KLIN1` — Linux Secret Service** (a answering daemon only). The key is a
+   Secret Service item with `service`/`account` attributes, reached through
+   `secret-tool` (`packages/device-core/src/browser/linuxSecret.ts` — no
+   compiler needed, but a daemon must answer or the probe says unavailable).
+   A headless run with no keyring lands on the key file, like everywhere.
+4. **`KENC1` — Electron `safeStorage`** (`just app`). The blob is the key
+   wrapped by safeStorage: Keychain under the frozen `VAULT_STORE_IDENTITY`
+   on macOS (see `vaultKeychain.ts` — the identity is a literal, not the app
+   name, for reasons that file explains at length; the freeze is macOS-only,
+   DPAPI and Secret Service do not key on the app name), DPAPI on Windows,
+   Secret Service on Linux.
+5. **`KRAW1` — a 0600 file** (tests, anything with neither). The key itself,
    hex. Hermetic by construction — this is the provider vitest exercises.
+   On Windows the floor is the user's profile ACL rather than mode bits —
+   and every secret file the app writes (key blob, item store, settings,
+   identity, approvals, audit log) is then locked down to a single
+   owner-only ACE via `packages/native-fs`, so the inherited profile DACL
+   (SYSTEM, Administrators, other users) is replaced, not trusted.
 
-The Keychain **account** name starts from the branch-suffixed instance
-identity, so two worktree checkouts never share a key. (There is deliberately
-no environment override for the provider: an env var that can steer a
-packaged app's key into the plain file provider is a downgrade lever, not a
-diagnostic.)
+The secret-store **account** name starts from the branch-suffixed instance
+identity, so two worktree checkouts never share a key. `DOMO_VAULT_KEY_PROVIDER`
+overrides the choice — for tests and diagnostics only; it is how the suite
+pins a provider without a signed app around.
 
 Three states, kept strictly apart (the distinction is load-bearing — see the
 rename incident in DESIGN.md §11a-i): **empty** (no blob — fine, a fresh

@@ -33,12 +33,25 @@ export const PROVIDER_ROOT = "providers";
  */
 export const MARKER = "VERSION";
 
+/** The platform-specific source of a provider payload. Linux is intentionally
+ * unsupported: callers receive no assets rather than a host binary by mistake. */
+export function providerArches(provider, platform = process.platform) {
+  if (platform === "win32") return provider.windowsArches ?? provider.arches;
+  if (platform === "darwin") return provider.arches;
+  return {};
+}
+
+export function stagedFileName(provider, platform = process.platform) {
+  return platform === "win32" ? `${provider.command}.exe` : provider.command;
+}
+
 /** The staged binary's path, and whether its bytes are the pinned ones. */
 export function stagedBinary(provider, arch, root) {
-  const file = path.join(root, "vendor", PROVIDER_ROOT, provider.command, arch, provider.command);
+  const assets = providerArches(provider);
+  const file = path.join(root, "vendor", PROVIDER_ROOT, provider.command, arch, stagedFileName(provider));
   if (!existsSync(file)) return { file, ok: false };
   const actual = createHash("sha256").update(readFileSync(file)).digest("hex");
-  return { file, ok: actual === provider.arches[arch].binary, actual };
+  return { file, ok: actual === assets[arch]?.binary, actual };
 }
 
 /**
@@ -56,5 +69,5 @@ export function stagedBinary(provider, arch, root) {
 export function isStaged(provider, root) {
   const marker = path.join(root, "vendor", PROVIDER_ROOT, provider.command, MARKER);
   if (!existsSync(marker) || readFileSync(marker, "utf8").trim() !== provider.version) return false;
-  return Object.keys(provider.arches).every((arch) => stagedBinary(provider, arch, root).ok);
+  return Object.keys(providerArches(provider)).every((arch) => stagedBinary(provider, arch, root).ok);
 }

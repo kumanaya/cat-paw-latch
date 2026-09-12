@@ -44,6 +44,7 @@ import {
   sipProtected,
   tildeRelative,
 } from "./guardedPaths.js";
+import { windowsGuardedPrefix, windowsSystemProtected } from "./windows.js";
 import { AutomationStatus, HostProbes, OpenOutcome, PermissionStatus, QueryablePermission } from "./probes.js";
 
 /** How the app names itself in the sentence the owner reads. */
@@ -58,9 +59,16 @@ export const APP_DISPLAY_NAME = "Plow Latch";
 export type BlockedCause =
   /** A macOS privacy switch (TCC) the owner has not flipped for this app. */
   | "macos_permission"
+  /** A Windows gate the owner has not allowed this app through: Controlled
+   *  Folder Access, an ACL, or a system location. The win32 sibling of
+   *  `macos_permission` — one name per OS, because the owner's sentence and
+   *  the switch it names are per-OS too. */
+  | "os_permission"
   /** A consent dialog is open on the Mac's screen and nobody has answered. */
   | "prompt_waiting"
-  /** Our own seatbelt profile: the path was not in the approved capability set. */
+  /** Our own bound: the path was not in the approved capability set — a
+   *  seatbelt profile on macOS, the approval alone on Windows (no OS cage
+   *  confines files there). */
   | "outside_approved_bound"
   /** Ordinary ownership/mode bits. */
   | "posix_permissions"
@@ -90,6 +98,11 @@ export type Retry =
   | "with_plow_run_applescript"
   | "unknown";
 
+/** What caged a run: seatbelt (file bounds at the kernel), a Job Object
+ *  (runaway trees ended, no file confined), or nothing (in-process op,
+ *  out-of-cage script). See HostFacts.sandbox_kind. */
+export type SandboxKind = "seatbelt" | "job" | "none";
+
 /** Every probe's answer, flat and JSON-safe, for one failure. */
 export interface HostFacts {
   op: "read" | "write" | "exec";
@@ -107,6 +120,14 @@ export interface HostFacts {
   syscall: string | null;
   stderr_hint: StderrHint | null;
   ran_sandboxed: boolean;
+  /**
+   * What caged the run, when anything did: seatbelt enforces file bounds at
+   * the kernel, a Job Object ends runaway trees but confines no file, and
+   * "none" is an in-process op or an out-of-cage script. The audit log and
+   * the agent both read this — a `ran_sandboxed: true` beside "job" must
+   * never be told as file confinement.
+   */
+  sandbox_kind: SandboxKind;
   sandbox_allows_read: boolean | null;
   sandbox_allows_write: boolean | null;
   /** Whether the path of interest lies inside what the owner approved for
@@ -165,6 +186,19 @@ export function isHostGate(cause: BlockedCause): boolean {
   return cause !== "not_found" && cause !== "unknown";
 }
 
+/**
+ * The cage a platform puts around a command run: a Job Object on Windows,
+ * seatbelt on macOS, nothing anywhere else (Linux runs nothing — there is
+ * no sandbox-exec there — so an uncaged run is the honest answer). "none"
+ * whenever the run was not caged at all, whatever the platform.
+ */
+export function sandboxKindFor(platform: NodeJS.Platform, ranSandboxed: boolean): SandboxKind {
+  if (!ranSandboxed) return "none";
+  if (platform === "win32") return "job";
+  if (platform === "darwin") return "seatbelt";
+  return "none";
+}
+
 /** What the diagnosis is told about the failure, by whoever caught it. */
 export interface FailureContext {
   op: "read" | "write" | "exec";
@@ -198,6 +232,14 @@ export interface FailureContext {
   /** The command's captured output, for a run. */
   stderr?: string | null;
   ranSandboxed: boolean;
+  /**
+   * What caged the run. The caller knows: the device passes "job" for a
+   * Windows run, "seatbelt" for a macOS command, "none" for an in-process
+   * op or an out-of-cage script. Absent, the battery assumes the
+   * historical host (seatbelt under a cage, none without) — every real
+   * caller passes it explicitly.
+   */
+  sandboxKind?: SandboxKind;
   /** For a sandboxed run: what the profile it ran under allows at a path. */
   sandbox?: ((path: string) => { read: boolean; write: boolean }) | null;
   /** The operation itself never returned. */
@@ -346,8 +388,12 @@ export async function collectFacts(
         withheld,
         info,
         open,
-        gate: guardedPrefix(path, ownerHome),
-        sip: sipProtected(path),
+        // The guarded-location map is per-OS: TCC's table on macOS, the
+        // Controlled-Folder-Access/ACL/user-folder table on Windows. The
+        // field keeps its name on both — it is the guarded prefix, and the
+        // verdict (`macos_permission` vs `os_permission`) says which map.
+        gate: process.platform === "win32" ? windowsGuardedPrefix(path, ownerHome) : guardedPrefix(path, ownerHome),
+        sip: process.platform === "win32" ? windowsSystemProtected(path) : sipProtected(path),
         grants: ctx.sandbox ? ctx.sandbox(path) : null,
       };
     }),
@@ -404,6 +450,7 @@ export async function collectFacts(
     syscall: parsed.syscall,
     stderr_hint: hint,
     ran_sandboxed: ctx.ranSandboxed,
+    sandbox_kind: ctx.sandboxKind ?? sandboxKindFor(process.platform, ctx.ranSandboxed),
     sandbox_allows_read: grants?.read ?? null,
     sandbox_allows_write: grants?.write ?? null,
     app_process_open: chosen?.open ?? null,
@@ -437,11 +484,34 @@ async function parentOpen(probes: HostProbes, p: string): Promise<OpenOutcome> {
  * The decision tree. Pure, and ordered by how much each fact discriminates:
  * a hang says more than an errno, the app's own attempt says more than the
  * path's prefix, and a prefix says more than nothing.
+ *
+ * The OS under judgment rides in `opts`, not in `process.platform`: the
+ * tree is pure over (facts, platform) so every leaf is assertable on any
+ * host — the macOS suite pins TCC sentences on Linux CI, and the Windows
+ * suite pins CFA ones on a Mac. Production passes nothing and gets this
+ * machine.
  */
-export function diagnose(f: HostFacts): Diagnosis {
+export interface DiagnoseOptions {
+  platform?: NodeJS.Platform;
+}
+
+export function diagnose(f: HostFacts, opts: DiagnoseOptions = {}): Diagnosis {
   const evidence: string[] = [];
   const ruledOut: string[] = [];
   const where = f.path ?? "the path";
+  // The OS-permission verdict and the system word are per-OS: macOS names
+  // TCC switches, Windows names Controlled Folder Access and ACLs. The tree
+  // below is shared; only these two words branch.
+  const platform = opts.platform ?? process.platform;
+  const onWindows = platform === "win32";
+  const permissionCause: BlockedCause = onWindows ? "os_permission" : "macos_permission";
+  const systemWord = onWindows ? "Windows" : "macOS";
+  // Under a Job Object there is no sandbox profile — the approval bound is
+  // the whole story, and the evidence must name it rather than a profile
+  // that does not exist. Branched on the fact, not the platform: the kind
+  // is what the run actually ran under.
+  const jobCage = f.sandbox_kind === "job";
+  const profile = jobCage ? "the approval for this run" : "the run's sandbox profile";
   const verdict = (
     cause: BlockedCause,
     confidence: Confidence,
@@ -452,7 +522,7 @@ export function diagnose(f: HostFacts): Diagnosis {
     permission,
     evidence,
     ruled_out: ruledOut,
-    owner_action: ownerAction(cause, permission, f),
+    owner_action: ownerAction(cause, permission, f, opts),
     retry: retryFor(cause),
     requires_relaunch: cause === "macos_permission" && permission === "full_disk_access",
   });
@@ -560,7 +630,7 @@ export function diagnose(f: HostFacts): Diagnosis {
     // and that refusal is the story, weighed below.
     evidence.push(`sqlite could not open ${where}, which exists and which ${APP_DISPLAY_NAME} itself can open`);
     if (f.ran_sandboxed && f.sandbox_allows_write === false) {
-      evidence.push("a WAL database needs its -shm index created beside it, and the sandbox profile allows no writes there");
+      evidence.push(`a WAL database needs its -shm index created beside it, and ${profile} allows no writes there`);
       return verdict("outside_approved_bound", "likely", null);
     }
   }
@@ -597,7 +667,11 @@ export function diagnose(f: HostFacts): Diagnosis {
       return verdict("immutable_file", "confirmed", null);
     }
     if (f.sip_protected) {
-      evidence.push(`${where} is under a System Integrity Protection root`);
+      evidence.push(
+        onWindows
+          ? `${where} is under a Windows system location (Windows, Program Files)`
+          : `${where} is under a System Integrity Protection root`,
+      );
       return verdict("sip_protected", "confirmed", null);
     }
     ruledOut.push("locked file", "System Integrity Protection");
@@ -606,22 +680,30 @@ export function diagnose(f: HostFacts): Diagnosis {
     // no probe: whatever else macOS might say about it, the run was not
     // allowed there, and declaring it is the agent's next move.
     if (f.ran_sandboxed && f.path_approved === false && (f.sandbox_allows_write === false || f.sandbox_allows_read === false)) {
-      evidence.push(`${where} is not among the paths approved for this run, and the sandbox profile allows it nothing`);
+      evidence.push(
+        jobCage
+          ? `${where} is not among the paths approved for this run`
+          : `${where} is not among the paths approved for this run, and the sandbox profile allows it nothing`,
+      );
       return verdict("outside_approved_bound", "confirmed", null);
     }
 
     if (f.ran_sandboxed && f.app_process_open === "ok") {
-      evidence.push(`${APP_DISPLAY_NAME} itself can open ${where}, so macOS is not refusing it`);
-      ruledOut.push("macOS permission");
+      evidence.push(`${APP_DISPLAY_NAME} itself can open ${where}, so ${systemWord} is not refusing it`);
+      ruledOut.push(`${systemWord} permission`);
       if (f.sandbox_allows_write === false) {
-        evidence.push("the run's sandbox profile allows no writes at that path");
+        evidence.push(`${profile} allows no writes at that path`);
         return verdict("outside_approved_bound", "confirmed", null);
       }
       if (f.sandbox_allows_read === false) {
-        evidence.push("the run's sandbox profile allows no reads at that path");
+        evidence.push(`${profile} allows no reads at that path`);
         return verdict("outside_approved_bound", "confirmed", null);
       }
-      evidence.push("the run's sandbox profile allows the path too; the refusal was elsewhere");
+      evidence.push(
+        jobCage
+          ? "the approval for this run covers the path too; the refusal was elsewhere"
+          : "the run's sandbox profile allows the path too; the refusal was elsewhere",
+      );
       return verdict("unknown", "unknown", null);
     }
 
@@ -629,16 +711,16 @@ export function diagnose(f: HostFacts): Diagnosis {
       evidence.push(`${APP_DISPLAY_NAME} itself is refused ${where} (${f.app_process_open}) outside any sandbox`);
       ruledOut.push("sandbox bound");
       if (f.tcc_guarded_prefix !== null) {
-        evidence.push(`${where} is under a location macOS guards (${PERMISSION_LABELS[f.tcc_guarded_prefix]})`);
-        if (COVERED_BY_FULL_DISK_ACCESS.has(f.tcc_guarded_prefix) && f.full_disk_access_granted === true) {
+        evidence.push(`${where} is under a location ${systemWord} guards (${PERMISSION_LABELS[f.tcc_guarded_prefix]})`);
+        if (!onWindows && COVERED_BY_FULL_DISK_ACCESS.has(f.tcc_guarded_prefix) && f.full_disk_access_granted === true) {
           evidence.push("Full Disk Access is granted, which covers that location");
           ruledOut.push("macOS permission (Full Disk Access is granted)");
           return verdict("unknown", "unknown", f.tcc_guarded_prefix);
         }
         if (f.full_disk_access_granted === false) evidence.push("Full Disk Access is not granted");
-        return verdict("macos_permission", "confirmed", f.tcc_guarded_prefix);
+        return verdict(permissionCause, "confirmed", f.tcc_guarded_prefix);
       }
-      evidence.push("the path is not under any location macOS is known to guard");
+      evidence.push(`the path is not under any location ${systemWord} is known to guard`);
       return verdict("unknown", "unknown", null);
     }
 
@@ -646,20 +728,20 @@ export function diagnose(f: HostFacts): Diagnosis {
     // path under it — so the location has to speak for itself.
     if (f.probe_withheld && f.tcc_guarded_prefix !== null) {
       evidence.push(`${where} was not opened by ${APP_DISPLAY_NAME} itself: a run or one of its background jobs could rewrite it`);
-      evidence.push(`${where} is under a location macOS guards (${PERMISSION_LABELS[f.tcc_guarded_prefix]})`);
-      if (COVERED_BY_FULL_DISK_ACCESS.has(f.tcc_guarded_prefix) && f.full_disk_access_granted === true) {
+      evidence.push(`${where} is under a location ${systemWord} guards (${PERMISSION_LABELS[f.tcc_guarded_prefix]})`);
+      if (!onWindows && COVERED_BY_FULL_DISK_ACCESS.has(f.tcc_guarded_prefix) && f.full_disk_access_granted === true) {
         return verdict("unknown", "unknown", f.tcc_guarded_prefix);
       }
-      return verdict("macos_permission", "likely", f.tcc_guarded_prefix);
+      return verdict(permissionCause, "likely", f.tcc_guarded_prefix);
     }
 
     // No usable answer from the app's own attempt: fall back to the prefix.
     if (f.tcc_guarded_prefix !== null && f.full_disk_access_granted !== true) {
-      evidence.push(`${where} is under a location macOS guards (${PERMISSION_LABELS[f.tcc_guarded_prefix]}) and Full Disk Access is not granted`);
-      return verdict("macos_permission", "likely", f.tcc_guarded_prefix);
+      evidence.push(`${where} is under a location ${systemWord} guards (${PERMISSION_LABELS[f.tcc_guarded_prefix]}) and Full Disk Access is not granted`);
+      return verdict(permissionCause, "likely", f.tcc_guarded_prefix);
     }
     if (f.ran_sandboxed && (f.sandbox_allows_write === false || f.sandbox_allows_read === false)) {
-      evidence.push("the run's sandbox profile does not allow the path");
+      evidence.push(`${profile} does not allow the path`);
       return verdict("outside_approved_bound", "likely", null);
     }
     return verdict("unknown", "unknown", null);
@@ -672,7 +754,8 @@ export function diagnose(f: HostFacts): Diagnosis {
 
 function retryFor(cause: BlockedCause): Retry {
   switch (cause) {
-    case "macos_permission": return "after_owner_grants";
+    case "macos_permission":
+    case "os_permission": return "after_owner_grants";
     case "prompt_waiting": return "after_owner_answers_prompt";
     case "outside_approved_bound": return "with_declared_path";
     case "posix_permissions":
@@ -693,9 +776,21 @@ export function ownerAction(
   cause: BlockedCause,
   permission: HostPermission | null,
   f: HostFacts,
+  opts: DiagnoseOptions = {},
 ): string | null {
   const app = APP_DISPLAY_NAME;
+  const onWindows = (opts.platform ?? process.platform) === "win32";
   switch (cause) {
+    case "os_permission": {
+      // Controlled Folder Access gates WRITES to the user's folders; reads
+      // are ACLs. Either way the fix is in Windows Security, not in the app.
+      const label = permission === null ? "that folder" : PERMISSION_LABELS[permission];
+      return (
+        `In Windows Security > Virus & threat protection > Ransomware protection, allow ${app} ` +
+        `through Controlled folder access for ${label} — or turn it off for that folder. ` +
+        `If the file itself denies access, fix its ACL (Properties > Security).`
+      );
+    }
     case "macos_permission": {
       if (permission === "automation") {
         const target = f.automation_target ?? "that application";
@@ -726,11 +821,17 @@ export function ownerAction(
         `the owner will see the path in the approval.`
       );
     case "posix_permissions":
-      return `The file's ownership or mode denies the owner's account. Fixing it means chown/chmod at the Mac; there is no switch in System Settings for this.`;
+      return onWindows
+        ? `The file's ACL denies the owner's account. Fixing it means the Security tab in Properties (or icacls); there is no app switch for this.`
+        : `The file's ownership or mode denies the owner's account. Fixing it means chown/chmod at the Mac; there is no switch in System Settings for this.`;
     case "sip_protected":
-      return `System Integrity Protection seals this path on every Mac; nothing can be granted. Use a location under the owner's home instead.`;
+      return onWindows
+        ? `Windows system locations (Windows, Program Files) are writable only elevated; nothing can be granted. Use a location under the owner's profile instead.`
+        : `System Integrity Protection seals this path on every Mac; nothing can be granted. Use a location under the owner's home instead.`;
     case "immutable_file":
-      return `The file is locked (the macOS "Locked" flag). The owner can unlock it in Finder (Get Info > Locked) or with chflags nouchg.`;
+      return onWindows
+        ? `The file is read-only (the read-only attribute). The owner can clear it in Properties or with attrib -r.`
+        : `The file is locked (the macOS "Locked" flag). The owner can unlock it in Finder (Get Info > Locked) or with chflags nouchg.`;
     case "app_refuses_sandboxed_sender": {
       const target = f.automation_target ?? "That application";
       return `${target} refuses this command from any sandboxed process, and every command ${app} runs is sandboxed; no permission in System Settings changes that. The agent can do this through ${app}'s AppleScript tool instead, which runs outside the sandbox.`;

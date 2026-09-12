@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import {
   BROWSING_SKILL,
+  browsingSkillFor,
   CONTACTS_QUERIES,
   contactsSkillFor,
   contactsStorePath,
@@ -61,6 +62,16 @@ describe("SkillRegistry", () => {
     expect(BROWSING_SKILL.body).toContain("fill_secret");
     expect(BROWSING_SKILL.body).toContain("plow_browser_request");
   });
+
+  it("publishes an isolated Windows browser guide", () => {
+    const skill = browsingSkillFor("win32");
+    expect(skill.description).toMatch(/isolated/i);
+    expect(skill.body).toMatch(/empty temporary browser profile/i);
+    expect(skill.body).toMatch(/discarded/i);
+    expect(skill.body).not.toMatch(/\bMac\b|macOS/i);
+    expect(skill.body).not.toMatch(/copy of (their|the owner's) (own )?browser profile/i);
+    expect(skill.body).not.toMatch(/merged back into their profile/i);
+  });
 });
 
 describe("the built-in whatsapp-history skill", () => {
@@ -116,7 +127,9 @@ describe("the built-in whatsapp-history skill", () => {
   // The Plow-side copy shipped from a machine that was not this one, so it had
   // to write /Users/<owner> and hope the reader substituted correctly. Latch
   // knows the answer; that is the whole reason the recipe moved here.
-  it("names this Mac's own store rather than a path the reader must fill in", () => {
+  // macOS content for a macOS skill (registered only where the store
+  // exists): pinned darwin-only.
+  it.skipIf(process.platform !== "darwin")("names this Mac's own store rather than a path the reader must fill in", () => {
     const skill = whatsappSkillFor("/Users/example");
     expect(skill.name).toBe("whatsapp-history");
     expect(skill.body).toContain(
@@ -189,7 +202,7 @@ describe("the built-in imessage skill", () => {
     expect(body).not.toContain('"-e"');
   });
 
-  it("names the store by its resolved absolute path, so no optional argument is load-bearing", () => {
+  it.skipIf(process.platform !== "darwin")("names the store by its resolved absolute path, so no optional argument is load-bearing", () => {
     const skill = imessageSkillFor("/Users/testowner");
     expect(skill.name).toBe("imessage");
     // The recipe used to ride `cwd: "~/Library/Messages"` plus a relative
@@ -266,7 +279,7 @@ describe("the built-in contacts skill", () => {
     }
   });
 
-  it("names the store by its resolved absolute path, so no optional argument is load-bearing", () => {
+  it.skipIf(process.platform !== "darwin")("names the store by its resolved absolute path, so no optional argument is load-bearing", () => {
     const skill = contactsSkillFor("/Users/testowner");
     expect(skill.name).toBe("contacts");
     // Same contract as the imessage skill, and the same reason it changed: a

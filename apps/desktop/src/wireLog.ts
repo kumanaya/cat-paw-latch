@@ -23,6 +23,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { lockdownSecretFile } from "@domo/device-core";
 import { FetchLike } from "./plowApi.js";
 
 /** Past this, the log starts over. It is a rolling account, not an archive. */
@@ -70,6 +71,10 @@ function append(home: string, entry: Record<string, unknown>): void {
       fs.writeFileSync(file, "", { mode: 0o600 });
     }
     fs.appendFileSync(file, JSON.stringify(entry) + "\n", { mode: 0o600 });
+    // Owner-only ACL on Windows. The outer catch swallows a lockdown
+    // failure with the writes: a log that cannot be locked down must not
+    // take the request down with it.
+    lockdownSecretFile(file);
   } catch {
     // A log that cannot be written must not take the request down with it.
   }

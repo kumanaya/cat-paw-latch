@@ -8,7 +8,7 @@
  * seam went with the broker, so nothing in the package can serve any more.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import https from "node:https";
 import os from "node:os";
@@ -20,14 +20,32 @@ import { Connection, WebSocketDialer } from "@domo/transport";
 let dir: string;
 let certPath: string;
 let keyPath: string;
+// The self-signed pair the TLS posture test needs. Made with the openssl
+// CLI (no shell redirection, so this works wherever openssl exists) and
+// skipped where it does not — the posture, not the tool, is under test.
+// Probed at collection: skipIf reads the flag before beforeAll runs.
+function opensslAvailable(): boolean {
+  try {
+    execFileSync("openssl", ["version"], { stdio: "pipe" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+const HAVE_OPENSSL = opensslAvailable();
 
 beforeAll(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-ws-"));
   certPath = path.join(dir, "cert.pem");
   keyPath = path.join(dir, "key.pem");
-  execSync(
-    `openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 ` +
-      `-keyout ${keyPath} -out ${certPath} -days 2 -nodes -subj /CN=127.0.0.1 2>/dev/null`,
+  if (!HAVE_OPENSSL) return;
+  execFileSync(
+    "openssl",
+    [
+      "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+      "-keyout", keyPath, "-out", certPath, "-days", "2", "-nodes", "-subj", "/CN=127.0.0.1",
+    ],
+    { stdio: "pipe" },
   );
 });
 
@@ -65,7 +83,7 @@ function nextLine(conn: Connection): Promise<Buffer> {
 }
 
 describe("WebSocket transport", () => {
-  it("wss:// self-signed is refused by the CA store", async () => {
+  it.skipIf(!HAVE_OPENSSL)("wss:// self-signed is refused by the CA store", async () => {
     const { port, stop } = await echoServer(true);
     try {
       await expect(new WebSocketDialer(`wss://127.0.0.1:${port}/`, 5).connect()).rejects.toThrow(

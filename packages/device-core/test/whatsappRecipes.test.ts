@@ -152,7 +152,10 @@ const cleanup = (d: string): void => {
 afterEach(() => dirs.splice(0).forEach(cleanup));
 afterAll(() => cleanup(storeDir));
 
-describe("the recipes the skill publishes", () => {
+// Built and read through /usr/bin/sqlite3: a mac-machine suite. WhatsApp
+// Desktop exists on Windows, but the skill's store path and fallback argv
+// below are the macOS ones — porting the skill ports this file.
+describe.skipIf(process.platform !== "darwin")("the recipes the skill publishes", () => {
   it("lists chats newest first, and says which are groups", () => {
     const rows = query(store, WHATSAPP_QUERIES.recentChats);
     // chat_id first: it is the key the conversation recipe filters on, and the

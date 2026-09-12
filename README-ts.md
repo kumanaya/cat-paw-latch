@@ -35,6 +35,12 @@ packages/
                                      serves the HTTP exchanges the relay tunnels down the socket
   native-keychain/ @domo/native-keychain  one N-API addon: a generic password in the data-protection
                                      Keychain under our access group (vault master key; optional)
+  native-wincred/ @domo/native-wincred  one N-API addon: a generic credential in Windows Credential
+                                     Manager (vault master key on Windows; optional)
+  native-winsandbox/ @domo/native-winsandbox  one N-API addon: a Job Object per command run
+                                      (kill-on-close + process cap — the Windows seatbelt seat; required)
+  native-fs/ @domo/native-fs  one N-API addon: Windows secret-file ACL lockdown (inherited
+                                      DACL → one protected owner-only ACE; required in the pack)
   native-credential-import/ @domo/native-credential-import  one N-API addon: bridges the app's Swift
                                      shim for macOS 26 credential exchange (Apple Passwords
                                      "Export to Another App…"; optional — docs/CREDENTIAL-EXCHANGE.md)

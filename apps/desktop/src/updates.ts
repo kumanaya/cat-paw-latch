@@ -22,6 +22,15 @@
 
 export type UpdatePhase = "idle" | "checking" | "downloading" | "ready" | "error";
 
+const RELEASE_FEED = "https://s3.us-west-2.amazonaws.com/releases.plow.co/domo";
+
+/** Windows update metadata must be partitioned by CPU: one `latest.yml`
+ * cannot safely point both x64 and ARM64 installs at their own installer. */
+export function platformUpdateFeed(platform: NodeJS.Platform, arch: string): string | null {
+  if (platform !== "win32") return null;
+  return `${RELEASE_FEED}/windows/${arch === "arm64" ? "arm64" : "x64"}`;
+}
+
 export interface UpdateState {
   phase: UpdatePhase;
   /** The version being downloaded / staged, while downloading or ready. */

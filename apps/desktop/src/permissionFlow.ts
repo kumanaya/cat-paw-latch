@@ -29,10 +29,14 @@ import path from "node:path";
  * drag tile and the deep link stands alone.
  */
 export function appBundlePath(execPath: string): string | null {
-  const parts = execPath.split(path.sep);
+  // Bundle paths are macOS paths, parsed the same on every host: split on
+  // both separators (path.sep is `\` on Windows, where these inputs would
+  // otherwise never split) and rejoin mac-style, which is how the drag
+  // tile and the TCC grant name them.
+  const parts = execPath.split(/[\\/]/);
   // The executable lives INSIDE the bundle, so the last component can't be it.
   const i = parts.slice(0, -1).findIndex((p) => p.endsWith(".app") && p !== ".app");
-  return i < 0 ? null : parts.slice(0, i + 1).join(path.sep);
+  return i < 0 ? null : parts.slice(0, i + 1).join("/");
 }
 
 /** Display name for the drag tile: the bundle's basename without ".app". */

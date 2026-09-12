@@ -91,7 +91,9 @@ describe("readCredentialsState", () => {
     expect(readCredentialsState(dir)).toEqual({ status: "ok" });
   });
 
-  it("reports a legacy database with NO account file as locked — the items exist", () => {
+  // The legacy database is built with the macOS sqlite CLI (see
+  // vaultMigrate.test.ts): these two run darwin-only with it.
+  it.skipIf(process.platform !== "darwin")("reports a legacy database with NO account file as locked — the items exist", () => {
     const dir = tempDir();
     // A real database with a real account row: the evidence rule wants a
     // user in it, not merely the file (the old server created the file at
@@ -102,7 +104,7 @@ describe("readCredentialsState", () => {
     expect(readCredentialsState(dir)).toEqual({ status: "locked", reason: "undecryptable" });
   });
 
-  it("reports an empty pre-account database as a fresh vault, not locked", () => {
+  it.skipIf(process.platform !== "darwin")("reports an empty pre-account database as a fresh vault, not locked", () => {
     const dir = tempDir();
     execFileSync("/usr/bin/sqlite3", [path.join(dir, "db.sqlite3")], {
       input: "CREATE TABLE users (uuid TEXT, akey TEXT);",

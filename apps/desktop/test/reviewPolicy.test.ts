@@ -253,7 +253,7 @@ describe("decideIntent — modes that never reach the reviewer", () => {
  * Pinned against the REAL `PolicyEngine` with a real rule on disk. A fake
  * engine here would only assert that the test agrees with itself.
  */
-describe("a stored rule cannot stand in for a required review", () => {
+describe.skipIf(process.platform === "win32")("a stored rule cannot stand in for a required review", () => {
   let rulesDir: string;
   let engine: PolicyEngine;
 
@@ -379,6 +379,52 @@ describe("a stored rule cannot stand in for a required review", () => {
     });
 
     expect(grant.source).toBe("rule");
+  });
+});
+
+describe.skipIf(process.platform !== "win32")("Windows never persists a sensitive approval", () => {
+  it("returns this browser approval but leaves no rule capable of replaying it", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-windows-rules-"));
+    try {
+      const engine = new PolicyEngine(path.join(dir, "rules.json"));
+      const grant = await engine.decide(intent(), {
+        decideIntent: async () => "always_allow" as const,
+      });
+      expect(grant.decision).toBe("always_allow");
+      expect(engine.allRules()).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Windows migrates old sensitive standing rules", () => {
+  it("disables, persists, and never replays a pre-presence browser rule", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-windows-rule-migration-"));
+    try {
+      const file = path.join(dir, "rules.json");
+      const original = new PolicyEngine(file, "darwin");
+      await original.decide(intent(), { decideIntent: async () => "always_allow" as const });
+
+      const migrated = new PolicyEngine(file, "win32");
+      expect(migrated.allRules()).toMatchObject([{ disabled: true, disabledReason: "windows_sensitive_capability" }]);
+      expect(migrated.migratedDisabledRules()).toHaveLength(1);
+      expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject([{ disabled: true }]);
+
+      const delegate: { calls: number; decideIntent: () => Promise<"allow_once"> } = { calls: 0, decideIntent: async () => {
+        delegate.calls += 1;
+        return "allow_once" as const;
+      } };
+      const grant = await migrated.decide(intent(), delegate);
+      expect(grant.source).not.toBe("rule");
+      expect(delegate.calls).toBe(1);
+
+      const restarted = new PolicyEngine(file, "win32");
+      expect(restarted.migratedDisabledRules()).toEqual([]);
+      expect(restarted.allRules()).toMatchObject([{ disabled: true }]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
