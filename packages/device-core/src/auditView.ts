@@ -28,13 +28,13 @@ function hostGateLabel(ev: ReturnType<typeof jv>): string {
   const permission = ev.get("permission").str;
   switch (cause) {
     case "macos_permission": return `needs a macOS permission${permission ? ` (${permissionWords(permission)})` : ""}`;
-    case "prompt_waiting": return "a permission dialog is waiting on this Mac";
+    case "prompt_waiting": return "a permission dialog is waiting on this Desktop";
     case "outside_approved_bound": return "outside the approved paths";
     case "posix_permissions": return "file permissions";
     case "sip_protected": return "protected by macOS";
     case "immutable_file": return "locked file";
     case "app_refuses_sandboxed_sender": return "refused by the app for a sandboxed sender";
-    default: return "blocked by this Mac";
+    default: return "blocked by this Desktop";
   }
 }
 
@@ -53,7 +53,7 @@ function hostGateShort(ev: ReturnType<typeof jv>): string {
     case "sip_protected": return "protected by macOS";
     case "immutable_file": return "locked file";
     case "app_refuses_sandboxed_sender": return "app refuses sandboxed senders";
-    default: return "by this Mac";
+    default: return "by this Desktop";
   }
 }
 
@@ -748,7 +748,7 @@ function describeStep(e: JSONValue): AuditStep {
       } else if (outcome === "no_match") {
         text = "Activation session cleanup skipped — no matching session";
       } else if (outcome === "no_credential") {
-        text = "Activation session cleanup skipped — this Mac is not signed in";
+        text = "Activation session cleanup skipped — this Desktop is not signed in";
       } else {
         text = "Activation session cleanup skipped";
       }
@@ -826,7 +826,7 @@ function describeStep(e: JSONValue): AuditStep {
       const confidence = ev.get("confidence").str;
       const action = ev.get("owner_action").str;
       text =
-        `This Mac refused${path ? ` ${path}` : ""}: ${hostGateLabel(ev)}` +
+        `This Desktop refused${path ? ` ${path}` : ""}: ${hostGateLabel(ev)}` +
         `${confidence === "likely" ? " (probably)" : ""}` +
         `${action ? ` — ${action}` : ""}`;
       state = "bad";
@@ -840,7 +840,7 @@ function describeStep(e: JSONValue): AuditStep {
     }
     case "host_permission_observed": {
       const permission = ev.get("permission").str;
-      text = `${permission ? permissionWords(permission) : "A switch"} is ${ev.get("status").str ?? "known"}: this Mac got through it.`;
+      text = `${permission ? permissionWords(permission) : "A switch"} is ${ev.get("status").str ?? "known"}: this Desktop got through it.`;
       state = "ok";
       break;
     }

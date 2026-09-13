@@ -867,7 +867,7 @@ export async function renderVault(view, isCurrent = () => true) {
     el("div", {}, [
       el("h2", { text: "Browser Vault" }),
       el("p", { class: "trust" }, [
-        el("span", { text: "Logins, credit cards, identities and notes your agents may need while working in the browser. When an agent needs one, this Mac fills it in for them. The values never leave this Mac." }),
+        el("span", { text: "Logins, credit cards, identities and notes your agents may need while working in the browser. When an agent needs one, this Desktop fills it in for them. The values never leave this Desktop." }),
       ]),
     ]),
   ]);
@@ -907,7 +907,7 @@ export async function renderVault(view, isCurrent = () => true) {
     const locked = !!(items && items.locked);
     pane.replaceChildren(masthead, el("div", { class: "col" }, [
       el("div", { class: "empty", text: locked
-        ? "This Mac can't unlock its vault."
+        ? "This Desktop can't unlock its vault."
         : "The vault isn't available in this build." }),
       // No invented recovery, and no asserting a cause the code cannot tell
       // apart: `undecryptable` is one answer covering a Keychain key that is
@@ -918,7 +918,7 @@ export async function renderVault(view, isCurrent = () => true) {
       locked
         ? el("p", { class: "use-note", text: items.reason === "no-storage"
             ? "The vault's key is sealed for the app's secure storage, which this build doesn't have. Nothing is lost; a build with secure storage will open it."
-            : "The vault's key can't be opened. Usually the key is no longer in this Mac's Keychain — after a Keychain reset or a restore from backup — and it can also mean the key file, or an old vault's account file, is damaged or missing. Either way the key can't be recovered, here or anywhere: the vault would have to be set up again. Nothing has been deleted." })
+            : "The vault's key can't be opened. Usually the key is no longer in this Desktop's secure store — after a keychain or keyring reset, or a restore from backup — and it can also mean the key file, or an old vault's account file, is damaged or missing. Either way the key can't be recovered, here or anywhere: the vault would have to be set up again. Nothing has been deleted." })
         : null,
     ].filter(Boolean)));
     return;

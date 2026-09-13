@@ -1262,7 +1262,7 @@ describe("CloudChatsClient", () => {
 
     await expect(client.list(CREDENTIAL)).rejects.toMatchObject({
       kind: "forbidden",
-      message: "This Mac cannot list chats yet. Try re-activating it, then try again.",
+      message: "This Desktop cannot list chats yet. Try re-activating it, then try again.",
     });
   });
 });

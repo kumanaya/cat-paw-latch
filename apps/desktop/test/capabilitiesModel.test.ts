@@ -119,7 +119,7 @@ describe("capabilitiesView", () => {
   it("shows the folders only while Full Disk Access is off, and the queryable services always", () => {
     const off = capabilitiesView(input());
     const files = off.sections.find((s) => s.key === "mac")!;
-    expect(files.title).toBe("This Mac");
+    expect(files.title).toBe("This Desktop");
     expect(files.rows.map((r) => r.key)).toEqual([
       "full_disk_access", "files_desktop", "files_documents", "files_downloads", "contacts", "calendars", "accessibility",
       ...AUTOMATION_APPS.map((a) => `automation:${a.bundleId}`),

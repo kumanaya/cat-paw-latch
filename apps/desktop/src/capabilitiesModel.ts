@@ -484,10 +484,10 @@ export function capabilitiesView(input: CapabilitiesInput): CapabilitiesView {
   const sections: CapabilitySection[] = [
     {
       key: "mac",
-      title: "This Mac",
+      title: "This Desktop",
       description:
-        "What macOS lets Plow Latch reach on your behalf, and which apps agents may drive. Grant these ahead of " +
-        "time: otherwise an agent's first request waits on a macOS dialog, which only someone at this Mac can answer.",
+        "What this Desktop lets Plow Latch reach on your behalf, and which apps agents may drive. Grant these ahead of " +
+        "time: otherwise an agent's first request waits on a system dialog, which only someone at this Desktop can answer.",
       items,
       rows: [...macRows, ...yourself],
     },

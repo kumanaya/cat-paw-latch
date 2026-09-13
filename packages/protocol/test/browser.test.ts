@@ -132,7 +132,7 @@ describe("capabilityDisplay", () => {
 
   it("credential names the items it may fill", () => {
     expect(capabilityDisplay({ kind: "credential", access: "fill", items: ["a1", "b2"] })).toBe(
-      "Credentials: fill a1, b2 into approved sites (typed on this Mac; the agent can see the page it types into)",
+      "Credentials: fill a1, b2 into approved sites (typed on this Desktop; the agent can see the page it types into)",
     );
   });
 });

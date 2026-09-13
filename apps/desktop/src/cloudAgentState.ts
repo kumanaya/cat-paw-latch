@@ -445,7 +445,7 @@ export class CloudAgentState {
     }
     const credential = this.credential();
     if (!credential) {
-      this.setLineFlowError("create", "This Mac isn't signed in yet.", false);
+      this.setLineFlowError("create", "This Desktop isn't signed in yet.", false);
       return null;
     }
 
@@ -487,7 +487,7 @@ export class CloudAgentState {
       return null;
     }
     if (!this.credential()) {
-      this.setLineFlowError("change", "This Mac isn't signed in yet.", false);
+      this.setLineFlowError("change", "This Desktop isn't signed in yet.", false);
       return null;
     }
 
@@ -504,7 +504,7 @@ export class CloudAgentState {
     const retained = this.retainedCreates.get(id);
     if (!retained || retained.lineUid === null || this.rows.get(id)?.status !== "failed") return null;
     const credential = this.credential();
-    if (!credential) return this.failAction("This Mac isn't signed in yet.");
+    if (!credential) return this.failAction("This Desktop isn't signed in yet.");
     this.actionError = null;
     return this.provision({ ...retained, lineUid: retained.lineUid }, this.generation, null);
   }
@@ -958,7 +958,7 @@ export class CloudAgentState {
     if (!id) return;
     const credential = this.credential();
     if (!credential) {
-      this.failAction("This Mac isn't signed in yet.");
+      this.failAction("This Desktop isn't signed in yet.");
       return;
     }
 
@@ -1398,7 +1398,7 @@ export class CloudChatsClient implements CloudChatsApi {
       // token was refused, and re-activating is the move either way.
       throw new PlowApiError(
         "forbidden",
-        "This Mac cannot list chats yet. Try re-activating it, then try again.",
+        "This Desktop cannot list chats yet. Try re-activating it, then try again.",
         403,
       );
     }

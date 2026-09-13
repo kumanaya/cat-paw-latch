@@ -727,7 +727,7 @@ async function signOutThisMac(): Promise<void> {
   await startRelay();
   if (!(await revoking)) {
     onboarding?.showMessage(
-      "Signed out on this Mac. Plow could not be reached to revoke the session — revoke it in Plow's account settings.",
+      "Signed out on this Desktop. Plow could not be reached to revoke the session — revoke it in Plow's account settings.",
     );
   }
 }
@@ -2600,7 +2600,7 @@ function noteHostGateBlock(fields: { [k: string]: unknown }): void {
   const notification = new Notification({
     title: permission
       ? `Plow Latch needs ${PERMISSION_LABELS[permission as keyof typeof PERMISSION_LABELS] ?? permission}`
-      : "Plow Latch was blocked by this Mac",
+      : "Plow Latch was blocked by this Desktop",
     body: ownerAction ?? "An agent's approved request was refused by macOS. Open Capabilities for details.",
   });
   // The click navigates from THIS block, not from whatever the attention
@@ -2683,7 +2683,7 @@ function refreshTray(): void {
           {
             label: hostGateAttention.permission
               ? `Needs ${PERMISSION_LABELS[hostGateAttention.permission as keyof typeof PERMISSION_LABELS] ?? hostGateAttention.permission}…`
-              : "An agent was blocked by this Mac…",
+              : "An agent was blocked by this Desktop…",
             click: () => showCapabilitiesForHostGate(),
           },
         ]
@@ -2867,6 +2867,6 @@ function hostName(): string {
   try {
     return os.hostname();
   } catch {
-    return "Mac";
+    return "Desktop";
   }
 }

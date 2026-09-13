@@ -9,7 +9,7 @@ import { Capability, RuleKey, capabilityDisplay } from "@domo/protocol";
 describe("capabilityDisplay", () => {
   it("displays apple_events", () => {
     expect(capabilityDisplay({ kind: "apple_events", allowed: true }))
-      .toBe("Apple events: may control this Mac's apps");
+      .toBe("Apple events: may control this Desktop's apps");
   });
 });
 

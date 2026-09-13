@@ -172,7 +172,7 @@ export class Connectors {
 
     const credential = this.deps.credential().trim();
     if (!credential) {
-      this.notice = { message: "This Mac isn't signed in yet.", noteKind: "error" };
+      this.notice = { message: "This Desktop isn't signed in yet.", noteKind: "error" };
       return this.publish();
     }
 

@@ -63,7 +63,7 @@ async function render() {
     root.replaceChildren(
       el("div", { class: "who" }, [el("span", { class: "name", text: req.agentDisplay })]),
       el("div", { class: "faint mono", text: req.agentId }),
-      el("div", { class: "goal", text: "wants access to this Mac" }),
+      el("div", { class: "goal", text: "wants access to this Desktop" }),
       el("div", { class: "fine" }, [
         el("div", { class: "lbl", text: "Stated goals (unverified)" }),
         el("div", { text: req.goals || "—" }),

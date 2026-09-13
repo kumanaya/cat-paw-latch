@@ -134,7 +134,7 @@ function welcomeScreen() {
     el("h1", { text: "Plow Latch" }),
     el("p", {
       class: "welcome-lead",
-      text: "The privacy and security layer for agents. Plow Latch lives on your Mac, so nothing you don't want to share ever leaves your computer.",
+      text: "The privacy and security layer for agents. Plow Latch lives on your Desktop, so nothing you don't want to share ever leaves your computer.",
     }),
     note(state),
   ]);
@@ -142,8 +142,8 @@ function welcomeScreen() {
 
 const TRUST_ROWS = [
   {
-    title: "Data stays on your Mac",
-    detail: "Your messages, calendar, and logins live on your Mac and reach an agent only through actions you approve.",
+    title: "Data stays on your Desktop",
+    detail: "Your messages, calendar, and logins live on your Desktop and reach an agent only through actions you approve.",
     glyph: "desktop",
   },
   {
@@ -247,7 +247,7 @@ function startActivationCountdown(node, until) {
 function verifyScreen() {
   const activation = state.activation;
   const verified = state.step === "verified";
-  const heading = [el("h1", { text: "Verify your phone to connect this Mac" })];
+  const heading = [el("h1", { text: "Verify your phone to connect this Desktop" })];
   if (activation || !verified) {
     heading.push(el("p", {
       class: "subhead",
@@ -292,7 +292,7 @@ function verifyScreen() {
       el("span", {
         class: "status-text",
         text: verified
-          ? "Verified. This Mac is linked."
+          ? "Verified. This Desktop is linked."
           : state.activationStale
             ? "Still not signed in"
             : "Waiting for your text…",
@@ -416,7 +416,7 @@ function availabilityScreen() {
     attrs: { id: "launch-toggle", type: "checkbox", "aria-label": "Open Plow Latch when you log in" },
   });
   const awakeBox = el("input", {
-    attrs: { id: "awake-toggle", type: "checkbox", "aria-label": "Keep this Mac awake while plugged in" },
+    attrs: { id: "awake-toggle", type: "checkbox", "aria-label": "Keep this Desktop awake while plugged in" },
   });
   const launchNote = el("p", {
     class: "toggle-note",
@@ -445,22 +445,22 @@ function availabilityScreen() {
   return el("div", { class: "data-screen availability-screen" }, [
     el("div", { class: "step-inner" }, [
       el("div", { class: "head-center" }, [
-        el("h1", { text: "Keep this Mac reachable" }),
+        el("h1", { text: "Keep this Desktop reachable" }),
         el("p", {
           class: "subhead",
-          text: "Your agents work through this Mac. When it's off, asleep, or Plow Latch isn't running, they can't reach your email, calendar, messages, or browser — they'll wait until it's back.",
+          text: "Your agents work through this Desktop. When it's off, asleep, or Plow Latch isn't running, they can't reach your email, calendar, messages, or browser — they'll wait until it's back.",
         }),
       ]),
       el("div", { class: "data-consent" }, [
         toggleRow(
           launchBox,
           "Open Plow Latch when you log in. ",
-          "A restart won't take this Mac off the roster.",
+          "A restart won't take this Desktop off the roster.",
           [launchNote],
         ),
         toggleRow(
           awakeBox,
-          "Keep this Mac awake while plugged in. ",
+          "Keep this Desktop awake while plugged in. ",
           "Prevents idle and display sleep on power. On battery it sleeps normally, and closing the lid still sleeps it.",
         ),
       ]),
@@ -531,7 +531,7 @@ function dataScreen() {
             ]),
             el("span", {
               class: "permission-detail",
-              text: "Plow Latch reads your Messages right on your Mac, so you never miss the texts that matter. Apple keeps Messages behind this permission. Only what you approve an agent to read is ever sent to it.",
+              text: "Plow Latch reads your Messages right on your Desktop, so you never miss the texts that matter. Apple keeps Messages behind this permission. Only what you approve an agent to read is ever sent to it.",
             }),
           ]),
           el("span", { class: "permission-control" }, [permissionControl]),

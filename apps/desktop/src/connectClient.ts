@@ -195,7 +195,7 @@ export class ConnectClient {
     );
     if (!row) return this.failAction("That row is no longer on this screen.");
     const credential = this.settings().relayCredential.trim();
-    if (!credential) return this.failAction("This Mac isn't signed in yet.");
+    if (!credential) return this.failAction("This Desktop isn't signed in yet.");
 
     const generation = this.generation;
     try {
@@ -241,9 +241,9 @@ export class ConnectClient {
     const trimmed = (name ?? "").trim();
     if (!trimmed) return this.fail("Give this connection a name.");
     const settings = this.settings();
-    if (!settings.relayCredential.trim()) return this.fail("This Mac isn't signed in yet.");
+    if (!settings.relayCredential.trim()) return this.fail("This Desktop isn't signed in yet.");
     const relayResourceUid = (this.deps.deviceUid() ?? "").trim();
-    if (!relayResourceUid) return this.fail("This Mac isn't registered with Plow yet. Try again in a moment.");
+    if (!relayResourceUid) return this.fail("This Desktop isn't registered with Plow yet. Try again in a moment.");
 
     const generation = this.generation;
     const flightId = ++this.flights;

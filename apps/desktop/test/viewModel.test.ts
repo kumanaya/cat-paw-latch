@@ -333,7 +333,7 @@ describe("auditActivities (grouping)", () => {
     ],
     [
       { outcome: "no_credential" },
-      { status: "Skipped", tone: "zinc", statusKind: "none", step: "Activation session cleanup skipped — this Mac is not signed in", state: "neutral" },
+      { status: "Skipped", tone: "zinc", statusKind: "none", step: "Activation session cleanup skipped — this Desktop is not signed in", state: "neutral" },
     ],
   ])("renders activation-session cleanup outcome %#", (fields, expected) => {
     const [activity] = auditActivities([{
@@ -452,7 +452,7 @@ describe("auditActivities (grouping)", () => {
     const recovered = run("prompt_waiting");
     expect(recovered.status).toBe("Completed");
     expect(recovered.statusKind).toBe("completed");
-    expect(recovered.timeline.some((s) => s.text.startsWith("This Mac refused"))).toBe(true);
+    expect(recovered.timeline.some((s) => s.text.startsWith("This Desktop refused"))).toBe(true);
     // Answered, resumed, and then failed for a reason of its own: the exit
     // is the outcome, not the dialog that is gone.
     const failed = auditActivities([
@@ -520,7 +520,7 @@ describe("auditActivities (grouping)", () => {
     expect(run.statusKind).toBe("blocked");
     expect(run.exitCode).toBe(1);
     expect(run.timeline.map((s) => s.text)).toContain(
-      `This Mac refused ~/Library/Messages/chat.db: needs a macOS permission (Full Disk Access) — ${action}`,
+      `This Desktop refused ~/Library/Messages/chat.db: needs a macOS permission (Full Disk Access) — ${action}`,
     );
     expect(file.decision).toBe("Always allowed");
     expect(file.status).toBe("Blocked · dialog waiting");

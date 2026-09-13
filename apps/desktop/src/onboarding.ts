@@ -461,7 +461,7 @@ export class Onboarding {
         // spent. Dropping the secret is what lets "Try Again" mint.
         this.cancelPolling();
         this.activationSecret = null;
-        this.stall("Plow verified this Mac but didn't hand back a login. Try again for a fresh code.");
+        this.stall("Plow verified this Desktop but didn't hand back a login. Try again for a fresh code.");
         this.publish();
         return;
       }

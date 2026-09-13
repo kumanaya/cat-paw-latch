@@ -77,14 +77,14 @@ export function capabilityDisplay(c: Capability): string {
       return c.allowed ? "Network: allowed" : "Network: denied";
     case "apple_events":
       return c.allowed
-        ? "Apple events: may control this Mac's apps"
+        ? "Apple events: may control this Desktop's apps"
         : "Apple events: denied";
     case "tool":
       return `Tool: ${c.tool ?? "?"}`;
     case "browser":
       return `Browse: ${(c.origins ?? []).join(", ")}`;
     case "credential":
-      return `Credentials: fill ${(c.items ?? []).join(", ")} into approved sites (typed on this Mac; the agent can see the page it types into)`;
+      return `Credentials: fill ${(c.items ?? []).join(", ")} into approved sites (typed on this Desktop; the agent can see the page it types into)`;
     case "applescript":
       return (
         `Script ${c.app ?? "?"} (${c.bundleId ?? "?"}): ${c.script ?? ""}` +

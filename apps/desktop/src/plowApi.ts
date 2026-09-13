@@ -636,7 +636,7 @@ export class PlowApi {
     if (
       data.device_id !== deviceId || typeof data.mcp_url !== "string"
     ) {
-      throw new PlowApiError("http", "Plow did not register this Mac correctly.");
+      throw new PlowApiError("http", "Plow did not register this Desktop correctly.");
     }
     return {
       mcpUrl: data.mcp_url,
