@@ -37,6 +37,10 @@ const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 function fetchProvider(provider) {
   const { command, version } = provider;
   const arches = providerArches(provider);
+  if (Object.keys(arches).length === 0) {
+    console.log(`vendor/${PROVIDER_ROOT}/${command}: no ${process.platform} assets`);
+    return;
+  }
   if (isStaged(provider, repoRoot)) {
     console.log(`vendor/${PROVIDER_ROOT}/${command} is already at ${version}`);
     return;
@@ -48,7 +52,7 @@ function fetchProvider(provider) {
   // `just package` with it, on a supported build host for a perfectly good pin.
   if (!arches[process.arch]) {
     throw new Error(
-      `no pinned ${command} for ${process.arch} — this fetches darwin ` +
+      `no pinned ${command} for ${process.platform}/${process.arch} — this fetches ` +
         `${Object.keys(arches).join("/")} only`,
     );
   }
@@ -67,9 +71,20 @@ function fetchProvider(provider) {
 
       const dest = path.join(repoRoot, "vendor", PROVIDER_ROOT, command, arch);
       mkdirSync(dest, { recursive: true });
+      // List first: GNU tar rejects a member named `gog` when the archive
+      // stores `./gog`. Extracting the whole (tiny) archive after refusing
+      // absolute/`..` paths is the same on BSD and GNU tar.
+      const listing = execFileSync(
+        "tar",
+        [process.platform === "win32" ? "tf" : "tzf", tarball],
+        { encoding: "utf8" },
+      );
+      if (listing.split(/\r?\n/).some((entry) => path.isAbsolute(entry) || entry.split(/[\\/]+/).includes(".."))) {
+        throw new Error(`${command} ${asset}: archive contains an unsafe path`);
+      }
       execFileSync(
         "tar",
-        [process.platform === "win32" ? "xf" : "xzf", tarball, "-C", dest, file ?? stagedFileName(provider)],
+        [process.platform === "win32" ? "xf" : "xzf", tarball, "-C", dest],
         { stdio: "inherit" },
       );
       // The same check the skip makes, at the one moment the alternative is

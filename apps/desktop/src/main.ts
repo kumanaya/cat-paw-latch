@@ -48,7 +48,10 @@ import {
   totpCode,
   VaultItemInput,
   WindowsPresenceGate,
+  LinuxPresenceGate,
   PresencePolicy,
+  type PresenceGate,
+  type PresenceReason,
 } from "@domo/device-core";
 import { createDomoMcpServer, DomoMcpServer } from "@domo/mcp-server";
 import { RelayClient } from "@domo/relay-client";
@@ -241,7 +244,7 @@ let relay: RelayClient | null = null;
 // This is presence state only, never vault key material.  It is shared by the
 // approval policy and the vault so every workstation lifecycle event revokes
 // both uses even when this device has no vault client.
-let windowsPresence: WindowsPresenceGate | null = null;
+let ownerPresence: PresenceGate | null = null;
 let onboarding: Onboarding | null = null;
 let connectors: Connectors | null = null;
 let connectClient: ConnectClient | null = null;
@@ -255,8 +258,8 @@ let onboardingWindowReady: BrowserWindow | null = null;
 let updates: UpdateController | null = null;
 let telemetry: Telemetry | null = null;
 
-function lockWindowsPresence(): void {
-  windowsPresence?.lock();
+function lockOwnerPresence(): void {
+  ownerPresence?.lock();
   // They normally point at the same gate. Keep the vault call as a defensive
   // invariant if a future vault implementation owns a separate gate.
   device?.vaultClient?.presence.lock();
@@ -529,7 +532,7 @@ function createMainWindow(): void {
   const win = mainWindow;
   // On Windows this is emitted for logoff, restart and force shutdown. It can
   // bypass the ordinary app quit sequence, so drop presence synchronously.
-  win.on("session-end", lockWindowsPresence);
+  win.on("session-end", lockOwnerPresence);
   const persist = () => {
     if (win.isDestroyed()) return;
     const b = win.getBounds();
@@ -2078,10 +2081,24 @@ app.whenReady().then(async () => {
   // asked, so a pending approval is a record on disk rather than only a promise
   // in memory. It also bounds the wait: an approval nobody answers expires and
   // fails closed instead of pending forever.
-  windowsPresence = process.platform === "win32" ? new WindowsPresenceGate() : null;
+  ownerPresence =
+    process.platform === "win32" ? new WindowsPresenceGate()
+    : process.platform === "linux"
+      ? new LinuxPresenceGate(async (reason: PresenceReason) => {
+          const { response } = await dialog.showMessageBox({
+            type: "question",
+            buttons: ["Cancel", "Continue"],
+            defaultId: 1,
+            cancelId: 0,
+            message: reason === "vault" ? "Unlock Plow Latch vault?" : "Approve this Plow Latch action?",
+            detail: "Confirm you are at this computer.",
+          });
+          return response === 1;
+        })
+      : null;
   approvals = new ApprovalStore(
     path.join(home, "device/approvals"),
-    windowsPresence ? new PresencePolicy(new ElectronPolicy(), windowsPresence) : new ElectronPolicy(),
+    ownerPresence ? new PresencePolicy(new ElectronPolicy(), ownerPresence) : new ElectronPolicy(),
   );
   // A vaultwarden orphaned by a hard quit of a PRE-cutover build outlives its
   // app: it was launched detached, and nothing in this build knows it exists —
@@ -2131,11 +2148,11 @@ app.whenReady().then(async () => {
   // unlock-screen fire on Windows and macOS alike; the device owns the
   // events, this owns the subscription.
   powerMonitor.on("lock-screen", () => {
-    lockWindowsPresence();
+    lockOwnerPresence();
     device?.workstationSessionChanged(true);
   });
   powerMonitor.on("suspend", () => {
-    lockWindowsPresence();
+    lockOwnerPresence();
     device?.workstationSessionChanged(true);
   });
   powerMonitor.on("unlock-screen", () => device?.workstationSessionChanged(false));
@@ -2165,9 +2182,11 @@ app.whenReady().then(async () => {
   // the keyboard instead, and refuses when it cannot.
   if (device.vaultClient) {
     const vaultClient = device.vaultClient;
-    if (windowsPresence) vaultClient.presence = windowsPresence;
+    if (ownerPresence) vaultClient.presence = ownerPresence;
     vaultClient.onReprompt = async () => {
-      if (process.platform === "win32") return vaultClient.presence.verify("vault");
+      if (process.platform === "win32" || process.platform === "linux") {
+        return vaultClient.presence.verify("vault");
+      }
       if (!systemPreferences.canPromptTouchID()) return false;
       try {
         await systemPreferences.promptTouchID("show a vault item that asks for you");
@@ -2305,9 +2324,10 @@ app.whenReady().then(async () => {
     if (simulate) console.log(`[updates] SIMULATED updater active (${simulate}) — not a real update`);
     // Testing seam: point a packaged build at a feed that isn't production —
     // `just serve-updates` + DOMO_UPDATE_FEED_URL=http://127.0.0.1:8043 is the
-    // whole local update loop. Windows otherwise uses one signed feed per CPU;
-    // macOS keeps electron-builder's universal default. A hostile feed can
-    // offer nothing an updater with signature verification enabled will install.
+    // whole local update loop. Windows and Linux otherwise use one signed
+    // feed per CPU; macOS keeps electron-builder's universal default. A
+    // hostile feed can offer nothing an updater with signature verification
+    // enabled will install.
     const feedOverride = (process.env.DOMO_UPDATE_FEED_URL ?? "").trim();
     const feedUrl = feedOverride || platformUpdateFeed(process.platform, process.arch);
     if (feedUrl && !simulate) {
@@ -2497,7 +2517,7 @@ let cleanedUp = false;
 app.on("before-quit", (event) => {
   // A clean quit must not leave a successful Hello/password assertion live
   // while asynchronous browser and relay teardown is still running.
-  lockWindowsPresence();
+  lockOwnerPresence();
   // The only quit that goes through is the one this handler asks for, once the
   // browsers are down and their profiles are back where they belong. Everybody
   // else waits — including somebody hitting Quit again because the first one

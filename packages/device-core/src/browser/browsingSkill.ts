@@ -190,26 +190,27 @@ fill_secret each card field → confirm → screenshot the confirmation → plow
  * never receive.
  */
 export function browsingSkillFor(platform: NodeJS.Platform = process.platform): Skill {
-  if (platform !== "win32") return BROWSING_SKILL;
+  if (platform !== "win32" && platform !== "linux") return BROWSING_SKILL;
 
+  const host = platform === "linux" ? "Linux PC" : "Windows PC";
   const description =
-    "Browse websites on this Windows PC with an isolated Camoufox session. It uses the " +
+    `Browse websites on this ${host} with an isolated Camoufox session. It uses the ` +
     "owner's local network, but has an empty temporary profile: it cannot read the owner's " +
-    "browser profile, Windows credentials, Latch vault, downloads, or history. A vault item " +
+    "browser profile, OS credentials, Latch vault, downloads, or history. A vault item " +
     "is typed into an approved page only after local-owner approval; its value is never returned to you.";
   const isolatedProfile =
-    "**Each Windows session starts with a new, empty temporary browser profile.** It is not " +
-    "a copy of the owner's browser and has no cookies, logins, downloads, history, Windows " +
+    `**Each ${host} session starts with a new, empty temporary browser profile.** It is not ` +
+    "a copy of the owner's browser and has no cookies, logins, downloads, history, OS " +
     "credentials, or direct vault access. When the session closes, its profile and downloads are " +
     "discarded. If a page needs a secret, ask for the specific vault item with " +
     "`plow_browser_request`, then use `fill_secret`; the value is typed locally and is never " +
     "returned to you. Do not ask the owner to paste a secret into chat.";
   const body = BROWSING_SKILL.body
-    .replaceAll("this Mac", "this Windows PC")
-    .replaceAll("This Mac", "This Windows PC")
-    .replaceAll("the Mac", "this Windows PC")
-    .replaceAll("on the Mac", "on this Windows PC")
-    .replaceAll("Mac is", "Windows PC is")
+    .replaceAll("this Mac", `this ${host}`)
+    .replaceAll("This Mac", `This ${host}`)
+    .replaceAll("the Mac", `this ${host}`)
+    .replaceAll("on the Mac", `on this ${host}`)
+    .replaceAll("Mac is", `${host} is`)
     .replace(
       /\*\*You are the user, already signed in\.\*\*[\s\S]*?When you do have to sign in, use `fill_secret`\./,
       isolatedProfile,

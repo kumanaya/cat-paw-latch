@@ -35,6 +35,8 @@ import {
   tildeRelative,
   windowsGuardedPrefix,
   windowsSystemProtected,
+  linuxGuardedPrefix,
+  linuxSystemProtected,
 } from "@domo/device-core";
 
 const cleanups: (() => void)[] = [];
@@ -1047,7 +1049,8 @@ describe("Windows gates — the CFA/ACL/system table and its verdicts", () => {
     expect(sandboxKindFor("win32", true)).toBe("job");
     expect(sandboxKindFor("darwin", true)).toBe("seatbelt");
     expect(sandboxKindFor("darwin", false)).toBe("none");
-    expect(sandboxKindFor("linux", true)).toBe("none");
+    expect(sandboxKindFor("linux", true)).toBe("bwrap");
+    expect(sandboxKindFor("linux", false)).toBe("none");
     // The kind rides beside ran_sandboxed into the tool result and the
     // audit line, so neither reader can mistake a Job for file confinement.
     const f = facts({ ran_sandboxed: true, sandbox_kind: "job" });
@@ -1072,5 +1075,57 @@ describe("Windows gates — the CFA/ACL/system table and its verdicts", () => {
     expect(f.tcc_guarded_prefix).toBeNull();
     // The shared slot carries the Windows answer too, once judged as Windows.
     expect(diagnose(f, { platform: "win32" }).cause).toBe("unknown");
+  });
+});
+
+describe("Linux gates — bwrap kind and approval wording", () => {
+  it("names the approval bound under bwrap, never a seatbelt profile", () => {
+    const d = diagnose(
+      facts({
+        op: "exec",
+        errno: "EPERM",
+        path: "/home/x/Documents/a.txt",
+        path_exists: true,
+        ran_sandboxed: true,
+        sandbox_kind: "bwrap",
+        app_process_open: "ok",
+        sandbox_allows_read: true,
+        sandbox_allows_write: false,
+        path_approved: false,
+      }),
+      { platform: "linux" },
+    );
+    expect(d.cause).toBe("outside_approved_bound");
+    const text = d.evidence.join("\n");
+    expect(text).toMatch(/not among the paths approved for this run/);
+    expect(text).not.toMatch(/sandbox profile/);
+  });
+
+  it("maps XDG user folders and system roots on Linux", () => {
+    const home = "/home/owner";
+    expect(linuxGuardedPrefix(`${home}/Desktop/a.txt`, home)).toBe("files_desktop");
+    expect(linuxGuardedPrefix(`${home}/Documents/a.txt`, home)).toBe("files_documents");
+    expect(linuxGuardedPrefix(`${home}/Downloads/a.txt`, home)).toBe("files_downloads");
+    expect(linuxGuardedPrefix(`${home}/Pictures/a.txt`, home)).toBeNull();
+    expect(linuxSystemProtected("/etc/passwd")).toBe(true);
+    expect(linuxSystemProtected("/usr/bin/true")).toBe(true);
+    expect(linuxSystemProtected(`${home}/file.txt`)).toBe(false);
+  });
+
+  it("owner sentences name Linux fixes, never Windows CFA or macOS SIP", () => {
+    const d = diagnose(
+      facts({
+        op: "write",
+        errno: "EPERM",
+        path: "/etc/hosts",
+        path_exists: true,
+        sip_protected: true,
+        app_process_open: "EPERM",
+      }),
+      { platform: "linux" },
+    );
+    expect(d.cause).toBe("sip_protected");
+    expect(d.owner_action).toMatch(/Linux system locations/);
+    expect(d.owner_action).not.toMatch(/Controlled folder access|System Integrity Protection/);
   });
 });

@@ -357,7 +357,9 @@ describe("browser tools (fake runtime)", () => {
       .slice(before);
     expect(decisions.length).toBeGreaterThanOrEqual(2); // open + extend
     for (const d of decisions) {
-      expect(jv(d as JSONValue).get("source").str).toBe(process.platform === "win32" ? "prompt" : "rule");
+      expect(jv(d as JSONValue).get("source").str).toBe(
+        process.platform === "win32" || process.platform === "linux" ? "prompt" : "rule",
+      );
     }
   });
 });

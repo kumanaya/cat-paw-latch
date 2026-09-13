@@ -104,6 +104,7 @@ module.exports = async function afterPack(context) {
   // and mean macOS, the historical only caller.
   const platform = context.electronPlatformName ?? "darwin";
   if (platform === "win32") return afterPackWin(context);
+  if (platform === "linux") return afterPackLinux(context);
   if (platform !== "darwin") return;
   // Only the final universal app matters; the per-arch temp packs are deleted
   // right after the merge.
@@ -435,6 +436,92 @@ async function afterPackWin(context) {
     if (want !== undefined && peArch(provider) !== want) {
       throw new Error(`[afterPack] the ${command} provider is not ${wantArch} (PE machine mismatch)`);
     }
+  }
+}
+
+/**
+ * The Linux pack gate. What this refuses is a release that would silently
+ * run degraded: the bubblewrap launcher or its probe missing means command
+ * execution must fail closed, and a missing Camoufox means browsing would
+ * advertise as unavailable. Arch is checked from the ELF header the same
+ * way Windows checks PE.
+ */
+async function afterPackLinux(context) {
+  const resources = path.join(context.appOutDir, "resources");
+  const unpacked = (...segs) => path.join(resources, "app.asar.unpacked", "node_modules", "@domo", ...segs);
+  const present = (p) => {
+    try {
+      return fs.statSync(p).size > 0;
+    } catch {
+      return false;
+    }
+  };
+  const wantArch = ({ 1: "x64", 3: "arm64", x64: "x64", arm64: "arm64" })[context.arch] ??
+    (process.arch === "arm64" ? "arm64" : "x64");
+  const ELF_MACHINE = { x64: 62, arm64: 183 }; // EM_X86_64, EM_AARCH64
+  const elfArch = (file) => {
+    try {
+      const fd = fs.openSync(file, "r");
+      try {
+        const head = Buffer.alloc(20);
+        if (fs.readSync(fd, head, 0, 20, 0) < 20) return null;
+        if (head.readUInt32BE(0) !== 0x7f454c46) return null; // "\x7fELF"
+        return head.readUInt16LE(18);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return null;
+    }
+  };
+  const addon = unpacked("native-linuxsandbox", "build", "Release", "linuxsandbox.node");
+  if (!present(addon)) {
+    throw new Error(
+      "[afterPack] the packed app has no native-linuxsandbox addon — " +
+        "its build failed (see `npm rebuild @domo/native-linuxsandbox` on Linux); a release must carry it",
+    );
+  }
+  const want = ELF_MACHINE[wantArch];
+  if (want !== undefined && elfArch(addon) !== want) {
+    throw new Error(
+      `[afterPack] the native-linuxsandbox addon is not ${wantArch} (ELF machine mismatch) — ` +
+        `rebuild it on a ${wantArch} host; a wrong-arch cage fails to load`,
+    );
+  }
+  const launcher = unpacked("native-linuxsandbox", "build", "Release", "linuxsandbox_launcher");
+  if (!present(launcher)) {
+    throw new Error("[afterPack] the packed app has no bubblewrap launcher — Linux command execution must fail closed");
+  }
+  if (want !== undefined && elfArch(launcher) !== want) {
+    throw new Error("[afterPack] the bubblewrap launcher has an ELF machine mismatch");
+  }
+  const browserRoot = path.join(resources, "browser-runtime", "camoufox", wantArch);
+  const browser = fs.existsSync(browserRoot)
+    ? [...walk(browserRoot)].find((f) => path.basename(f) === "camoufox-bin")
+    : undefined;
+  if (!browser || !present(browser)) {
+    throw new Error(`[afterPack] the packed app has no Linux Camoufox for ${wantArch}`);
+  }
+  if (want !== undefined && elfArch(browser) !== want) {
+    throw new Error(`[afterPack] Linux Camoufox is not ${wantArch} (ELF machine mismatch)`);
+  }
+  const { VENDORED } = await import("../../../scripts/vendored-providers.mjs");
+  for (const { command } of VENDORED) {
+    const provider = path.join(resources, "providers", command, wantArch, command);
+    if (!present(provider)) {
+      throw new Error(`[afterPack] the packed app has no ${command} provider for ${wantArch}`);
+    }
+    if (want !== undefined && elfArch(provider) !== want) {
+      throw new Error(`[afterPack] the ${command} provider is not ${wantArch} (ELF machine mismatch)`);
+    }
+  }
+  const probe = spawnSync(launcher, ["--probe"], { encoding: "utf8" });
+  if (probe.status !== 0) {
+    throw new Error(
+      `[afterPack] linuxsandbox_launcher --probe failed (status ${probe.status ?? "null"}): ` +
+        `${(probe.stderr || probe.stdout || "").trim() || "no output"} — ` +
+        "install bubblewrap and ensure a systemd user session is available",
+    );
   }
 }
 

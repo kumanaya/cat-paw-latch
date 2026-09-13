@@ -503,10 +503,11 @@ def main():
     # justfile owns the from-source answer — `--home "$(just --evaluate
     # apphome)"` — and the packaged one is a fixed path the skill spells out.
     parser.add_argument("--home", required=True,
-                        help='the instance home. Packaged: "~/Library/Application '
-                             'Support/Plow-Latch". From source: "$(just --evaluate apphome)"')
+                        help='the instance home. Packaged macOS: "~/Library/Application '
+                             'Support/Plow-Latch". Packaged Linux: "~/.config/Plow-Latch". '
+                             'From source: "$(just --evaluate apphome)"')
     parser.add_argument("--ssh", default=None, metavar="USER@HOST",
-                        help="read the audit log on another Mac over ssh")
+                        help="read the audit log on another host over ssh")
     parser.add_argument("--timeout", type=int, default=120,
                         help="seconds to wait for a terminal event (default: 120)")
     parser.add_argument("--apple-events", action="store_true",

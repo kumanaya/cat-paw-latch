@@ -49,5 +49,8 @@ export * from "./hostGate/index.js";
 export * from "./identity.js";
 export * from "./policyEngine.js";
 export * from "./windowsPresence.js";
+export * from "./linuxPresence.js";
 export * from "./windowsWorkspace.js";
 export * from "./windowsLaunchConfig.js";
+export * from "./linuxWorkspace.js";
+export * from "./linuxLaunchConfig.js";

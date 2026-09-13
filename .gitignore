@@ -35,6 +35,8 @@ Library/
 packages/native-keychain/build/
 packages/native-wincred/build/
 packages/native-winsandbox/build/
+packages/native-linuxsandbox/build/
+packages/native-linuxsandbox/node_modules/
 packages/native-fs/build/
 packages/native-credential-import/build/
 packages/native-permissions/build/

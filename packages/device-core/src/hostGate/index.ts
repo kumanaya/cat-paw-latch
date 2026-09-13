@@ -9,5 +9,6 @@ export * from "./folderAccess.js";
 export * from "./fullDiskAccess.js";
 export * from "./guardedPaths.js";
 export * from "./inventory.js";
+export * from "./linux.js";
 export * from "./probes.js";
 export * from "./windows.js";

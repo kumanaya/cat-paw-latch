@@ -48,13 +48,24 @@ scripts/latch-smoke --config ~/.latch/<client>.json --server plow-mbp \
   --home "~/Library/Application Support/Plow-Latch"
 ```
 
+On a packaged Linux AppImage:
+
+```bash
+scripts/latch-smoke --config ~/.latch/<client>.json --server plow-linux \
+  --home "~/.config/Plow-Latch"
+```
+
+Run this on the Linux host (or CI runner) that has the install — never launch
+the Electron app on the head-chef Mac.
+
 - `--home <dir>` — **required.** The instance home to read. There is no
   default: every wrong home this script has produced came from it choosing
   one, and a chosen home that is wrong reads as a fresh install rather than as
   an error.
 
   ```bash
-  --home "~/Library/Application Support/Plow-Latch"   # a packaged install
+  --home "~/Library/Application Support/Plow-Latch"   # packaged macOS
+  --home "~/.config/Plow-Latch"                       # packaged Linux
   --home "$(just --evaluate apphome)"                 # from source
   ```
 
@@ -130,8 +141,9 @@ Only success exits 0.
 
 ## Smoke-testing the gog provider specifically
 
-gog is vendored on `main` (plow-pbc/latch#183). A build has it on the agent's
-PATH; a from-source checkout needs `just fetch-gog` first. The mint also needs
+gog is vendored on darwin, Windows, and Linux (pins in
+`scripts/vendored-providers.mjs`). A build has it on the agent's PATH; a
+from-source checkout needs `just fetch-vendored gog` first. The mint also needs
 `gmail:access-token` in the device's scopes, which is plow-pbc/plow#1416 and is
 not landed — until it is, this section's commands reach gog and fail at the
 mint, not at the binary.
@@ -141,6 +153,8 @@ Same command, its own argv:
 ```bash
 scripts/latch-smoke --config ~/.latch/<client>.json --server plow-mbp \
   --home "~/Library/Application Support/Plow-Latch" -- gog gmail search newer_than:1d --json
+# packaged Linux:
+# --home "~/.config/Plow-Latch" -- gog gmail search newer_than:1d --json
 ```
 
 Three things distinguish a working provider path from a broken one, all visible
@@ -148,7 +162,7 @@ without touching Google:
 
 | Output | Means |
 |---|---|
-| `FAILED — the executor threw` … `not installed` | no vendored binary — run `just fetch-gog` and repackage |
+| `FAILED — the executor threw` … `not installed` | no vendored binary — run `just fetch-vendored gog` and repackage |
 | `FAILED — the executor threw` … `could not reach Plow` / `returned 4xx` | the mint failed; the stored credential is the owner's Plow login session, so check that it is still live rather than its scopes — a session carries them all |
 | `OK` | the whole path works |
 

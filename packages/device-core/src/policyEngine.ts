@@ -31,7 +31,7 @@ export type IntentDecision = Decision | { decision: Decision; source?: string };
  * instead of silently retaining an unsafe standing approval. */
 export type ListedAlwaysAllowRule = AlwaysAllowRule & {
   disabled?: true;
-  disabledReason?: "windows_sensitive_capability";
+  disabledReason?: "windows_sensitive_capability" | "linux_sensitive_capability";
 };
 
 /** Whoever answers approval questions: app UI, headless script… */
@@ -76,11 +76,14 @@ export class PolicyEngine {
       for (const rule of stored) {
         if (rule.disabled) {
           this.disabled.set(rule.ruleKey, rule);
-        } else if (this.platform === "win32" && !ruleEligibleCapabilities(rule.capabilities, this.platform)) {
+        } else if (
+          (this.platform === "win32" || this.platform === "linux") &&
+          !ruleEligibleCapabilities(rule.capabilities, this.platform)
+        ) {
           const disabled: ListedAlwaysAllowRule = {
             ...rule,
             disabled: true,
-            disabledReason: "windows_sensitive_capability",
+            disabledReason: this.platform === "linux" ? "linux_sensitive_capability" : "windows_sensitive_capability",
           };
           this.disabled.set(rule.ruleKey, disabled);
           this.migrated.set(rule.ruleKey, disabled);
@@ -171,7 +174,10 @@ function ruleEligibleCapabilities(
   capabilities: AlwaysAllowRule["capabilities"],
   platform: NodeJS.Platform,
 ): boolean {
-  if (platform !== "win32") return true;
+  // Windows lacks a presence gate that Always-Allow could safely skip;
+  // Linux has no polkit presence gate yet. On both, sensitive caps must
+  // re-prompt every time.
+  if (platform !== "win32" && platform !== "linux") return true;
   return !capabilities.some((c) =>
     c.kind === "process.exec" || c.kind === "fs.write" || c.kind === "network" ||
     c.kind === "credential" || c.kind === "browser" || c.kind === "fs.read",

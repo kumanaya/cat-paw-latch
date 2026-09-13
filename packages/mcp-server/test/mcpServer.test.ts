@@ -975,12 +975,12 @@ describe("per-agent isolation (§4.4)", () => {
 
     // Alice's second identical call is served by her stored rule — not asked.
     await callTool(server, "plow_read_file", { path: file }, ALICE);
-    expect(asked).toEqual(process.platform === "win32" ? ["sess_alice", "sess_alice"] : ["sess_alice"]);
+    expect(asked).toEqual(process.platform === "win32" || process.platform === "linux" ? ["sess_alice", "sess_alice"] : ["sess_alice"]);
 
     // Mallory's identical call, same name, must still be asked.
     await callTool(server, "plow_read_file", { path: file }, MALLORY);
     expect(asked).toEqual(
-      process.platform === "win32"
+      process.platform === "win32" || process.platform === "linux"
         ? ["sess_alice", "sess_alice", "sess_mallory"]
         : ["sess_alice", "sess_mallory"],
     );

@@ -66,11 +66,10 @@ const hostArch = (): string => (process.arch === "arm64" ? "arm64" : "x86_64");
  * from another platform only advertises browsing until Playwright fails later. */
 function camoufoxExecutable(root: string, build: string): string {
   if (process.platform === "win32") return path.join(root, build, "camoufox.exe");
+  if (process.platform === "linux") return path.join(root, build, "camoufox-bin");
   if (process.platform === "darwin") {
     return path.join(root, build, "Camoufox.app", "Contents", "MacOS", "camoufox");
   }
-  // Linux is intentionally unsupported in this delivery: no accidental
-  // layout contract must turn an untested payload into an advertised runtime.
   return "";
 }
 
@@ -79,13 +78,18 @@ function camoufoxExecutable(root: string, build: string): string {
 function camoufoxBinaryIn(dir: string): string | null {
   const roots = [path.join(dir, process.arch), path.join(dir, hostArch())];
   if (process.platform === "win32") roots.unshift(path.join(dir, "windows", process.arch));
+  if (process.platform === "linux") roots.unshift(path.join(dir, "linux", process.arch));
   if (process.platform === "darwin") roots.push(path.join(dir, "universal"));
   roots.push(dir);
   for (const root of roots) {
-    // Camoufox's Windows installer layout puts the executable directly at its
-    // install root (unlike the macOS `browsers/official/...` cache layout).
+    // Camoufox's Windows/Linux installer layout puts the executable directly
+    // at its install root (unlike the macOS `browsers/official/...` cache).
     if (process.platform === "win32") {
       const direct = path.join(root, "camoufox.exe");
+      if (fs.existsSync(direct)) return direct;
+    }
+    if (process.platform === "linux") {
+      const direct = path.join(root, "camoufox-bin");
       if (fs.existsSync(direct)) return direct;
     }
     const official = path.join(root, "browsers", "official");

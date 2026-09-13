@@ -18,6 +18,16 @@
         "sha256": "386fc2f41139685f9a1a9cef0d024bc041d899c315ea538d561171b5b282e57d"
       },
       "arm64": null
+    },
+    "linux": {
+      "x64": {
+        "url": "https://github.com/daijro/camoufox/releases/download/v152.0.4-beta.28/camoufox-152.0.4-beta.28-lin.x86_64.zip",
+        "sha256": "924f3109ccd6d47cd6a0384d67a345fadf975d48b6319f8dbbd5954c588982bd"
+      },
+      "arm64": {
+        "url": "https://github.com/daijro/camoufox/releases/download/v152.0.4-beta.28/camoufox-152.0.4-beta.28-lin.arm64.zip",
+        "sha256": "3a105a2fc929e80a79b4b7fce2c93ed62c4fb2c877f3c1ed2a5d66a1c4fe968f"
+      }
     }
   }
 }

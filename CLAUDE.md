@@ -43,7 +43,11 @@ npm workspaces. Libraries in `packages/`, executables/apps in `apps/`:
   generic credential in Credential Manager. Same get/set/probe contract.
 - `packages/native-winsandbox` (`@domo/native-winsandbox`) — the Windows
   seatbelt seat: one Job Object per command run (kill-on-close + process
-  cap). Required at runtime on Windows — the executor fails closed without it.
+  cap) plus the AppContainer launcher. Required at runtime on Windows — the
+  executor fails closed without it.
+- `packages/native-linuxsandbox` (`@domo/native-linuxsandbox`) — the Linux
+  seatbelt seat: bubblewrap + staged workspace + systemd TasksMax launcher.
+  Required at runtime on Linux — the executor fails closed without it.
 - `packages/mcp-server` (`@domo/mcp-server`) — the MCP server this Mac serves
   (revision 2026-07-28): the reduced tool surface (including the `plow_browser_*`
   tools), capability construction from tool arguments, and the deferred-result

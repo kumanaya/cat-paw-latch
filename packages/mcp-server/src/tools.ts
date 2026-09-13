@@ -226,8 +226,22 @@ export const WINDOWS_TOOLING =
   "clip for the clipboard, " +
   "and whatever else they have installed";
 
-/** The tooling list for this host: macOS names on macOS, Windows names on Windows. */
-export const HOST_TOOLING = process.platform === "win32" ? WINDOWS_TOOLING : MACOS_TOOLING;
+/**
+ * The Linux tooling an agent is told to reach for. Names here are ordinary
+ * POSIX utilities present on a desktop install; they still must be staged
+ * under an approved path to run inside the bubblewrap workspace.
+ */
+export const LINUX_TOOLING =
+  "find and grep for searching files, python3 for scripting, " +
+  "coreutils (ls, cat, cp, mkdir) for files, " +
+  "xclip or wl-clipboard for the clipboard when installed, " +
+  "and whatever else they have installed";
+
+/** The tooling list for this host. */
+export const HOST_TOOLING =
+  process.platform === "win32" ? WINDOWS_TOOLING :
+  process.platform === "linux" ? LINUX_TOOLING :
+  MACOS_TOOLING;
 
 /**
  * The `plow_run_command` description's OS-shaped sentences: the workstation
@@ -259,6 +273,27 @@ const RUN_COMMAND_OS =
           "on its own terms: this PC refused nothing and no Windows gate is missing, whatever the " +
           "program's own error text says — do not send the user to Windows Security for it.",
       }
+    : process.platform === "linux"
+    ? {
+        workstation:
+          "Their PC is a Linux machine, so reach for tooling your workspace does not have when " +
+          `it fits the job: ${LINUX_TOOLING}. ` +
+          "It runs inside a bubblewrap sandbox over a staged workspace, with a systemd TasksMax process " +
+          "cap that ends the whole command tree with the run. Declare every path you need: ",
+        reads:
+          "read_paths and write_paths are what the owner approves and what the audit record shows. " +
+          "Approved roots are copied into a private workspace before launch — the command never receives " +
+          "a live bind of the owner's home. The executable must itself sit under an approved root. ",
+        scratchVar: "$TMPDIR",
+        treeEnd:
+          "A run's whole tree ends with the run — a backgrounded job dies with it, its output is not " +
+          "captured, and no handle tracks it — so a long-lived server belongs in a service, not a " +
+          "background job. If the whole call outruns this PC's budget you get a pending handle instead: poll it with ",
+        refused:
+          "A 'completed' result with a non-zero exit and 'host_gate': 'none' failed " +
+          "on its own terms: this PC refused nothing and no Linux gate is missing, whatever the " +
+          "program's own error text says — do not send the user to system settings for it.",
+      }
     : {
         workstation:
           "Their Mac is a macOS workstation, so reach for tooling your workspace does not have when " +
@@ -282,20 +317,20 @@ const RUN_COMMAND_OS =
 
 /** The parked-dialog paragraph exists only where a dialog can park a run: macOS. */
 const RUN_COMMAND_PARKED =
-  process.platform === "win32"
-    ? ""
-    : " A result that is still 'running' but carries a 'diagnosis' is parked on a macOS permission " +
+  process.platform === "darwin"
+    ? " A result that is still 'running' but carries a 'diagnosis' is parked on a macOS permission " +
       "dialog on the Mac's screen: leave it running, tell the user, and poll plow_get_output — their " +
-      "click lets it finish.";
+      "click lets it finish."
+    : "";
 
 /** The sandboxed-sender retry exists only where the unsandboxed script tool does: macOS. */
 const RUN_COMMAND_SCRIPT_RETRY =
-  process.platform === "win32"
-    ? ""
-    : " A 'blocked' result whose diagnosis's 'retry' is 'with_plow_run_applescript' is an app refusing the sandboxed " +
+  process.platform === "darwin"
+    ? " A 'blocked' result whose diagnosis's 'retry' is 'with_plow_run_applescript' is an app refusing the sandboxed " +
       "sender: run the script through plow_run_applescript, which runs outside the sandbox — but only " +
       "the statements that did not land. Everything the script did before the refusal already " +
-      "happened, and a whole-script re-run does it twice.";
+      "happened, and a whole-script re-run does it twice."
+    : "";
 
 /**
  * Appended to every skill body `plow_read_skill` returns — one seam, not
@@ -347,7 +382,18 @@ const WINDOWS_BLOCKED_COPY =
   "let them decide. One exception, and the diagnosis names it: when its 'retry' names a tool, that " +
   "tool is the one move left, and the only one.";
 
-export const BLOCKED_COPY = process.platform === "win32" ? WINDOWS_BLOCKED_COPY : MACOS_BLOCKED_COPY;
+const LINUX_BLOCKED_COPY =
+  "A result with status 'blocked' means the user approved it and their PC itself then refused — a " +
+  "Linux gate the app has not been allowed through (permissions, an immutable file, a system " +
+  "location); not the user saying no. Read its 'diagnosis': when 'confidence' is 'confirmed', tell " +
+  "the user the 'owner_action' sentence word for word and stop; otherwise share the 'evidence' and " +
+  "let them decide. One exception, and the diagnosis names it: when its 'retry' names a tool, that " +
+  "tool is the one move left, and the only one.";
+
+export const BLOCKED_COPY =
+  process.platform === "win32" ? WINDOWS_BLOCKED_COPY :
+  process.platform === "linux" ? LINUX_BLOCKED_COPY :
+  MACOS_BLOCKED_COPY;
 
 /**
  * Appended to every skill body, before the contribution footer: a skill
@@ -375,7 +421,19 @@ const WINDOWS_HOST_GATE_NOTE =
   "retry, and do not reword the goal. When it is 'likely' or 'unknown', pass on the 'evidence' and " +
   "'ruled_out' lists and let them decide.";
 
-export const HOST_GATE_NOTE = process.platform === "win32" ? WINDOWS_HOST_GATE_NOTE : MACOS_HOST_GATE_NOTE;
+const LINUX_HOST_GATE_NOTE =
+  "\n\n## When this PC itself says no\n\n" +
+  "A call may come back with status 'blocked', with a 'diagnosis' beside it. That is neither " +
+  "\"no messages\" nor the owner refusing: their PC would not let the app do what they approved — " +
+  "usually a permission, an immutable file, or a system location. When the " +
+  "diagnosis is 'confirmed', tell the owner its 'owner_action' word for word and stop; do not " +
+  "retry, and do not reword the goal. When it is 'likely' or 'unknown', pass on the 'evidence' and " +
+  "'ruled_out' lists and let them decide.";
+
+export const HOST_GATE_NOTE =
+  process.platform === "win32" ? WINDOWS_HOST_GATE_NOTE :
+  process.platform === "linux" ? LINUX_HOST_GATE_NOTE :
+  MACOS_HOST_GATE_NOTE;
 
 const WINDOWS_DEVICE_STATUS_COPY =
   "Which Windows protections this app can work with, and whether its own machinery works — checked " +
@@ -387,20 +445,36 @@ const WINDOWS_DEVICE_STATUS_COPY =
   "key opens — and a failed one is for the user to hear, not for you to work around. 'not_asked' and " +
   "'target_not_running' do not apply here and are never a reason to skip an attempted Windows operation.";
 
-/** Tool copy predates Windows support. Keep platform-neutral prose in one
+const LINUX_DEVICE_STATUS_COPY =
+  "Which Linux protections this app can work with, and whether its own machinery works — checked " +
+  "fresh each call, no approval needed. For when the user asks what you can reach on their PC, or " +
+  "after a 'blocked' result, to see the whole picture in one call. Do NOT call it to decide whether " +
+  "to try: an attempt that this PC refuses comes back 'blocked' with the exact sentence for the user. " +
+  "The other rows are self-checks — the bubblewrap sandbox launches, a child inherits its bounds, and " +
+  "the vault key opens — and a failed one is for the user to hear, not for you to work around.";
+
+/** Tool copy predates multi-OS support. Keep platform-neutral prose in one
  * manifest rather than duplicating every tool definition, but never advertise
- * a Windows machine as a Mac. */
+ * a Windows or Linux machine as a Mac. */
 function windowsHostWords(text: string): string {
   return text.replaceAll("Mac's", "PC's").replaceAll("Mac", "PC");
 }
 
-function windowsHostWordsInJson(value: JSONValue): JSONValue {
-  if (typeof value === "string") return windowsHostWords(value);
-  if (Array.isArray(value)) return value.map(windowsHostWordsInJson);
+function linuxHostWords(text: string): string {
+  return text.replaceAll("Mac's", "PC's").replaceAll("Mac", "PC");
+}
+
+function rewriteHostWordsInJson(value: JSONValue, rewrite: (text: string) => string): JSONValue {
+  if (typeof value === "string") return rewrite(value);
+  if (Array.isArray(value)) return value.map((child) => rewriteHostWordsInJson(child, rewrite));
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, windowsHostWordsInJson(child ?? null)]));
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, rewriteHostWordsInJson(child ?? null, rewrite)]));
   }
   return value;
+}
+
+function windowsHostWordsInJson(value: JSONValue): JSONValue {
+  return rewriteHostWordsInJson(value, windowsHostWords);
 }
 
 export const TOOLS: ToolSpec[] = [
@@ -558,6 +632,8 @@ export const TOOLS: ToolSpec[] = [
             "commands from any sandboxed sender, which that tool is not." +
             (process.platform === "win32"
               ? " This capability is unavailable on Windows."
+              : process.platform === "linux"
+              ? " This capability is unavailable on Linux."
               : ""),
         },
         wait_ms: {
@@ -797,7 +873,7 @@ export const TOOLS: ToolSpec[] = [
     title: "Get output from a running command",
     description:
       "Fetch incremental output of a command still running from plow_run_command" +
-      (process.platform === "win32" ? ". " : ", or a script from plow_run_applescript. ") +
+      (process.platform === "darwin" ? ", or a script from plow_run_applescript. " : ". ") +
       "Pass 'since' = the output_length you last saw. Takes the job handle that " +
       "tool returned, not a handle from plow_get_result. " +
       "A read-only command that produces nothing and never exits is eventually killed by this Mac: " +
@@ -806,6 +882,9 @@ export const TOOLS: ToolSpec[] = [
       "its own; tell the user, who is the only one who can end it. " +
       (process.platform === "win32"
         ? "A reply with status 'blocked' is a run this PC itself stopped — a Windows gate it was not " +
+          "allowed through: relay the diagnosis's 'owner_action' to the user."
+        : process.platform === "linux"
+        ? "A reply with status 'blocked' is a run this PC itself stopped — a Linux gate it was not " +
           "allowed through: relay the diagnosis's 'owner_action' to the user."
         : "A reply with status 'blocked', or one still 'running' with a 'diagnosis', is a run this Mac " +
           "itself stopped or is holding — a macOS permission, or a dialog waiting on its screen: relay the " +
@@ -1252,8 +1331,9 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "plow_device_status",
-    title: process.platform === "win32" ? "What this PC lets the app do right now" : "What this Mac lets the app do right now",
+    title: process.platform === "darwin" ? "What this Mac lets the app do right now" : "What this PC lets the app do right now",
     description: process.platform === "win32" ? WINDOWS_DEVICE_STATUS_COPY :
+      process.platform === "linux" ? LINUX_DEVICE_STATUS_COPY :
       "Which macOS permissions this app holds on the user's Mac, and whether its own machinery " +
       "works — checked fresh each call, no approval needed. For when the user asks what you can " +
       "reach on their Mac, or after a 'blocked' result, to see the whole picture in one call. Do " +
@@ -1303,6 +1383,14 @@ if (process.platform === "win32") {
     tool.title = windowsHostWords(tool.title);
     tool.description = windowsHostWords(tool.description);
     tool.inputSchema = windowsHostWordsInJson(tool.inputSchema);
+  }
+}
+
+if (process.platform === "linux") {
+  for (const tool of TOOLS) {
+    tool.title = linuxHostWords(tool.title);
+    tool.description = linuxHostWords(tool.description);
+    tool.inputSchema = rewriteHostWordsInJson(tool.inputSchema, linuxHostWords);
   }
 }
 

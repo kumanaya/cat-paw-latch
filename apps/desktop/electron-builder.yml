@@ -84,6 +84,8 @@ files:
   - "!node_modules/@domo/native-hello/src/**"
   - "!node_modules/@domo/native-winsandbox/scripts/**"
   - "!node_modules/@domo/native-winsandbox/src/**"
+  - "!node_modules/@domo/native-linuxsandbox/scripts/**"
+  - "!node_modules/@domo/native-linuxsandbox/src/**"
   - "!node_modules/@domo/native-fs/scripts/**"
   - "!node_modules/@domo/native-fs/src/**"
   # Every consumer of zod and @modelcontextprotocol/* in the app is ESM, so the
@@ -127,6 +129,8 @@ asarUnpack:
   # asar. Keep the addon beside it too: executor resolves both from this one
   # unpacked package and refuses command execution if either is absent.
   - "**/node_modules/@domo/native-winsandbox/**"
+  # Same for the Linux bubblewrap launcher + addon.
+  - "**/node_modules/@domo/native-linuxsandbox/**"
   - "**/node_modules/playwright-core/**"
   - "**/node_modules/node-sqlite3-wasm/**"
 
@@ -275,6 +279,29 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+
+# Linux: AppImage for a single-file desktop install. The target host needs
+# bubblewrap (system package) for the cage, and FUSE 2 (`libfuse.so.2`:
+# `fuse2` on Arch, `libfuse2` on Debian/Ubuntu) to mount the AppImage.
+# Without FUSE the file does not start; `APPIMAGE_EXTRACT_AND_RUN=1` is the
+# fallback. Camoufox ships per-arch under
+# browser-runtime/camoufox/<arch>/camoufox-bin.
+linux:
+  category: Development
+  # Scoped name `@domo/desktop` is not a legal AppImage executableName (`@`).
+  executableName: PlowLatch
+  extraResources:
+    - from: ../../vendor/camoufox-browser/linux
+      to: browser-runtime/camoufox
+      filter: ["**/*", "!.sha256"]
+  # Arch is the packaging host (linuxsandbox is native). `package-linux.mjs`
+  # passes `--x64` / `--arm64`; listing both here made a x64 host also pack
+  # arm64 and fail afterPack's ELF gate.
+  target:
+    - target: AppImage
+  artifactName: Plow-Latch-${version}-${arch}.${ext}
+  synopsis: Intent-based approval sandbox for remote AI agents
+  description: Plow Latch lets a remote AI agent use this PC through an intent-based approval and sandbox system.
 
 dmg:
   # No ${arch}: the only DMG is universal, and this name is the public

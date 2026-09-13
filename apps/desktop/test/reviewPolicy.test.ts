@@ -253,7 +253,7 @@ describe("decideIntent — modes that never reach the reviewer", () => {
  * Pinned against the REAL `PolicyEngine` with a real rule on disk. A fake
  * engine here would only assert that the test agrees with itself.
  */
-describe.skipIf(process.platform === "win32")("a stored rule cannot stand in for a required review", () => {
+describe.skipIf(process.platform === "win32" || process.platform === "linux")("a stored rule cannot stand in for a required review", () => {
   let rulesDir: string;
   let engine: PolicyEngine;
 
@@ -382,7 +382,7 @@ describe.skipIf(process.platform === "win32")("a stored rule cannot stand in for
   });
 });
 
-describe.skipIf(process.platform !== "win32")("Windows never persists a sensitive approval", () => {
+describe.skipIf(process.platform !== "win32" && process.platform !== "linux")("Windows/Linux never persists a sensitive approval", () => {
   it("returns this browser approval but leaves no rule capable of replaying it", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-windows-rules-"));
     try {
@@ -392,6 +392,23 @@ describe.skipIf(process.platform !== "win32")("Windows never persists a sensitiv
       });
       expect(grant.decision).toBe("always_allow");
       expect(engine.allRules()).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Linux migrates old sensitive standing rules", () => {
+  it("disables, persists, and never replays a pre-presence browser rule", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-linux-rule-migration-"));
+    try {
+      const file = path.join(dir, "rules.json");
+      const original = new PolicyEngine(file, "darwin");
+      await original.decide(intent(), { decideIntent: async () => "always_allow" as const });
+
+      const migrated = new PolicyEngine(file, "linux");
+      expect(migrated.allRules()).toMatchObject([{ disabled: true, disabledReason: "linux_sensitive_capability" }]);
+      expect(migrated.migratedDisabledRules()).toHaveLength(1);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

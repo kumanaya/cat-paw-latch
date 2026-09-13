@@ -402,7 +402,9 @@ export class DeviceAgent {
         // Windows browsers start with an empty, disposable profile. The remote
         // session never sees the owner's profile, cookies, downloads or history.
         profileDir: path.join(browserDir, "profiles"),
-        ...(process.platform === "win32" ? {} : {
+        // Windows and Linux sessions start empty: there is no owner-profile
+        // seed and cookies are not merged back. macOS still clones + merges.
+        ...(process.platform === "win32" || process.platform === "linux" ? {} : {
           seedProfile: path.join(browserDir, "profile"),
           mergeCookiesCommand: browserRuntime.mergeCookiesCommand,
         }),
@@ -522,13 +524,25 @@ export class DeviceAgent {
     const vaultDir = this.vaultDir;
     // The sandbox self-check runs a trivial command through the REAL
     // executor: `/usr/bin/true` under seatbelt on macOS, `cmd /c exit 0`
-    // in a Job Object on Windows. Null where there is no cage at all.
+    // in a Job Object on Windows, a staged copy of `/usr/bin/true` under
+    // bubblewrap on Linux. Null where there is no cage at all.
     const sandboxed =
-      process.platform === "darwin" || process.platform === "win32"
+      process.platform === "darwin" || process.platform === "win32" || process.platform === "linux"
         ? async (argv: string[]) => {
+            let readPaths: string[] = [];
+            let runArgv = argv;
+            if (process.platform === "linux") {
+              // Stage a single binary — never bind-walk /usr/bin (symlinks).
+              const probeDir = fs.mkdtempSync(path.join(this.home, "sandbox-probe-"));
+              const staged = path.join(probeDir, "true");
+              fs.copyFileSync("/usr/bin/true", staged);
+              fs.chmodSync(staged, 0o755);
+              runArgv = [staged];
+              readPaths = [probeDir];
+            }
             const result = await this.executor.run({
-              argv,
-              readPaths: [],
+              argv: runArgv,
+              readPaths,
               writePaths: [],
               network: false,
               appleEvents: false,
@@ -541,7 +555,10 @@ export class DeviceAgent {
       probes: this.hostProbes,
       ownerHome: this.ownerHome,
       runSandboxed: sandboxed,
-      sandboxProbeArgv: process.platform === "win32" ? ["cmd", "/c", "exit", "0"] : undefined,
+      sandboxProbeArgv:
+        process.platform === "win32" ? ["cmd", "/c", "exit", "0"] :
+        process.platform === "linux" ? ["/usr/bin/true"] :
+        undefined,
       vaultKey: vaultDir === null ? null : () => readCredentialsState(vaultDir),
     });
   }

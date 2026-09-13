@@ -260,9 +260,9 @@ equivalent. File writes stay approval-scoped — the in-process file tools are
 bounds-checked, and `grants()` answers the approval on Windows rather than a
 cage that is not there, so `outside_approved_bound` still names a run that
 left its set. The diagnosis says so explicitly: facts carry
-`sandbox_kind` (`seatbelt`/`job`/`none`), and under a job the bound verdicts
+`sandbox_kind` (`seatbelt`/`job`/`bwrap`/`none`), and under a job the bound verdicts
 name the approval, never a profile. The residual (a command writing outside
-its approved paths is not stopped, only diagnosed) is documented, not hidden.
+its approved paths is not stopped by the Job alone, only diagnosed) is documented, not hidden.
 Secret files, meanwhile, do not trust the inherited profile DACL: every one
 the app writes (key blob, item store, settings, identity, approvals, audit
 log) is locked to a single owner-only ACE via `@domo/native-fs`, enforced in
@@ -273,6 +273,39 @@ and a run's whole tree ends with the run — backgrounded jobs die with it, so
 long-lived servers belong in a service. `plow_run_applescript` does not exist
 there (no osascript), and `apple_events: true` is refused at the tool
 boundary rather than approved for a capability nothing honors.
+
+**On Linux the cage is bubblewrap + a staged workspace + a systemd TasksMax
+scope** (`@domo/native-linuxsandbox`, `executor.ts`). Approved roots are
+copied into a private workspace before launch; the command never receives a
+live bind of the owner's home, and the executable must itself sit under an
+approved root. bubblewrap binds **libraries only** (`/usr/lib`, `/lib`, …) —
+never a live `/usr/bin` or `/bin` — so a staged script cannot exec an
+unapproved host tool; shebang interpreters are staged under `.interp/` and
+rewritten. `--cap-drop ALL` and `--new-session` tighten the namespace.
+systemd-run `--user --scope -p TasksMax=256` is the Job-Object equivalent for
+process cap and tree end. Writable reconcile copies outputs back and
+propagates deletes for files inventoried at create-time. Fail closed without
+the addon, launcher, bubblewrap, or a usable systemd user session. Diagnosis
+uses `sandbox_kind: "bwrap"` and names the approval bound the same way a Job
+Object does; hostGate maps XDG Desktop/Documents/Downloads and Linux system
+roots. Secret files keep the `chmod 0600` floor; the vault master key prefers
+Linux Secret Service (`secret-tool`, `KLIN1`) when a daemon answers. Owner
+presence (session unlock + confirmation dialog) gates sensitive allows the
+same way Windows Hello does; Always-Allow still cannot cover sensitive caps.
+Camoufox browsing is supported: the Linux payload is pinned in
+`runtime.lock.json`, staged under `vendor/camoufox-browser/linux/<arch>/`,
+and resolved to `camoufox-bin`. Sessions start with an empty disposable
+profile (no owner-profile seed, no cookie merge) — the same isolation as
+Windows. Vendored `gog` is pinned for `linux_amd64`/`linux_arm64` the same
+way as on the other hosts. Packaged AppImages poll
+`releases.plow.co/domo/linux/<arch>` (`just release-linux` /
+`just promote-linux`). The feed must carry the AppImage's sha512
+(electron-updater's digest); `verify-linux-release-feed.mjs` refuses a
+candidate that does not match before upload — Linux has no Authenticode
+publisher check, so that digest is the install-time trust. Owner presence
+is session-unlock plus a confirmation dialog, not biometrics (there is no
+Hello/Touch ID equivalent we trust). `plow_run_applescript` does not exist, and
+`apple_events: true` is refused at the tool boundary.
 
 ## 6a. Host gates: when the Mac itself says no
 
@@ -496,7 +529,8 @@ Swift sources; none of it ships.
 
 ```
 $DOMO_HOME (default ~/Library/Application Support/Plow-Latch on macOS,
-%APPDATA%/Plow-Latch on Windows — Electron's appData on each)
+%APPDATA%/Plow-Latch on Windows, ~/.config/Plow-Latch on Linux — Electron's
+appData on each)
 ├── app/settings.json                    # 0600; the relay credential, sealed
 ├── app/telemetry.json                   # the install id telemetry reports under
 ├── app/crash-report.json                # one spooled crash, removed once sent

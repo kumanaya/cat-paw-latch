@@ -2,10 +2,11 @@ name: TypeScript
 
 # The shared packages (protocol, transport) are deliberately platform-neutral,
 # so they are kept building and passing on Linux as well as macOS. The device
-# half runs on macOS AND Windows: the seatbelt sandbox is macOS-only, and the
-# Job Object cage, Credential Manager provider and Windows copy are
-# Windows-only — each side's tests pin its own platform and skip elsewhere.
-# The Electron evidence still needs a windowing environment, so macOS only.
+# half runs on macOS, Windows, AND Linux: the seatbelt sandbox is macOS-only,
+# the Job Object cage / Credential Manager provider are Windows-only, and the
+# bubblewrap + staged-workspace cage is Linux-only — each side's tests pin its
+# own platform and skip elsewhere. The Electron evidence still needs a
+# windowing environment, so macOS only.
 # Windows 11 ARM64 runs the same native-addon and confinement suite as x64;
 # neither architecture is allowed to borrow the other's binaries.
 
@@ -30,9 +31,12 @@ jobs:
       - run: npm ci
       # node-gyp needs a toolchain for the Windows addons (wincred, Hello,
       # native-fs and winsandbox); VS Build Tools ship on both Windows runner
-      # architectures. macOS needs Xcode CLT
-      # for the keychain/permissions addons; both builds are tolerant, and a
-      # missing toolchain only disables its provider, never the install.
+      # architectures. macOS needs Xcode CLT for the keychain/permissions
+      # addons; Linux needs a C++ toolchain for linuxsandbox. All builds are
+      # tolerant, and a missing toolchain only disables its provider, never
+      # the install. Linux also needs bubblewrap for live cage tests.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - run: npx tsc -b
       # Protocol + transport are platform-independent (golden vectors, crypto,
       # the WebSocket client) and run everywhere. The golden path vectors are
@@ -40,13 +44,12 @@ jobs:
       # paths instead of those bytes (see golden.test.ts).
       - run: npx vitest run packages/protocol packages/transport
       # The device half, the MCP surface, the relay client, the browser
-      # server and the desktop unit tests run on macOS and Windows. The
-      # seatbelt/sandbox-exec cases, the AppleScript tool, the TCC probes
+      # server and the desktop unit tests run on macOS, Windows, and Linux.
+      # The seatbelt/sandbox-exec cases, the AppleScript tool, the TCC probes
       # and the macOS recipes are darwin-gated inside the suite; the Job
       # Object cage, the CFA/ACL diagnosis and the Windows copy are
-      # win32-gated the same way. Ubuntu keeps the protocol/transport
-      # subset: the device tests assume a desktop OS with a keyring.
-      - if: runner.os == 'macOS' || runner.os == 'Windows'
+      # win32-gated; the bubblewrap cage and Linux copy are linux-gated.
+      - if: runner.os == 'macOS' || runner.os == 'Windows' || runner.os == 'Linux'
         run: npx vitest run packages/device-core packages/mcp-server packages/relay-client packages/browser-server apps/desktop
       # What is left under `e2e/`: the worktree-naming contract over POSIX
       # shell. The relay+MCP gate and the transcript runner went with the
@@ -97,3 +100,43 @@ jobs:
       - name: Pack and verify the x64 app layout
         working-directory: apps/desktop
         run: npx electron-builder --win --x64 --dir --publish never
+
+  # Same layout proof for Linux: unsigned --dir so PRs never receive
+  # release credentials. Needs bubblewrap + a systemd user session for the
+  # afterPack launcher --probe, the pinned Linux Camoufox payload, and
+  # vendored gog (afterPack refuses a missing or wrong-arch provider ELF).
+  # arm64 packs on ubuntu-24.04-arm so the cage addon and Camoufox ELF are
+  # native — afterPack refuses a host/target machine mismatch.
+  linux-package:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor/camoufox-browser
+            packages/browser-server/fingerprints.json
+          key: linux-${{ matrix.arch }}-browser-${{ hashFiles('vendor/browser-server/runtime.lock.json', 'scripts/build-browser-runtime.mjs') }}
+      - name: Install bubblewrap for the sandbox probe
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - run: npm ci
+      - run: npx tsc -b
+      - run: node scripts/fetch-vendored.mjs --all
+      - run: node scripts/build-browser-runtime.mjs --browser
+      - name: Pack and verify the ${{ matrix.arch }} app layout
+        working-directory: apps/desktop
+        run: npx electron-builder --linux --${{ matrix.arch }} --dir --publish never

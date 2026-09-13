@@ -153,14 +153,14 @@ describe("PolicyEngine", () => {
     const first = await engine.decide(intentWith(caps), always);
     expect(first.decision).toBe("always_allow");
     expect(first.source).toBe("prompt");
-    expect(engine.allRules()).toHaveLength(process.platform === "win32" ? 0 : 1);
+    expect(engine.allRules()).toHaveLength(process.platform === "win32" || process.platform === "linux" ? 0 : 1);
 
     // A fresh intent with the same capabilities matches the stored rule —
     // even though the delegate would now deny.
     const denyAll = new HeadlessPolicy({ intent: "deny" });
     const second = await engine.decide(intentWith(caps), denyAll);
-    expect(second.decision).toBe(process.platform === "win32" ? "deny" : "always_allow");
-    expect(second.source).toBe(process.platform === "win32" ? "prompt" : "rule");
+    expect(second.decision).toBe(process.platform === "win32" || process.platform === "linux" ? "deny" : "always_allow");
+    expect(second.source).toBe(process.platform === "win32" || process.platform === "linux" ? "prompt" : "rule");
   });
 
   it("apple_events intents are never stored as rules, and never replayed from one", async () => {

@@ -18,9 +18,17 @@ describe("platform update feed", () => {
     );
   });
 
+  it("keeps x64 and ARM64 Linux AppImages on separate feeds", () => {
+    expect(platformUpdateFeed("linux", "x64")).toBe(
+      "https://s3.us-west-2.amazonaws.com/releases.plow.co/domo/linux/x64",
+    );
+    expect(platformUpdateFeed("linux", "arm64")).toBe(
+      "https://s3.us-west-2.amazonaws.com/releases.plow.co/domo/linux/arm64",
+    );
+  });
+
   it("does not invent an update feed for unsupported platforms", () => {
     expect(platformUpdateFeed("darwin", "arm64")).toBeNull();
-    expect(platformUpdateFeed("linux", "x64")).toBeNull();
   });
 });
 

@@ -13,6 +13,8 @@ import { createRequire } from "node:module";
 import { canonicalize, isLexicallyWithin, overlapsRoot } from "@domo/protocol";
 import { WindowsWorkspace } from "./windowsWorkspace.js";
 import { writeWindowsLaunchConfig } from "./windowsLaunchConfig.js";
+import { LinuxWorkspace } from "./linuxWorkspace.js";
+import { writeLinuxLaunchConfig } from "./linuxLaunchConfig.js";
 
 const READ_BOILERPLATE = [
   "/usr",
@@ -154,24 +156,39 @@ export function sandboxGrants(
   opts: { platform?: NodeJS.Platform } = {},
 ): { read: boolean; write: boolean } {
   const under = isLexicallyWithin;
+  const platform = opts.platform ?? process.platform;
+  if (platform === "win32") {
+    // Answer the APPROVAL with Windows path rules even when this suite runs
+    // on a POSIX host (injected `platform: "win32"`). Do not posix-canonicalize
+    // synthetic `C:\…` strings — that would turn them into cwd-relative junk.
+    const fold = (s: string) => s.replace(/\//g, "\\").normalize("NFC").toLowerCase();
+    const within = (candidate: string, root: string) => {
+      const p = fold(candidate);
+      const r = fold(root);
+      return p === r || p.startsWith(r.endsWith("\\") ? r : r + "\\");
+    };
+    const home = process.platform === "win32"
+      ? canonicalize(args.home ?? os.homedir())
+      : (args.home ?? "C:\\Users");
+    const writeRoots = process.platform === "win32"
+      ? writableRoots(args)
+      : [args.scratch, ...args.writePaths];
+    const readRoots = [home, ...writeRoots, ...args.readPaths];
+    return {
+      read: readRoots.some((root) => within(target, root)),
+      write: writeRoots.some((root) => within(target, root)),
+    };
+  }
   const home = canonicalize(args.home ?? os.homedir());
   const writable = writableRoots(args);
   const write = writable.some((root) => under(target, root));
-  if ((opts.platform ?? process.platform) === "win32") {
-    // No Job Object confines files — the job is a process cage
-    // (kill-on-close plus a process cap), not a seatbelt profile. So this
-    // answers what the APPROVAL allowed, not what the cage enforces: reads
-    // are the broad home grant plus the declared roots, writes are the
-    // writable roots. Compared folded (`overlapsRoot`): NTFS is
-    // case-insensitive, and the spelling a caller used is not a boundary.
-    // An `outside_approved_bound` verdict on Windows names a run that left
-    // its approved set — the cage did not stop it, and the verdict must
-    // not claim it did.
-    const overlaps = (target: string, root: string) => overlapsRoot(target, root);
+  if (platform === "linux") {
+    // Linux bwrap+workspace answers the APPROVAL against host paths (the
+    // child never opens them live). Bytewise, like seatbelt path roots.
     const readRoots = [home, ...writable, ...args.readPaths];
     return {
-      read: write || readRoots.some((root) => overlaps(target, root)),
-      write: writable.some((root) => overlaps(target, root)),
+      read: write || readRoots.some((root) => under(target, root)),
+      write,
     };
   }
   const readRoots = [...READ_BOILERPLATE, home, ...writable, ...args.readPaths, "/dev/fd"];
@@ -233,6 +250,36 @@ function winLauncher(): string | null {
     const require_ = createRequire(import.meta.url);
     const addon = require_.resolve("@domo/native-winsandbox");
     const launcher = path.join(path.dirname(addon), "build", "Release", "winsandbox_launcher.exe");
+    return fs.existsSync(launcher) ? launcher : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The Linux bubblewrap + cgroup cage (@domo/native-linuxsandbox), when it is
+ * built and we are on Linux, else null. Absent is not a fallback to uncaged
+ * execution: `run` fails closed.
+ */
+interface LinuxSandbox {
+  available(): boolean;
+}
+
+function linuxSandbox(): LinuxSandbox | null {
+  try {
+    const require_ = createRequire(import.meta.url);
+    return require_("@domo/native-linuxsandbox") as LinuxSandbox | null;
+  } catch {
+    return null;
+  }
+}
+
+/** The trusted helper shipped beside the native addon, never an agent path. */
+function linuxLauncher(): string | null {
+  try {
+    const require_ = createRequire(import.meta.url);
+    const addon = require_.resolve("@domo/native-linuxsandbox");
+    const launcher = path.join(path.dirname(addon), "build", "Release", "linuxsandbox_launcher");
     return fs.existsSync(launcher) ? launcher : null;
   } catch {
     return null;
@@ -546,16 +593,37 @@ export class Executor {
     // No new writer over what a hold is about, while it is out.
     while (this.conflicts(writableRoots(profileArgs))) await new Promise<void>((wake) => this.holdWaiters.push(wake));
     this.profiles.set(handle, profileArgs);
-    // The cage is per-OS: seatbelt below, Job Object on Windows. The
-    // approval bound in `profiles` is recorded on both, so the diagnosis
-    // asks one question either way.
+    // The cage is per-OS: seatbelt on macOS, Job Object + AppContainer on
+    // Windows, bubblewrap + staged workspace on Linux. The approval bound in
+    // `profiles` is recorded on all three, so the diagnosis asks one question.
+    //
+    // Windows and Linux will not exec a bare name: argv[0] must rewrite into
+    // the staged workspace. The owner approved `gog`; resolve it against the
+    // same vendor dirs we put on PATH so the staged bytes are what run.
+    const argv =
+      process.platform === "win32" || process.platform === "linux"
+        ? this.resolveVendorArgv(args.argv)
+        : args.argv;
     if (process.platform === "win32") {
       return this.runWindows(handle, scratch, {
-        argv: args.argv,
+        argv,
         cwd: args.cwd === undefined ? undefined : workingDir,
         // `profileArgs` also contains this run's scratch.  It is not an
         // owner input and staging it would recursively copy the workspace
         // into itself, so feed only real approved/runtime roots here.
+        readPaths: [...args.readPaths, ...this.vendorDirs, ...(args.cwd === undefined ? [] : [workingDir])]
+          .map((p) => canonicalize(p)),
+        writePaths: args.writePaths.map((p) => canonicalize(p)),
+        network: args.network,
+        env: args.env,
+        waitMs: args.waitMs,
+        reapable: isReapable(args),
+      });
+    }
+    if (process.platform === "linux") {
+      return this.runLinux(handle, scratch, {
+        argv,
+        cwd: args.cwd === undefined ? undefined : workingDir,
         readPaths: [...args.readPaths, ...this.vendorDirs, ...(args.cwd === undefined ? [] : [workingDir])]
           .map((p) => canonicalize(p)),
         writePaths: args.writePaths.map((p) => canonicalize(p)),
@@ -576,6 +644,29 @@ export class Executor {
       waitMs: args.waitMs,
       reapable: isReapable(args),
     });
+  }
+
+  /**
+   * Turn a bare provider name into the staged file under `vendorDirs`.
+   *
+   * Seatbelt can search PATH. The Windows/Linux cages cannot: they refuse an
+   * argv[0] that does not rewrite into the workspace. Without this, plow-gog
+   * would pass `"gog"` and the cage would fail closed on a binary we shipped.
+   */
+  private resolveVendorArgv(argv: readonly string[]): string[] {
+    const head = argv[0];
+    if (head === undefined || path.isAbsolute(head)) return [...argv];
+    const want =
+      process.platform === "win32" && !/\.[A-Za-z0-9]+$/.test(head) ? `${head}.exe` : head;
+    for (const dir of this.vendorDirs) {
+      const candidate = path.join(dir, want);
+      try {
+        if (fs.statSync(candidate).isFile()) return [candidate, ...argv.slice(1)];
+      } catch {
+        /* next dir */
+      }
+    }
+    return [...argv];
   }
 
   /**
@@ -660,6 +751,80 @@ export class Executor {
   }
 
   /**
+   * Run an approved command on Linux: argv directly (no shell), staged into
+   * a bubblewrap workspace and caged with systemd-run TasksMax. Fail CLOSED
+   * when the cage is not here — an uncaged command is not a degraded command.
+   */
+  private runLinux(
+    handle: string,
+    scratch: string,
+    args: {
+      argv: string[];
+      cwd?: string;
+      readPaths: readonly string[];
+      writePaths: readonly string[];
+      network: boolean;
+      env?: Readonly<Record<string, string>>;
+      waitMs: number;
+      reapable: boolean;
+    },
+  ): Promise<ExecResult> {
+    const sandbox = linuxSandbox();
+    if (!sandbox) {
+      throw new ExecutorError(
+        "command execution needs the Linux sandbox (@domo/native-linuxsandbox), which is not built on this host — " +
+          "install a C++ toolchain, bubblewrap, and `npm rebuild @domo/native-linuxsandbox`",
+      );
+    }
+    if (!sandbox.available()) {
+      throw new ExecutorError(
+        "Linux command execution needs bubblewrap and a systemd user session with TasksMax; " +
+          "refusing an uncaged command",
+      );
+    }
+    const launcher = linuxLauncher();
+    if (!launcher) {
+      throw new ExecutorError("Linux command execution needs the packaged bubblewrap launcher; refusing an uncaged command");
+    }
+    const workspace = LinuxWorkspace.create({ scratch, readPaths: args.readPaths, writePaths: args.writePaths });
+    const argv = args.argv.map((value) => workspace.rewrite(value));
+    if (argv[0] === args.argv[0]) {
+      throw new ExecutorError("Linux command executable is outside the approved staged workspace");
+    }
+    const cwd = args.cwd === undefined ? workspace.root : workspace.rewriteCwd(args.cwd);
+    let config: string | null = null;
+    try {
+      config = writeLinuxLaunchConfig(scratch, {
+        workspace: workspace.root,
+        cwd,
+        argv,
+        network: args.network,
+        env: {
+          ...args.env,
+          HOME: workspace.root,
+          TMPDIR: workspace.root,
+          TMP: workspace.root,
+          TEMP: workspace.root,
+          PATH: ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
+          LANG: "en_US.UTF-8",
+        },
+      });
+      return this.launch(handle, scratch, launcher, ["--config", config], {
+        cwd: scratch,
+        waitMs: args.waitMs,
+        reapable: args.reapable,
+        linuxBwrapHelper: true,
+        onCommandExited: () => workspace.reconcile(),
+      });
+    } catch (error) {
+      if (config !== null) {
+        try { fs.rmSync(config, { force: true }); } catch {}
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Run an AppleScript with /usr/bin/osascript, NOT under sandbox-exec.
    *
    * Deliberate, and the only unsandboxed execution in this process: some
@@ -721,13 +886,34 @@ export class Executor {
       reapable: boolean;
       /** Helper owns the inner AppContainer Job; do not add a second one. */
       windowsAppContainerHelper?: boolean;
-      /** Runs only after the helper waited for its AppContainer tree. */
+      /** Helper owns the bwrap + systemd-run cage; do not add a second one. */
+      linuxBwrapHelper?: boolean;
+      /** Runs only after the helper waited for its caged tree. */
       onCommandExited?: () => void;
     },
   ): Promise<ExecResult> {
     const realHome = os.homedir();
     const buffer = new OutputBuffer();
     this.buffers.set(handle, buffer);
+
+    // The Linux helper talks to the user's systemd bus; stripping
+    // DBUS_SESSION_BUS_ADDRESS / XDG_RUNTIME_DIR from its environment makes
+    // every cage launch fail closed for the wrong reason.
+    const linuxHelperEnv = opts.linuxBwrapHelper
+      ? {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+          HOME: realHome,
+          ...(process.env.DBUS_SESSION_BUS_ADDRESS
+            ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS }
+            : {}),
+          ...(process.env.XDG_RUNTIME_DIR
+            ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR }
+            : {}),
+          ...(process.env.XDG_SESSION_TYPE
+            ? { XDG_SESSION_TYPE: process.env.XDG_SESSION_TYPE }
+            : {}),
+        }
+      : null;
 
     const child = spawn(command, argv, {
       cwd: opts.cwd,
@@ -756,7 +942,7 @@ export class Executor {
               OS: "Windows_NT",
               PATHEXT: ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL",
             }
-          : {
+          : linuxHelperEnv ?? {
               ...opts.env,
         // Real home so tools and their configs resolve; TMPDIR stays in the
         // (writable, disposable) scratch dir; PATH includes the user bin dirs.

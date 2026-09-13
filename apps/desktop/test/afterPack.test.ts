@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
 const afterPack = createRequire(import.meta.url)("../build/afterPack.cjs") as (
@@ -454,4 +455,109 @@ describe("the Windows pack gate", () => {
     );
     await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/not .* \(PE machine mismatch\)/);
   });
+});
+
+describe("the Linux pack gate", () => {
+  let linuxDir: string;
+  beforeEach(() => {
+    linuxDir = fs.mkdtempSync(path.join(os.tmpdir(), "afterpack-linux-"));
+  });
+  afterEach(() => {
+    fs.rmSync(linuxDir, { recursive: true, force: true });
+  });
+  const linuxContextFor = (appOutDir: string, arch?: number | string) => ({
+    appOutDir,
+    electronPlatformName: "linux",
+    ...(arch === undefined ? {} : { arch }),
+  });
+  const linuxResources = () => path.join(linuxDir, "resources");
+  const linuxAddon = (...segs: string[]) =>
+    path.join(linuxResources(), "app.asar.unpacked", "node_modules", "@domo", ...segs);
+  // Minimal ELF header: magic + class/data/version + e_machine at offset 18.
+  const elfHeader = (machine: number) => {
+    const header = Buffer.alloc(20);
+    header.writeUInt32BE(0x7f454c46, 0); // "\x7fELF"
+    header[4] = 2; // ELFCLASS64
+    header[5] = 1; // ELFDATA2LSB
+    header[6] = 1;
+    header.writeUInt16LE(machine, 18);
+    return header;
+  };
+  const hostElf = process.arch === "arm64" ? 183 : 62;
+  const otherElf = process.arch === "arm64" ? 62 : 183;
+
+  it("refuses a pack whose native-linuxsandbox addon is absent", async () => {
+    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/no native-linuxsandbox addon/);
+  });
+
+  it("refuses a pack whose bubblewrap launcher is absent", async () => {
+    fs.mkdirSync(path.dirname(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox.node")), { recursive: true });
+    fs.writeFileSync(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox.node"), elfHeader(hostElf));
+    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/no bubblewrap launcher/);
+  });
+
+  it("refuses an addon built for the wrong arch", async () => {
+    const dir = path.dirname(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox.node"));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox.node"), elfHeader(otherElf));
+    fs.writeFileSync(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox_launcher"), elfHeader(hostElf));
+    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/ELF machine mismatch/);
+  });
+
+  const packLinuxCage = () => {
+    const dest = path.dirname(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox.node"));
+    fs.mkdirSync(dest, { recursive: true });
+    fs.writeFileSync(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox.node"), elfHeader(hostElf));
+    fs.writeFileSync(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox_launcher"), elfHeader(hostElf));
+  };
+  const packLinuxBrowser = (machine = hostElf) => {
+    const arch = process.arch === "arm64" ? "arm64" : "x64";
+    const browser = path.join(linuxResources(), "browser-runtime", "camoufox", arch, "camoufox-bin");
+    fs.mkdirSync(path.dirname(browser), { recursive: true });
+    fs.writeFileSync(browser, elfHeader(machine));
+  };
+  const packLinuxProviders = (machine = hostElf) => {
+    const arch = process.arch === "arm64" ? "arm64" : "x64";
+    for (const { command } of PROVIDERS) {
+      const provider = path.join(linuxResources(), "providers", command, arch, command);
+      fs.mkdirSync(path.dirname(provider), { recursive: true });
+      fs.writeFileSync(provider, elfHeader(machine));
+    }
+  };
+
+  it("refuses a missing or wrong-arch Linux Camoufox payload", async () => {
+    packLinuxCage();
+    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/no Linux Camoufox/);
+    packLinuxBrowser(otherElf);
+    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/Linux Camoufox is not/);
+  });
+
+  it("refuses a missing or wrong-arch Linux provider", async () => {
+    packLinuxCage();
+    packLinuxBrowser();
+    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/provider for/);
+    packLinuxProviders(otherElf);
+    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/provider is not/);
+  });
+
+  it.skipIf(process.platform !== "linux")(
+    "passes when the real cage addon, launcher and Camoufox are packed and --probe succeeds",
+    async () => {
+      const built = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../../../packages/native-linuxsandbox/build/Release",
+      );
+      const addonSrc = path.join(built, "linuxsandbox.node");
+      const launcherSrc = path.join(built, "linuxsandbox_launcher");
+      if (!fs.existsSync(addonSrc) || !fs.existsSync(launcherSrc)) return;
+      const dest = path.dirname(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox.node"));
+      fs.mkdirSync(dest, { recursive: true });
+      fs.copyFileSync(addonSrc, linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox.node"));
+      fs.copyFileSync(launcherSrc, linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox_launcher"));
+      fs.chmodSync(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox_launcher"), 0o755);
+      packLinuxBrowser();
+      packLinuxProviders();
+      await expect(afterPack(linuxContextFor(linuxDir))).resolves.toBeUndefined();
+    },
+  );
 });

@@ -25,6 +25,7 @@ import {
   DomoMcpServer,
   HOST_GATE_NOTE,
   HOST_TOOLING,
+  LINUX_TOOLING,
   MACOS_TOOLING,
   SERVER_IDENTITY,
   SERVER_INSTRUCTIONS,
@@ -186,7 +187,7 @@ describe("every tool with a strong built-in alternative says whose Mac this is",
   for (const tool of namedTools) {
     it(`${tool} names the user's own machine`, async () => {
       expect(await descriptions(makeServer()).then((d) => d[tool])).toMatch(
-        process.platform === "win32" ? /user's own PC/ : /user's own Mac/,
+        process.platform === "darwin" ? /user's own Mac/ : /user's own PC/,
       );
     });
   }
@@ -204,6 +205,9 @@ describe("every tool with a strong built-in alternative says whose Mac this is",
       // the same way: what it is for first, how it is caged second.
       expect(d.plow_run_command).toMatch(/Job Object/);
       expect(d.plow_run_command.indexOf("own PC")).toBeLessThan(d.plow_run_command.indexOf("Job Object"));
+    } else if (process.platform === "linux") {
+      expect(d.plow_run_command).toMatch(/bubblewrap sandbox/);
+      expect(d.plow_run_command.indexOf("own PC")).toBeLessThan(d.plow_run_command.indexOf("bubblewrap"));
     } else {
       // The sandbox is still stated — it is true and the agent needs it — but it
       // no longer opens the description, where it read as "this one is worse".
@@ -230,7 +234,7 @@ describe("every tool with a strong built-in alternative says whose Mac this is",
 
 });
 
-describe.skipIf(process.platform !== "win32")("Windows MCP copy", () => {
+describe.skipIf(process.platform !== "win32" && process.platform !== "linux")("PC MCP copy", () => {
   it("never advertises this PC as a Mac or names macOS-only controls", () => {
     const manifest = JSON.stringify(TOOLS);
     expect(manifest).not.toMatch(/\bMac\b/);
@@ -271,15 +275,15 @@ describe("every tool this Mac can stop says so", () => {
     expect(d.plow_get_output).not.toMatch(/applescript/i);
   });
 
-  it.skipIf(process.platform === "win32")("plow_run_command explains a running result that carries a diagnosis", async () => {
+  it.skipIf(process.platform !== "darwin")("plow_run_command explains a running result that carries a diagnosis", async () => {
     const d = await descriptions(makeServer());
     expect(d.plow_run_command).toMatch(/still 'running' but carries a 'diagnosis'/);
     expect(d.plow_run_command).toMatch(/leave it running/);
   });
 
-  it.skipIf(process.platform !== "win32")("plow_run_command says the tree ends with the run", async () => {
-    // No dialog ever parks a Windows run, so there is no parked sentence —
-    // instead the copy states the Job Object guarantee that replaces it.
+  it.skipIf(process.platform === "darwin")("plow_run_command says the tree ends with the run", async () => {
+    // No dialog ever parks a Windows/Linux run, so there is no parked sentence —
+    // instead the copy states the process-cage guarantee that replaces it.
     const d = await descriptions(makeServer());
     expect(d.plow_run_command).not.toMatch(/still 'running' but carries a 'diagnosis'/);
     expect(d.plow_run_command).toMatch(/whole tree ends with the run/);
@@ -299,8 +303,15 @@ describe("every tool this Mac can stop says so", () => {
     expect(d.plow_device_status).toMatch(/Do NOT call it to decide whether to try/);
     expect(d.plow_device_status).toMatch(/after a 'blocked' result/);
     expect(d.plow_device_status).not.toMatch(/BEFORE reading/);
-    expect(d.plow_device_status).toMatch(/'not_asked'/);
-    expect(d.plow_device_status).toMatch(/'target_not_running'/);
+    if (process.platform === "darwin") {
+      expect(d.plow_device_status).toMatch(/'not_asked'/);
+      expect(d.plow_device_status).toMatch(/'target_not_running'/);
+    } else if (process.platform === "linux") {
+      expect(d.plow_device_status).toMatch(/bubblewrap/);
+    } else {
+      expect(d.plow_device_status).toMatch(/'not_asked'/);
+      expect(d.plow_device_status).toMatch(/'target_not_running'/);
+    }
   });
 
   it("plow_get_output and plow_get_result name the blocked answer", async () => {
@@ -570,6 +581,12 @@ describe("what the agent-facing copy must and must not say", () => {
   it.skipIf(process.platform !== "win32")("the Windows tooling list names every tool verified in the job", () => {
     for (const tool of ["where", "powershell", "Get-ChildItem", "dir", "clip"]) {
       expect(WINDOWS_TOOLING).toContain(tool);
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("the Linux tooling list names every tool staged under the cage", () => {
+    for (const tool of ["find", "grep", "python3", "ls", "cat", "cp", "mkdir"]) {
+      expect(LINUX_TOOLING).toContain(tool);
     }
   });
 

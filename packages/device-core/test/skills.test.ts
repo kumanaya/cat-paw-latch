@@ -63,8 +63,8 @@ describe("SkillRegistry", () => {
     expect(BROWSING_SKILL.body).toContain("plow_browser_request");
   });
 
-  it("publishes an isolated Windows browser guide", () => {
-    const skill = browsingSkillFor("win32");
+  it.each(["win32", "linux"] as const)("publishes an isolated %s browser guide", (platform) => {
+    const skill = browsingSkillFor(platform);
     expect(skill.description).toMatch(/isolated/i);
     expect(skill.body).toMatch(/empty temporary browser profile/i);
     expect(skill.body).toMatch(/discarded/i);
