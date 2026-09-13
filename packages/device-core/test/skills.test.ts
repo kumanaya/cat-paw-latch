@@ -16,8 +16,11 @@ import {
   IMESSAGE_QUERIES,
   imessageSkillFor,
   imessageStorePath,
+  PROVIDERS,
   registerImessageSkill,
+  registerPlowFolderSkill,
   registerWhatsappSkill,
+  Skill,
   SkillRegistry,
   WHATSAPP_CHAT_PLACEHOLDER,
   WHATSAPP_FALLBACK_SCRIPT,
@@ -26,6 +29,26 @@ import {
   whatsappStorePath,
 } from "@domo/device-core";
 import { canonicalize, jv, JSONValue } from "@domo/protocol";
+
+describe("every built-in skill description", () => {
+  // The Hermes plugin (plow-chat-platform/__init__.py, _render_mac_skills)
+  // renders the manifest into the agent's prompt and clips each description
+  // at 280 characters. A description over that loses its tail, which is where
+  // the routing clause ("rather than answering that you cannot ...") sits.
+  const PLUGIN_DESCRIPTION_CLIP = 280;
+  const folder = new SkillRegistry();
+  registerPlowFolderSkill(folder, "/Users/example");
+  it.each([
+    ["browsing", BROWSING_SKILL],
+    ["whatsapp-history", whatsappSkillFor("/Users/example")],
+    ["imessage", imessageSkillFor("/Users/example")],
+    ["contacts", contactsSkillFor("/Users/example")],
+    ["plow-folder", folder.skill("plow-folder")!],
+    ...PROVIDERS.map((p): [string, Skill] => [p.skill.name, p.skill]),
+  ])("%s fits the plugin's clip whole", (_name, skill) => {
+    expect(skill.description.length).toBeLessThanOrEqual(PLUGIN_DESCRIPTION_CLIP);
+  });
+});
 
 describe("SkillRegistry", () => {
   it("loads *.md with frontmatter and skips malformed files", () => {
@@ -182,7 +205,9 @@ describe("the built-in imessage skill", () => {
     ["every send decided on its own, by design", /every send is decided on its own, by design/i],
     ["Approve mode allowing a send unread", /under Approve the send is allowed without\s+anyone reading it/i],
     ["not fighting approval with a wrapper script", /do not fight this with a wrapper script/i],
-    ["verifying delivery after send", /is_sent.*and.*is_delivered/i],
+    ["the success criterion for a send", /success criterion is .?is_sent = 1.? and .?error = 0.?/i],
+    ["is_delivered not being part of that criterion", /is_delivered.? is not part of it/i],
+    ["what a non-zero error means", /error = 22.?\s+is the\s+common one/i],
     ["byte-identical argv for unattended reads", /byte-identical/i],
   ])("publishes %s", (_what, pattern) => {
     expect(imessageSkillFor("/Users/testowner").body).toMatch(pattern);

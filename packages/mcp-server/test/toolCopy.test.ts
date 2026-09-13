@@ -281,6 +281,15 @@ describe("every tool this Mac can stop says so", () => {
     expect(d.plow_run_command).toMatch(/leave it running/);
   });
 
+  it.skipIf(process.platform !== "darwin")("the script tool says exit 0 is not delivery, and that a send goes out as the owner", async () => {
+    const d = await descriptions(makeServer());
+    expect(d.plow_run_applescript).toMatch(/zero exit_code means the app accepted the script/);
+    expect(d.plow_run_applescript).toMatch(/fails silently/);
+    expect(d.plow_run_applescript).toMatch(/as the owner's own account/);
+    expect(d.plow_run_applescript).toMatch(/not yours to choose/);
+    expect(d.plow_run_applescript).toMatch(/plow_list_skills/);
+  });
+
   it.skipIf(process.platform === "darwin")("plow_run_command says the tree ends with the run", async () => {
     // No dialog ever parks a Windows/Linux run, so there is no parked sentence —
     // instead the copy states the process-cage guarantee that replaces it.
