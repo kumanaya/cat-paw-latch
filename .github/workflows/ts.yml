@@ -7,8 +7,8 @@ name: TypeScript
 # bubblewrap + staged-workspace cage is Linux-only — each side's tests pin its
 # own platform and skip elsewhere. The Electron evidence still needs a
 # windowing environment, so macOS only.
-# Windows 11 ARM64 runs the same native-addon and confinement suite as x64;
-# neither architecture is allowed to borrow the other's binaries.
+# Windows coverage is x64 (windows-2022). The hosted ARM image
+# (windows-11-vs2026-arm) is too new and too scarce to block a PR.
 
 on:
   push:
@@ -22,9 +22,8 @@ jobs:
       fail-fast: false
       matrix:
         # windows-latest is Server 2025: slow disk/Defender and a moving VS
-        # image. 2022 is the stable hosted x64 seat. ARM stays on the 11
-        # desktop image so the AppContainer suite sees a client SKU.
-        os: [macos-latest, ubuntu-latest, windows-2022, windows-11-vs2026-arm]
+        # image. 2022 is the stable hosted x64 seat.
+        os: [macos-latest, ubuntu-latest, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
