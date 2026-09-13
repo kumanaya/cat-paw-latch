@@ -152,6 +152,10 @@ extraResources:
     to: LICENSE
   - from: ../../NOTICE
     to: NOTICE
+  # The menu-bar/tray icon (trayIcon.ts): the repo artwork, beside the asar
+  # so setupTray can load it at runtime on every platform.
+  - from: ../../artwork/domo-desktop-icon.png
+    to: tray-icon.png
   # Every vendored provider CLI, per-arch, in ONE entry — the payloads live
   # under vendor/providers/<command>/<arch>/, so adding a provider edits nothing
   # here. resolveVendoredBinary looks the arch up by process.arch, so those
@@ -257,6 +261,7 @@ afterPack: build/afterPack.cjs
 # Objects); the macOS keychain/permissions/credential-import addons skip
 # their builds off darwin, so they pack as loaders-only and stay inert.
 win:
+  icon: ../../artwork/domo-desktop-icon.ico
   # electron-updater validates every offered update against this exact
   # certificate publisher before NSIS is allowed to apply it.
   verifyUpdateCodeSignature: true
@@ -287,6 +292,7 @@ nsis:
 # fallback. Camoufox ships per-arch under
 # browser-runtime/camoufox/<arch>/camoufox-bin.
 linux:
+  icon: ../../artwork/domo-desktop-icon.png
   category: Development
   # Scoped name `@domo/desktop` is not a legal AppImage executableName (`@`).
   executableName: PlowLatch
