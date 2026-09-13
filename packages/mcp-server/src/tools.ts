@@ -42,6 +42,11 @@ import { BlockedError, DeferredResults, DeniedError, DeviceError, Progress } fro
 import { JobOwners } from "./jobs.js";
 import path from "node:path";
 
+/** Absolute for this host, including `~` which canonicalize expands. */
+function isAbsoluteUserPath(raw: string): boolean {
+  return path.isAbsolute(raw) || raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\");
+}
+
 /** One promise, four descriptions: four wordings of it are four things to drift. */
 const EVAL_REFUSED =
   "'eval' is refused while a concealed field on ANY page of the session still holds the " +
@@ -676,7 +681,7 @@ export const TOOLS: ToolSpec[] = [
         const normalized = [...argv];
         for (const fileArg of provider.fileArgs(argv)) {
           const resolvedPaths = await Promise.all(fileArg.paths.map(async (raw) => {
-            const absolute = raw.startsWith("/") || raw === "~" || raw.startsWith("~/")
+            const absolute = isAbsoluteUserPath(raw)
               ? raw
               : cwd === undefined
                 ? null

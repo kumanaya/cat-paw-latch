@@ -659,9 +659,15 @@ export function diagnose(f: HostFacts, opts: DiagnoseOptions = {}): Diagnosis {
     return verdict("unknown", "unknown", null);
   }
 
-  if (errno === "EACCES") {
+  if (
+    errno === "EACCES"
+    || (onWindows && errno === "EPERM" && !f.sip_protected && !f.ran_sandboxed && f.tcc_guarded_prefix === null)
+  ) {
+    // Node on Windows maps ERROR_ACCESS_DENIED to EPERM, not EACCES. An
+    // in-process file the ACL refuses is the same ordinary-permissions
+    // refusal the POSIX tests get from chmod 000.
     const bit = f.op === "write" ? f.posix_writable : f.posix_readable;
-    evidence.push(`the kernel answered EACCES (ordinary permissions) for ${where}`);
+    evidence.push(`the kernel answered ${errno} (ordinary permissions) for ${where}`);
     if (bit === false) {
       evidence.push("the file's mode and ownership deny the owner's account");
       return verdict("posix_permissions", "confirmed", null);

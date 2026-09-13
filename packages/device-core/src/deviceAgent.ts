@@ -11,7 +11,7 @@
  * key to pin. That is provenance, not confinement — DESIGN.md §4 *The intent
  * object* owns where an intent's contents go.
  */
-import { capabilityDisplay, Intent, intentIsExpired, JSONValue, jv, overlapsRoot } from "@domo/protocol";
+import { canonicalize, capabilityDisplay, Intent, intentIsExpired, JSONValue, jv, overlapsRoot } from "@domo/protocol";
 import { PROVIDERS, vendoredProvider, type VendoredProvider } from "./providers/registry.js";
 import { MintError, type MintedAccounts, type Minter } from "./providers/mint.js";
 import { conflictRefusal, gogExitReason, mergeFanout, planPlowGog } from "./providers/plowGog.js";
@@ -335,8 +335,11 @@ export class DeviceAgent {
     hostProbes: HostProbes | null = null,
   ) {
     this.identity = loadOrCreateIdentity(home, name);
-    this.ownerHome = ownerHome;
-    this.hostProbes = hostProbes ?? nodeProbes({ ownerHome });
+    // Physical path: 8.3 TEMP (`RUNNER~1`) vs the long form grants and
+    // collectFacts speak. Resolving once at construction does not follow a
+    // later-swapped symlink — this is the owner's home as it is now.
+    this.ownerHome = canonicalize(ownerHome);
+    this.hostProbes = hostProbes ?? nodeProbes({ ownerHome: this.ownerHome });
     this.audit = new AuditLog(path.join(home, "device/audit.ndjson"));
     this.policy = new PolicyEngine(path.join(home, "device/rules.json"));
     for (const rule of this.policy.migratedDisabledRules()) {
@@ -355,15 +358,15 @@ export class DeviceAgent {
     // happens to have WhatsApp installed. Presence is sampled ONCE, here — the
     // same start-time answer `browserRuntime` gives, so installing WhatsApp
     // while the app is running needs a restart to publish the skill.
-    registerWhatsappSkill(this.skills, ownerHome);
-    registerImessageSkill(this.skills, ownerHome);
+    registerWhatsappSkill(this.skills, this.ownerHome);
+    registerImessageSkill(this.skills, this.ownerHome);
     // The playground exists before any agent asks about it, and the skill can
     // therefore name a folder that is really there. `ownerHome` for the same
     // reason as WhatsApp above: the folder belongs to the owner's real home,
     // and a test's throwaway ownerHome keeps the suite off the developer's.
-    ensurePlowFolder(ownerHome);
-    registerPlowFolderSkill(this.skills, ownerHome);
-    registerContactsSkill(this.skills, ownerHome);
+    ensurePlowFolder(this.ownerHome);
+    registerPlowFolderSkill(this.skills, this.ownerHome);
+    registerContactsSkill(this.skills, this.ownerHome);
     // Registered only when the CLI it documents is actually staged: a skill
     // for a binary this Mac does not have teaches an agent commands the exec
     // path refuses unconditionally. The SAME predicate that gate uses — two

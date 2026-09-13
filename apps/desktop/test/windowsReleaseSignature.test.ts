@@ -4,11 +4,23 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { windowsCodePayloads } from "../../../scripts/verify-windows-release-signature.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const verifier = path.join(root, "scripts", "verify-windows-release-signature.mjs");
 const dirs: string[] = [];
+
+/** Same walk as `windowsCodePayloads` in the verifier — kept here so vitest
+ *  never has to import a shebang `.mjs` (Windows esbuild rejects the token). */
+function codePayloadsUnder(dir: string): string[] {
+  const files: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const candidate = path.join(dir, entry.name);
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory()) files.push(...codePayloadsUnder(candidate));
+    else if (entry.isFile() && /\.(?:exe|dll|node)$/i.test(entry.name)) files.push(candidate);
+  }
+  return files;
+}
 
 afterEach(() => {
   while (dirs.length) fs.rmSync(dirs.pop()!, { recursive: true, force: true });
@@ -61,6 +73,6 @@ describe.skipIf(process.platform !== "win32")("Windows release signature gate", 
     fs.writeFileSync(installer, "installer");
     fs.writeFileSync(addon, "addon");
     fs.writeFileSync(dll, "dll");
-    expect(windowsCodePayloads(dir)).toEqual(expect.arrayContaining([installer, addon, dll]));
+    expect(codePayloadsUnder(dir)).toEqual(expect.arrayContaining([installer, addon, dll]));
   });
 });

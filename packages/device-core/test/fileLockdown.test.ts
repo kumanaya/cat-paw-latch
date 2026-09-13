@@ -46,8 +46,9 @@ describe.skipIf(!HAVE_ADDON)("secret-file ACL lockdown", () => {
   it("replaces the inherited DACL with one protected owner-only ACE", () => {
     const file = tempFile();
     const before = readSecretFileSddl(file)!;
-    // Inherited: auto-inherited flag, more than the one ACE we will leave.
-    expect(before).toMatch(/D:AI?\(/);
+    // Inherited DACL: control flags vary (D:AI vs D: with ID on each ACE —
+    // GHA Server 2025 TEMP uses the latter). More than the one ACE we leave.
+    expect(before).toMatch(/D:[A-Z]*\(/);
     expect(aceCount(before)).toBeGreaterThan(1);
     const sid = lockdownSecretFile(file)!;
     expect(sid).toMatch(/^S-1-/);
@@ -76,6 +77,8 @@ describe.skipIf(!HAVE_ADDON)("secret-file ACL lockdown", () => {
     expect(second).toBe(first);
     const sddl = readSecretFileSddl(file)!;
     expect(aceCount(sddl)).toBe(1);
-    expect(sddl).toContain(first);
+    // ConvertStringSecurityDescriptor emits well-known aliases (LA = RID 500)
+    // on some images; the numeric SID is what lockdown returned.
+    expect(sddl.includes(first) || (/^S-1-5-21-.*-500$/.test(first) && /;;;LA(?:;|\))/.test(sddl))).toBe(true);
   });
 });

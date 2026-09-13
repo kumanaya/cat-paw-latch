@@ -162,11 +162,12 @@ describe.skipIf(AS_ROOT)("a file this Mac refused", () => {
     expect(status).toBe(200);
     expect(isError).toBe(true);
     expect(payload.status).toBe("blocked");
-    expect(payload.error).toMatch(/EACCES/);
+    // Node on Windows reports ACL deny as EPERM (ERROR_ACCESS_DENIED).
+    expect(payload.error).toMatch(/EACCES|EPERM/);
     expect(payload.diagnosis.cause).toBe("posix_permissions");
     expect(payload.diagnosis.owner_action).toMatch(/icacls/);
     expect(payload.diagnosis.retry).toBe("with_different_path");
-    expect(payload.probes.errno).toBe("EACCES");
+    expect(payload.probes.errno).toMatch(/EACCES|EPERM/);
     expect(payload.probes.path).toBe("~/Plow/secret.txt");
     expect(events(device)).toEqual(["intent_received", "intent_decision", "host_permission_blocked"]);
   });
@@ -238,7 +239,7 @@ describe.skipIf(AS_ROOT)("a file this Mac refused", () => {
     expect(settled.payload.status).toBe("blocked");
     expect(settled.payload.handle).toBe(handle);
     expect(settled.payload.diagnosis.cause).toBe("posix_permissions");
-    expect(settled.payload.probes.errno).toBe("EACCES");
+    expect(settled.payload.probes.errno).toMatch(/EACCES|EPERM/);
     // Ownership holds for blocked results like every other terminal state.
     const theirs = await callTool(server, "plow_get_result", { handle }, OTHER);
     expect(theirs.payload.status).toBe("unknown");

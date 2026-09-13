@@ -75,8 +75,27 @@ function mkdirPlain(target: string, what: string): void {
   }
 }
 
+function underScratch(candidate: string, scratch: string): boolean {
+  let real: string;
+  try {
+    real = canonicalize(candidate);
+  } catch {
+    real = candidate;
+  }
+  return inside(real, scratch) || real.toLowerCase() === scratch.toLowerCase();
+}
+
 /** Copy a tree without following, preserving or accepting any link. */
-function copyPlain(source: string, destination: string, destinationLabel: string): void {
+function copyPlain(
+  source: string,
+  destination: string,
+  destinationLabel: string,
+  scratch: string | null = null,
+): void {
+  // An approved root that *contains* this run's scratch (cwd === the temp
+  // parent is the usual case) would otherwise copy the workspace into
+  // itself until mkdir hits EINVAL — CI on Windows 8.3 TEMP did exactly that.
+  if (scratch !== null && underScratch(source, scratch)) return;
   const stat = lstatPlain(source, "workspace source");
   if (stat.isFile()) {
     mkdirPlain(path.dirname(destination), destinationLabel);
@@ -96,7 +115,8 @@ function copyPlain(source: string, destination: string, destinationLabel: string
     // Dirent is a fast early refusal; lstat inside the recursive call remains
     // authoritative because a process can swap an entry between these calls.
     if (entry.isSymbolicLink()) fail("workspace tree contains a reparse point");
-    copyPlain(child, path.join(destination, entry.name), destinationLabel);
+    if (scratch !== null && underScratch(child, scratch)) continue;
+    copyPlain(child, path.join(destination, entry.name), destinationLabel, scratch);
   }
 }
 
@@ -123,7 +143,12 @@ export class WindowsWorkspace {
   }
 
   static create(args: { scratch: string; readPaths: readonly string[]; writePaths: readonly string[] }): WindowsWorkspace {
-    const root = path.join(args.scratch, "appcontainer-workspace");
+    // Same reason linuxWorkspace canonicalizes scratch: 8.3 TEMP vs the long
+    // path the rest of the walk speaks, and a parent approved root must be
+    // able to recognise this directory as "ours, do not copy".
+    fs.mkdirSync(args.scratch, { recursive: true });
+    const scratch = canonicalize(args.scratch);
+    const root = path.join(scratch, "appcontainer-workspace");
     // `scratch` is created by Executor, but making the primitive usable in a
     // direct test does not widen the trusted boundary: the unique run handle
     // still supplies this directory and no caller controls its parent.
@@ -141,7 +166,7 @@ export class WindowsWorkspace {
       seen.add(key);
       lstatPlain(host, "approved root");
       const staged = path.join(root, writable ? "write" : "read", String(mappings.length));
-      copyPlain(host, staged, "workspace");
+      copyPlain(host, staged, "workspace", scratch);
       mappings.push({ host, staged, writable });
     };
     // Writable roots take precedence when a capability redundantly lists the

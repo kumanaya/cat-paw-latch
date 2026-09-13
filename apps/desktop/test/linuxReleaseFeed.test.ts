@@ -5,7 +5,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { electronUpdaterSha512 } from "../../../scripts/verify-linux-release-feed.mjs";
 
 const root = fileURLToPath(new URL("../../..", import.meta.url));
 const verifier = path.join(root, "scripts", "verify-linux-release-feed.mjs");
@@ -18,11 +17,6 @@ afterEach(() => {
 describe("Linux release feed digest gate", () => {
   const run = (dir: string, arch = "x64") =>
     spawnSync(process.execPath, [verifier, dir, "--arch", arch], { encoding: "utf8" });
-
-  it("computes the sha512 electron-updater compares", () => {
-    const bytes = Buffer.from("plow-latch-appimage");
-    expect(electronUpdaterSha512(bytes)).toBe(createHash("sha512").update(bytes).digest("base64"));
-  });
 
   it("refuses a directory without an AppImage", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plow-linux-feed-"));
@@ -63,7 +57,7 @@ describe("Linux release feed digest gate", () => {
     const name = "Plow-Latch-0.1.1-x64.AppImage";
     const bytes = Buffer.from("payload");
     fs.writeFileSync(path.join(dir, name), bytes);
-    const digest = electronUpdaterSha512(bytes);
+    const digest = createHash("sha512").update(bytes).digest("base64");
     fs.writeFileSync(
       path.join(dir, "latest-linux.yml"),
       `version: 0.1.1\nfiles:\n  - url: ${name}\n    sha512: ${digest}\npath: ${name}\nsha512: ${digest}\n`,

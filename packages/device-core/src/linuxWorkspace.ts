@@ -172,8 +172,25 @@ function findOnPath(name: string): string | null {
   return null;
 }
 
+function underScratch(candidate: string, scratch: string): boolean {
+  let real: string;
+  try {
+    real = canonicalize(candidate);
+  } catch {
+    real = candidate;
+  }
+  return inside(real, scratch) || real === scratch;
+}
+
 /** Copy a tree without following links; rewrite shebang scripts. */
-function copyPlain(source: string, destination: string, destinationLabel: string, interpRoot: string | null): void {
+function copyPlain(
+  source: string,
+  destination: string,
+  destinationLabel: string,
+  interpRoot: string | null,
+  scratch: string | null = null,
+): void {
+  if (scratch !== null && underScratch(source, scratch)) return;
   const stat = lstatPlain(source, "workspace source");
   if (stat.isFile()) {
     mkdirPlain(path.dirname(destination), destinationLabel);
@@ -195,7 +212,8 @@ function copyPlain(source: string, destination: string, destinationLabel: string
   for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
     const child = path.join(source, entry.name);
     if (entry.isSymbolicLink()) fail("workspace tree contains a symbolic link");
-    copyPlain(child, path.join(destination, entry.name), destinationLabel, interpRoot);
+    if (scratch !== null && underScratch(child, scratch)) continue;
+    copyPlain(child, path.join(destination, entry.name), destinationLabel, interpRoot, scratch);
   }
 }
 
@@ -225,7 +243,9 @@ export class LinuxWorkspace {
     // `/var` is a symlink to `/private/var` on macOS. Resolve the scratch
     // root before walking it so the anti-symlink guard protects user input,
     // not an OS-owned compatibility alias.
-    const root = path.join(canonicalize(args.scratch), "bwrap-workspace");
+    fs.mkdirSync(args.scratch, { recursive: true });
+    const scratch = canonicalize(args.scratch);
+    const root = path.join(scratch, "bwrap-workspace");
     fs.mkdirSync(root, { recursive: true });
     const interpRoot = path.join(root, ".interp");
     fs.mkdirSync(interpRoot, { recursive: true });
@@ -242,7 +262,7 @@ export class LinuxWorkspace {
       lstatPlain(host, "approved root");
       const inventory = writable ? listFiles(host) : new Set<string>();
       const staged = path.join(root, writable ? "write" : "read", String(mappings.length));
-      copyPlain(host, staged, "workspace", interpRoot);
+      copyPlain(host, staged, "workspace", interpRoot, scratch);
       mappings.push({ host, staged, writable, inventory });
     };
     for (const rootPath of args.writePaths) add(rootPath, true);

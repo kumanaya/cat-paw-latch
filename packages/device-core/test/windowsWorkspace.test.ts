@@ -68,4 +68,14 @@ describe.skipIf(process.platform !== "win32")("WindowsWorkspace", () => {
     expect(() => WindowsWorkspace.create({ scratch: path.join(tmp, "scratch"), readPaths: [parent, child], writePaths: [] }))
       .toThrow(WindowsWorkspaceError);
   });
+
+  it("does not copy the scratch tree when an approved root contains it", () => {
+    const tmp = root();
+    fs.writeFileSync(path.join(tmp, "note.txt"), "keep");
+    const scratch = path.join(tmp, "scratch");
+    const workspace = WindowsWorkspace.create({ scratch, readPaths: [tmp], writePaths: [] });
+    const staged = workspace.rewrite(path.join(tmp, "note.txt"));
+    expect(fs.readFileSync(staged, "utf8")).toBe("keep");
+    expect(fs.existsSync(path.join(workspace.rewrite(tmp), "scratch"))).toBe(false);
+  });
 });

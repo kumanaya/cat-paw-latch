@@ -70,6 +70,16 @@ describe.skipIf(process.platform !== "linux")("LinuxWorkspace", () => {
       .toThrow(LinuxWorkspaceError);
   });
 
+  it("does not copy the scratch tree when an approved root contains it", () => {
+    const tmp = root();
+    fs.writeFileSync(path.join(tmp, "note.txt"), "keep");
+    const scratch = path.join(tmp, "scratch");
+    const workspace = LinuxWorkspace.create({ scratch, readPaths: [tmp], writePaths: [] });
+    const staged = workspace.rewrite(path.join(tmp, "note.txt"));
+    expect(fs.readFileSync(staged, "utf8")).toBe("keep");
+    expect(fs.existsSync(path.join(workspace.rewrite(tmp), "scratch"))).toBe(false);
+  });
+
   it("stages shebang interpreters under .interp and rewrites the script", () => {
     const tmp = root();
     const input = path.join(tmp, "input");

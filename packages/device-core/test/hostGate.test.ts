@@ -983,10 +983,14 @@ describe("Windows gates — the CFA/ACL/system table and its verdicts", () => {
     expect(isHostGate(d.cause)).toBe(true);
   });
 
-  it("names an unguarded Windows path unknown, with Windows in the evidence", () => {
+  it("names an unguarded Windows EPERM as an ACL, not Controlled Folder Access", () => {
+    // Node maps ERROR_ACCESS_DENIED to EPERM. Off the CFA folders that is
+    // an ACL, not a Windows Security switch — the icacls sentence, never
+    // "allow the app through ransomware protection".
     const d = win({ errno: "EPERM", path_exists: true, app_process_open: "EPERM", tcc_guarded_prefix: null });
-    expect(d.cause).toBe("unknown");
-    expect(d.evidence.join("\n")).toMatch(/Windows is known to guard/);
+    expect(d.cause).toBe("posix_permissions");
+    expect(d.owner_action).toMatch(/icacls/);
+    expect(d.owner_action).not.toMatch(/Controlled folder access/);
   });
 
   it("reads a withheld Windows path as a likely os_permission", () => {
@@ -999,6 +1003,10 @@ describe("Windows gates — the CFA/ACL/system table and its verdicts", () => {
     const perms = win({ errno: "EACCES", posix_readable: false, app_process_open: "EACCES" });
     expect(perms.cause).toBe("posix_permissions");
     expect(perms.owner_action).toMatch(/icacls/);
+    // Node reports ACL deny as EPERM. Same sentence as chmod 000, not CFA.
+    const acl = win({ errno: "EPERM", posix_readable: false, app_process_open: "EPERM" });
+    expect(acl.cause).toBe("posix_permissions");
+    expect(acl.owner_action).toMatch(/icacls/);
     const sys = win({ errno: "EPERM", sip_protected: true, app_process_open: "EPERM" });
     expect(sys.cause).toBe("sip_protected");
     expect(sys.owner_action).toMatch(/elevated/);
@@ -1066,8 +1074,10 @@ describe("Windows gates — the CFA/ACL/system table and its verdicts", () => {
   });
 
   it.skipIf(process.platform !== "win32")("runs the battery on Windows paths without touching the disk it was not given", async () => {
-    const dir = tempDir();
-    const file = path.join(dir, "a.txt");
+    // TEMP is often 8.3 on GHA (`RUNNER~1`). Canonicalize so the scripted
+    // probe key matches the path collectFacts actually opens.
+    const dir = canonicalize(tempDir());
+    const file = canonicalize(path.join(dir, "a.txt"));
     fs.writeFileSync(file, "x");
     const probes = scriptedProbes({ openAsApp: { [file]: "EPERM" } });
     const f = await collectFacts({ op: "read", paths: [file], ranSandboxed: false }, probes, dir);
