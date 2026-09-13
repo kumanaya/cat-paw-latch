@@ -69,6 +69,7 @@ import { devIconScript } from "./devIcon.js";
 import { migrateLegacyHome } from "./migrateHome.js";
 import { buildMinter, vendorDirs } from "./providerWiring.js";
 import { resolveInstancePaths } from "./paths.js";
+import { resolveTrayIconPath, trayIconSize } from "./trayIcon.js";
 import { ImportStaging, passwordsAppCanHandOff } from "./importStaging.js";
 import { loadSettings, saveSettings, useCredentialCodec, credentialStorage, WindowBounds } from "./settings.js";
 import { resolveTelemetryConfig, SimulatedError, Telemetry, telemetryMaySend } from "./telemetry.js";
@@ -177,7 +178,8 @@ console.log(
 // setName above rebrands the menus and dock title, but a from-source run is
 // still the stock Electron.app bundle, so the Dock/Cmd-Tab icon stays
 // Electron's. Repoint it at the repo artwork — dev only: the packaged app
-// gets its icon from electron-builder (`mac.icon`) and doesn't ship the PNG.
+// gets its icon from electron-builder (`mac.icon`) and ships the PNG only as
+// the tray extraResource (trayIcon.ts).
 // Once the app is ready, a DEV-ribboned version replaces it (see whenReady).
 const devIconPath = path.join(dirname, "..", "..", "..", "artwork", "domo-desktop-icon.png");
 if (!app.isPackaged) {
@@ -2660,9 +2662,23 @@ function showCapabilitiesForHostGate(block?: NonNullable<typeof hostGateAttentio
 }
 
 function setupTray(): void {
-  // A 1x1 transparent placeholder keeps the tray API happy without an asset
-  // pipeline; a real template image ships with the packaged app.
-  const image = nativeImage.createEmpty();
+  // The tray icon is the repo artwork: the packaged app ships it as an
+  // extraResource (trayIcon.ts), a from-source run reads it from artwork/.
+  // A missing or unreadable file falls back to the old 1x1 transparent
+  // placeholder rather than failing startup — the menu still works.
+  let image = nativeImage.createEmpty();
+  try {
+    const loaded = nativeImage.createFromPath(
+      resolveTrayIconPath({
+        isPackaged: app.isPackaged,
+        dirname,
+        resourcesPath: process.resourcesPath,
+      }),
+    );
+    if (!loaded.isEmpty()) image = loaded.resize(trayIconSize(process.platform));
+  } catch {
+    // Keep the placeholder.
+  }
   tray = new Tray(image);
   tray.setToolTip(instance.trayTooltip);
   refreshTray();
