@@ -379,11 +379,15 @@ export function buildActivity(id: string, events: JSONValue[]): AuditActivity {
       value("intent_received", "agent") ??
       value("access_request", "agent") ??
       value("access_decision", "agent") ??
-      value("agent_spawned", "agent"),
+      value("agent_spawned", "agent") ??
+      value("rule_revoked", "agent"),
     // Newer entries carry the relay-asserted name; `access_request.display` is
     // the pre-relay shape, kept because the audit log is append-only and old
     // entries are still on disk.
-    agentDisplay: value("intent_received", "agent_name") ?? value("access_request", "display"),
+    agentDisplay:
+      value("intent_received", "agent_name") ??
+      value("access_request", "display") ??
+      value("rule_revoked", "agent_name"),
     goal:
       value("intent_received", "goal") ??
       value("access_request", "goals") ??
@@ -398,11 +402,13 @@ export function buildActivity(id: string, events: JSONValue[]): AuditActivity {
     // Every request in this row, not just the first: a session that was
     // widened carries the opening intent AND each `browser_request` that
     // extended it, and showing only the first understates to the owner what
-    // their browser was actually allowed to reach.
+    // their browser was actually allowed to reach. A revoke row has no
+    // request; its bound is the revoked rule's, and it is what tells an
+    // owner with several rules for one agent WHICH one this was.
     capabilities: [
       ...new Set(
         events
-          .filter((e) => jv(e).get("event").str === "intent_received")
+          .filter((e) => ["intent_received", "rule_revoked"].includes(jv(e).get("event").str ?? ""))
           .flatMap((e) =>
             (jv(e).get("capabilities").arr ?? []).filter((c): c is string => typeof c === "string"),
           ),
@@ -448,6 +454,9 @@ function activityTitle(
     return `Made Google account ${value("connector_default_changed", "account") ?? ""} the default`;
   }
   if (has("activation_session_cleanup")) return "Activation session cleanup";
+  if (has("rule_revoked")) {
+    return `Always-allow rule revoked — ${value("rule_revoked", "agent_name") ?? value("rule_revoked", "agent") ?? "agent"}`;
+  }
   if (has("agent_spawned")) return "Agent spawned";
   if (has("exec_end")) return "Command finished";
   if (has("applescript_end")) return "Script finished";
@@ -519,6 +528,9 @@ function classifyActivity(
     return outcome("Completed", "green", "completed");
   }
   if (has("agent_spawned")) return outcome("Spawned", "blue", "completed");
+  // A revoke is its own row: the owner did it, from the Rules pane, with no
+  // request behind it.
+  if (has("rule_revoked")) return outcome("Revoked", "green", "completed");
   // The decision outranks any browser events riding in the intent's group: a
   // browser_open/browser_request row says how it was decided, and the live
   // browsing state belongs to the session's own activity.
@@ -648,7 +660,7 @@ function activityKind(
   value: (e: string, k: string) => string | null,
 ): string {
   if (has("agent_spawned")) return "agent";
-  if (has("access_request") || has("access_decision")) return "access";
+  if (has("access_request") || has("access_decision") || has("rule_revoked")) return "access";
   if (
     has("connector_connected") ||
     has("connector_disconnected") ||
@@ -749,6 +761,21 @@ function describeStep(e: JSONValue): AuditStep {
       break;
     }
     case "intent_received": text = `Request: ${ev.get("request").str ?? ""}`; break;
+    // Stored the moment the owner clicks — before the decision line, and
+    // kept even when that line then says the request timed out.
+    case "rule_stored": text = "Always-allow rule saved"; state = "ok"; break;
+    case "rule_revoked":
+      text = `Always-allow rule revoked — ${ev.get("agent_name").str ?? ev.get("agent").str ?? ""}`;
+      state = "ok";
+      break;
+    // The line before this one announced a change that then could not be
+    // written; the rule set is as it was.
+    case "rule_write_failed":
+      text = ev.get("op").str === "revoked"
+        ? "Always-allow rule could not be revoked — it is still in effect"
+        : "Always-allow rule could not be saved — it does not exist";
+      state = "bad";
+      break;
     case "adversarial_review_started": text = "AI Reviewer started reviewing…"; break;
     case "adversarial_review_result": {
       const verdict = ev.get("verdict").str ?? "";
