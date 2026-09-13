@@ -144,7 +144,7 @@ const rosterProbe = {
     chatUids: ["*"],
     chatAccess: "all",
     permissions: { canReadAndReply: true, canReachMac: true, canSpendInference: true },
-    deviceLabel: "this Mac",
+    deviceLabel: "this Desktop",
     isActive: true,
     isThisMac: false,
   }],
@@ -527,7 +527,7 @@ app.whenReady().then(async () => {
       hasAccountGroup: document.body.innerText.includes("Plow Account"),
       // The account group is about this Mac now, not the wire. The endpoint is
       // the Agents tab's job (where it can be copied) and the UID was noise.
-      showsThisMac: document.querySelector("#view").innerText.includes("This Mac"),
+      showsThisMac: document.querySelector("#view").innerText.includes("This Desktop"),
       noEndpointRow: !document.querySelector("#view").innerText.includes("Agent endpoint"),
       noAccountUid: !document.querySelector("#view").innerText.includes("u_probe"),
       noPhonePromise: !document.querySelector("#view").innerText.includes("phone number"),
@@ -588,15 +588,15 @@ app.whenReady().then(async () => {
         return !!box && !box.disabled && !box.checked;
       })(),
       launchNoteHidden: !document.body.innerText.includes("from-source run"),
-      // Keep Mac Awake, beside it: off by default, and the toggle is live —
+      // Keep Desktop Awake, beside it: off by default, and the toggle is live —
       // the probe's blocker always grants, so a checked box would mean the
       // renderer showed a state it never asked main for.
       hasAvailabilityGroup: document.body.innerText.includes("Availability"),
-      awakeTitle: document.body.innerText.includes("Keep Mac Awake"),
+      awakeTitle: document.body.innerText.includes("Keep Desktop Awake"),
       awakeToggleLiveAndOff: (() => {
         const box = [...document.querySelectorAll(".settings input")].find(
           (i) => i.type === "checkbox" &&
-            (i.closest("label")?.textContent ?? "").includes("Keep this Mac awake while plugged in"),
+            (i.closest("label")?.textContent ?? "").includes("Keep this Desktop awake while plugged in"),
         );
         return !!box && !box.disabled && !box.checked;
       })(),
@@ -827,7 +827,7 @@ app.whenReady().then(async () => {
       .find((item) => item.querySelector("h2")?.textContent.trim() === "MCP clients");
     const context = group?.querySelector(".entity-row .entity-context")?.textContent ?? "";
     return {
-      namesBoundDevice: context.includes("Bound to this Mac"),
+      namesBoundDevice: context.includes("Bound to this Desktop"),
       stillNamesKind: context.includes("MCP client"),
       noDeviceUid: !document.body.textContent.includes("dev_"),
     };
@@ -2314,6 +2314,9 @@ app.whenReady().then(async () => {
     settings.launchTitle &&
     settings.launchToggleLive &&
     settings.launchNoteHidden &&
+    settings.hasAvailabilityGroup &&
+    settings.awakeTitle &&
+    settings.awakeToggleLiveAndOff &&
     staleSettingsPane.launchUnsupportedFollowed &&
     strandedOnDisk.keyNotInDom &&
     strandedOnDisk.scrubbedFromDisk &&

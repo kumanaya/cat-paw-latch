@@ -129,7 +129,7 @@ export const RuleKey = {
  * before — the frozen vectors assert it.
  */
 export function canonicalize(path: string): string {
-  if (process.platform === "win32") return canonicalizeWin(path, (c) => fs.realpathSync(c));
+  if (process.platform === "win32") return canonicalizeWin(path, winRealpathSync);
   const stack = lexicalComponents(path);
 
   // Walk from the leaf up to find the longest existing prefix, realpath it,
@@ -209,6 +209,30 @@ function winLexical(path: string): { root: string; parts: string[] } {
   return { root: "\\", parts: normalized.replace(/^\\+/, "").split("\\").filter((c) => c !== "") };
 }
 
+/**
+ * Native Win32 realpath, then the unprefixed spelling.
+ *
+ * `fs.realpathSync` (the JS walk) keeps 8.3 names (`C:\Users\RUNNER~1\…`);
+ * `fs.promises.realpath` / `.native` expand them (`C:\Users\runneradmin\…`).
+ * Re-running the JS walk on the long form does not fold it back — CI proved
+ * that. Canonical bytes are what rule keys and the sandbox bind, so the pair
+ * must speak one spelling. Native + strip is that one: the long path the
+ * kernel names, without a `\\?\` prefix grants never carry.
+ */
+function stripWinLongPrefix(resolved: string): string {
+  if (/^\\\\\?\\UNC\\/i.test(resolved)) return "\\\\" + resolved.slice(8);
+  if (/^\\\\\?\\/.test(resolved)) return resolved.slice(4);
+  return resolved;
+}
+
+function winRealpathSync(candidate: string): string {
+  return stripWinLongPrefix(fs.realpathSync.native(candidate));
+}
+
+async function winRealpathAsync(candidate: string): Promise<string> {
+  return stripWinLongPrefix(await fsp.realpath(candidate));
+}
+
 function canonicalizeWin(path: string, realpath: (candidate: string) => string): string {
   const { root, parts } = winLexical(path);
   const remainder: string[] = [];
@@ -245,13 +269,8 @@ export async function canonicalizeAsync(path: string): Promise<string> {
     while (prefix.length > 0) {
       const candidate = root + prefix.join("\\");
       try {
-        const resolved = await fsp.realpath(candidate);
-        // Node's async Win32 realpath keeps the long spelling while the sync
-        // implementation returns the physical 8.3 spelling on some volumes.
-        // Canonical paths are signature-critical, so normalize the existing
-        // prefix through the sync primitive before appending lexical leaves.
-        const physical = fs.realpathSync(resolved);
-        return remainder.length === 0 ? physical : physical + "\\" + remainder.reverse().join("\\");
+        const resolved = await winRealpathAsync(candidate);
+        return remainder.length === 0 ? resolved : resolved + "\\" + remainder.reverse().join("\\");
       } catch {
         // Not existing (yet) — walk up.
       }

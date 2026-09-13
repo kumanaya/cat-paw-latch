@@ -97,7 +97,7 @@ const EMPTY_ROSTER = { mcp: [], other: [], revokedHidden: 0 };
 const ROSTER = {
   mcp: [
     {
-      id: 301, name: "Claude Code on MacBook Pro", kind: "Agent", deviceLabel: "this Mac",
+      id: 301, name: "Claude Code on MacBook Pro", kind: "Agent", deviceLabel: "this Desktop",
       createdAt: "2026-08-12T17:00:00.000Z", lastSeenAt: new Date(Date.now() - 6 * 60_000).toISOString(),
       chatUids: ["*"], chatAccess: "all",
       permissions: { canReadAndReply: true, canReachMac: true, canSpendInference: true },
@@ -113,7 +113,7 @@ const ROSTER = {
   ],
   other: [
     {
-      id: 401, name: "Plow Latch on this Mac", kind: "Session", deviceLabel: null,
+      id: 401, name: "Plow Latch on this Desktop", kind: "Session", deviceLabel: null,
       createdAt: "2026-07-28T17:00:00.000Z", lastSeenAt: new Date(Date.now() - 3 * 60_000).toISOString(),
       chatUids: [], chatAccess: "none",
       permissions: { canReadAndReply: false, canReachMac: false, canSpendInference: false },
@@ -536,8 +536,8 @@ const SCREENS = [
       "MCP clients", "Claude Code on MacBook Pro", "Cursor desktop",
       // Which Mac each static credential works from — this one, or another by
       // the name Plow gave it.
-      "Bound to this Mac", "Bound to mba",
-      "Other sessions", "Plow Latch on this Mac", "This Mac",
+      "Bound to this Desktop", "Bound to mba",
+      "Other sessions", "Plow Latch on this Desktop", "This Desktop",
       "Plow website · Safari", "Legacy automation token", "Admin *:*", "14 revoked sessions hidden",
     ],
   },
@@ -1145,10 +1145,10 @@ const SCREENS = [
     },
     expect: [
       "Approvals",
-      "What happens when an agent asks to do something on this Mac.",
+      "What happens when an agent asks to do something on this Desktop.",
       "AI Reviewer and Deny still apply to every request",
       "The reviewer sees which agent is asking, what it's asking to do, the exact bounds it would get, and the purpose you wrote for it.",
-      "It never sees your files, your history on this Mac, or anything the agent hasn't asked for.",
+      "It never sees your files, your history on this Desktop, or anything the agent hasn't asked for.",
       "AI Reviewer decides",
       "What are agents for?",
       // The purpose describes the errand, and an errand widens the job as
@@ -1188,7 +1188,7 @@ const SCREENS = [
     expect: [
       "Static credential",
       "Name this connection",
-      "For a tool that only needs MCP access to this Mac",
+      "For a tool that only needs MCP access to this Desktop",
       "The token is shown once.",
       "Create Credential",
       "Cancel",

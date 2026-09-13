@@ -36,7 +36,26 @@ jobs:
       # tolerant, and a missing toolchain only disables its provider, never
       # the install. Linux also needs bubblewrap for live cage tests.
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+        name: Install bubblewrap and enable the Linux cage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap dbus-user-session
+          # Ubuntu 24.04 blocks unprivileged user namespaces; bwrap then
+          # cannot configure loopback inside --unshare-net (RTM_NEWADDR).
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          uid="$(id -u)"
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@${uid}.service"
+          runtime="/run/user/${uid}"
+          for _ in $(seq 1 40); do
+            if [ -S "${runtime}/bus" ]; then break; fi
+            sleep 0.25
+          done
+          echo "XDG_RUNTIME_DIR=${runtime}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=${runtime}/bus" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="${runtime}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime}/bus"
+          systemd-run --user --quiet --scope -p TasksMax=256 -- /bin/true
       - run: npx tsc -b
       # Protocol + transport are platform-independent (golden vectors, crypto,
       # the WebSocket client) and run everywhere. The golden path vectors are
@@ -131,8 +150,24 @@ jobs:
             vendor/camoufox-browser
             packages/browser-server/fingerprints.json
           key: linux-${{ matrix.arch }}-browser-${{ hashFiles('vendor/browser-server/runtime.lock.json', 'scripts/build-browser-runtime.mjs') }}
-      - name: Install bubblewrap for the sandbox probe
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Install bubblewrap and enable the Linux cage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap dbus-user-session
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          uid="$(id -u)"
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@${uid}.service"
+          runtime="/run/user/${uid}"
+          for _ in $(seq 1 40); do
+            if [ -S "${runtime}/bus" ]; then break; fi
+            sleep 0.25
+          done
+          echo "XDG_RUNTIME_DIR=${runtime}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=${runtime}/bus" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="${runtime}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime}/bus"
+          systemd-run --user --quiet --scope -p TasksMax=256 -- /bin/true
       - run: npm ci
       - run: npx tsc -b
       - run: node scripts/fetch-vendored.mjs --all
