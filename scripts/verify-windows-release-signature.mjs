@@ -40,12 +40,15 @@ export function verifyWindowsReleaseSignature(releaseDir, publisher) {
   if (installers.length === 0) throw new Error(`no Plow Latch Windows installer exists in ${resolved}`);
   const signedCode = windowsCodePayloads(resolved);
 
+// GHA windows-2022 does not auto-load Microsoft.PowerShell.Security under
+// -NoProfile; name the module or Get-AuthenticodeSignature is ObjectNotFound.
 const script = [
   "param([string]$FilesJson, [string]$Publisher)",
   "$ErrorActionPreference = 'Stop'",
+  "try { Import-Module Microsoft.PowerShell.Security -Force } catch { throw \"invalid Authenticode signature: PowerShell Security module could not be loaded ($($_.Exception.Message))\" }",
   "$Files = ConvertFrom-Json -InputObject $FilesJson",
   "foreach ($File in $Files) {",
-  "  $sig = Get-AuthenticodeSignature -LiteralPath $File",
+  "  try { $sig = Get-AuthenticodeSignature -LiteralPath $File } catch { throw \"invalid Authenticode signature: $File ($($_.Exception.Message))\" }",
   "  if ($sig.Status -ne 'Valid') { throw \"invalid Authenticode signature: $File ($($sig.Status))\" }",
   "  if ($null -eq $sig.SignerCertificate -or $sig.SignerCertificate.Subject -notlike \"*CN=$Publisher*\") { throw \"unexpected Authenticode publisher: $File\" }",
   "  if ($null -eq $sig.TimeStamperCertificate) { throw \"missing Authenticode timestamp: $File\" }",

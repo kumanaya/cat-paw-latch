@@ -42,6 +42,13 @@ fs.rmSync(path.dirname(probe), { recursive: true, force: true });
 
 const aceCount = (sddl: string): number => sddl.split("(A;").length - 1;
 
+/** Lockdown returns the numeric SID; ConvertStringSecurityDescriptor may
+ *  emit the well-known alias (LA = RID 500) instead. */
+function sddlMentionsSid(sddl: string, sid: string): boolean {
+  if (sddl.includes(sid)) return true;
+  return /^S-1-5-21-.*-500$/.test(sid) && /;;;LA(?:;|\))/.test(sddl);
+}
+
 describe.skipIf(!HAVE_ADDON)("secret-file ACL lockdown", () => {
   it("replaces the inherited DACL with one protected owner-only ACE", () => {
     const file = tempFile();
@@ -57,7 +64,7 @@ describe.skipIf(!HAVE_ADDON)("secret-file ACL lockdown", () => {
     // governs propagation to children, not inheritance from the parent),
     // the SID granted, and nothing else.
     expect(after).toMatch(/D:P/);
-    expect(after).toContain(sid);
+    expect(sddlMentionsSid(after, sid)).toBe(true);
     expect(aceCount(after)).toBe(1);
   });
 
@@ -77,8 +84,6 @@ describe.skipIf(!HAVE_ADDON)("secret-file ACL lockdown", () => {
     expect(second).toBe(first);
     const sddl = readSecretFileSddl(file)!;
     expect(aceCount(sddl)).toBe(1);
-    // ConvertStringSecurityDescriptor emits well-known aliases (LA = RID 500)
-    // on some images; the numeric SID is what lockdown returned.
-    expect(sddl.includes(first) || (/^S-1-5-21-.*-500$/.test(first) && /;;;LA(?:;|\))/.test(sddl))).toBe(true);
+    expect(sddlMentionsSid(sddl, first)).toBe(true);
   });
 });

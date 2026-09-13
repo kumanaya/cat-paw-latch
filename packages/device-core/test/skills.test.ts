@@ -25,7 +25,7 @@ import {
   whatsappSkillFor,
   whatsappStorePath,
 } from "@domo/device-core";
-import { jv, JSONValue } from "@domo/protocol";
+import { canonicalize, jv, JSONValue } from "@domo/protocol";
 
 describe("SkillRegistry", () => {
   it("loads *.md with frontmatter and skips malformed files", () => {
@@ -319,7 +319,10 @@ describe("the built-in contacts skill", () => {
 describe("the skills a DeviceAgent publishes", () => {
   const roots: string[] = [];
   const tempDir = (): string => {
-    const d = fs.mkdtempSync(path.join(os.tmpdir(), "domo-agent-"));
+    // DeviceAgent stores the physical owner home. TEMP is often 8.3 on GHA
+    // (`RUNNER~1`); canonicalize so the skill body and the path we assert
+    // are the same spelling.
+    const d = canonicalize(fs.mkdtempSync(path.join(os.tmpdir(), "domo-agent-")));
     roots.push(d);
     return d;
   };

@@ -1083,8 +1083,9 @@ describe("Windows gates — the CFA/ACL/system table and its verdicts", () => {
     const f = await collectFacts({ op: "read", paths: [file], ranSandboxed: false }, probes, dir);
     expect(f.app_process_open).toBe("EPERM");
     expect(f.tcc_guarded_prefix).toBeNull();
-    // The shared slot carries the Windows answer too, once judged as Windows.
-    expect(diagnose(f, { platform: "win32" }).cause).toBe("unknown");
+    // Off the CFA folders, in-process EPERM is an ACL (posix_permissions),
+    // not "unknown" and not Controlled Folder Access.
+    expect(diagnose(f, { platform: "win32" }).cause).toBe("posix_permissions");
   });
 });
 
