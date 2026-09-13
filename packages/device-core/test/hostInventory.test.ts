@@ -194,11 +194,13 @@ describe.skipIf(!ON_MAC)("DeviceAgent.hostInventory through the real executor", 
 describe("requestFolderAccess — the deliberate touch, with the owner present", () => {
   it("names each folder's switch and what macOS decided, one folder at a time", async () => {
     const home = "/Users/probe";
+    // Keys built the way requestFolderAccess builds them (path.join), so
+    // the script matches on Windows too, where the separator differs.
     const probes = scriptedProbes({
       openAsApp: {
-        [`${home}/Desktop`]: "ok",
-        [`${home}/Documents`]: "EPERM",
-        [`${home}/Downloads`]: "hung",
+        [path.join(home, "Desktop")]: "ok",
+        [path.join(home, "Documents")]: "EPERM",
+        [path.join(home, "Downloads")]: "hung",
       },
     });
     const results = await requestFolderAccess(home, { probes });
@@ -209,9 +211,9 @@ describe("requestFolderAccess — the deliberate touch, with the owner present",
     ]);
     // Sequential: one dialog at a time is what a person can answer.
     expect(probes.calls).toEqual([
-      `openAsApp ${home}/Desktop`,
-      `openAsApp ${home}/Documents`,
-      `openAsApp ${home}/Downloads`,
+      `openAsApp ${path.join(home, "Desktop")}`,
+      `openAsApp ${path.join(home, "Documents")}`,
+      `openAsApp ${path.join(home, "Downloads")}`,
     ]);
   });
 

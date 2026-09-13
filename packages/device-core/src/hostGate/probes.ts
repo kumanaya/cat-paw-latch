@@ -206,8 +206,13 @@ function safe(read: () => string): string | null {
  * Open (or list) a path from a child of this process, killed on a timer.
  * Reading a directory's entries is what trips a folder gate; reading one
  * byte is what trips a file's. `head` exits 0 on an empty file.
+ *
+ * On Windows there is no consent dialog that parks an open — a refusal
+ * fails at once — so the probe reads in-process instead of spawning a
+ * child. Same answers, none of the process management.
  */
 async function openAsApp(path: string, timeoutMs: number): Promise<OpenOutcome> {
+  if (process.platform === "win32") return openAsAppWindows(path);
   let isDirectory = false;
   try {
     isDirectory = (await fs.stat(path)).isDirectory();
@@ -252,6 +257,33 @@ async function openAsApp(path: string, timeoutMs: number): Promise<OpenOutcome> 
 /** How long a consent dialog raised on purpose is given before the request
  *  is abandoned. The helper's own wait is a little longer. */
 export const REQUEST_TIMEOUT_MS = 3 * 60_000;
+
+/**
+ * The Windows open probe: in-process, because Windows has no gate that
+ * parks an open on a dialog. A directory lists; a file reads one byte
+ * (an empty file reads zero and still counts). Errnos keep their Node
+ * codes so the tree reads them like any other refusal.
+ */
+async function openAsAppWindows(path: string): Promise<OpenOutcome> {
+  try {
+    const stat = await fs.stat(path);
+    if (stat.isDirectory()) {
+      await fs.readdir(path);
+      return "ok";
+    }
+    const handle = await fs.open(path, "r");
+    try {
+      await handle.read(Buffer.alloc(1), 0, 1, 0);
+    } finally {
+      await handle.close();
+    }
+    return "ok";
+  } catch (error: unknown) {
+    const code = (error as { code?: unknown })?.code;
+    if (typeof code === "string") return code;
+    return "error";
+  }
+}
 
 /** One helper invocation's `status` word, or null when there is no helper or
  *  no parseable answer. */

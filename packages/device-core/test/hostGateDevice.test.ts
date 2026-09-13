@@ -134,7 +134,7 @@ describe("a file operation this Mac refused", () => {
     expect(lastBlocked(d).get("permission").str).toBe("files_desktop");
   });
 
-  it.skipIf(AS_ROOT)("ordinary permissions: chmod 000 is posix_permissions, confirmed by the mode bits", async () => {
+  it.skipIf(AS_ROOT || process.platform === "win32")("ordinary permissions: chmod 000 is posix_permissions, confirmed by the mode bits", async () => {
     const home = tempDir();
     const d = device(home);
     const file = path.join(home, "Plow", "secret.txt");
@@ -1133,5 +1133,21 @@ describe.skipIf(!ON_MAC)("a command this Mac refused", () => {
     expect(response.get("diagnosis").isNull).toBe(true);
     await new Promise((r) => setTimeout(r, 500));
     expect(jv(await d.getOutput(response.get("handle").str!)).get("status").str).toBe("completed");
+  });
+});
+
+describe("workstation sessions — the audited unattended window", () => {
+  // main.ts subscribes powerMonitor's lock-screen/unlock-screen to this; the
+  // events land in the audit log so the owner can see what ran while nobody
+  // was at the keyboard. No standing key material is wiped — none stands
+  // (per-call reads, never cached) — and the Hello phase plugs its holder
+  // into this seam.
+  it("records lock and unlock in the audit log", () => {
+    const d = device(tempDir());
+    d.workstationSessionChanged(true);
+    d.workstationSessionChanged(false);
+    const evs = events(d);
+    expect(evs).toContain("workstation_locked");
+    expect(evs).toContain("workstation_unlocked");
   });
 });

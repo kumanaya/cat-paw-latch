@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { encString, masterKeys } from "../src/browser/vaultCrypto.js";
+import { encString, masterKeys, wipeKeyMaterial } from "../src/browser/vaultCrypto.js";
 import { encryptCipher, splitKey, Cipher } from "../src/browser/vaultItems.js";
 import { BrokerCore } from "../src/browser/brokerCore.js";
 import { LocalVault } from "../src/browser/localVault.js";
@@ -169,7 +169,10 @@ function keylessUnder(key: { enc: Buffer; mac: Buffer }): Cipher {
   };
 }
 
-describe("migrateLegacyVault", () => {
+// The migration reads the legacy Bitwarden store through /usr/bin/sqlite3
+// (plus pgrep/ps for the live-server check): mac-machine through and
+// through. Windows installs are new and have no legacy vault to migrate.
+describe.skipIf(process.platform !== "darwin")("migrateLegacyVault", () => {
   it("migrates by copying ciphertext verbatim under the old user key", async () => {
     const { dir, userKey, rows } = legacyVault();
     const keyStore = new VaultKeyStore(dir, "test");
@@ -420,5 +423,30 @@ describe("migrateLegacyVault", () => {
     const dir = tempDir();
     migrateLegacyVault(dir, new VaultKeyStore(dir, "test"), new VaultStore(dir));
     expect(new VaultStore(dir).exists()).toBe(false);
+  });
+});
+
+describe("wipeKeyMaterial", () => {
+  it("zeroes owned buffers and nothing else", () => {
+    const owned = Buffer.from([1, 2, 3, 4]);
+    const kept = Buffer.from([9, 9, 9, 9]);
+    wipeKeyMaterial(owned);
+    expect([...owned]).toEqual([0, 0, 0, 0]);
+    expect([...kept]).toEqual([9, 9, 9, 9]);
+  });
+
+  // The regression this guards: wiping the wrong buffer (a splitKey alias,
+  // a returned half) destroys a key still in use. The halves must survive
+  // with entropy; only the internal intermediate dies, inside masterKeys.
+  it("masterKeys returns live halves", () => {
+    const { stretchedEnc, stretchedMac } = masterKeys("a@b.c", "pw");
+    try {
+      expect(stretchedEnc).toHaveLength(32);
+      expect(stretchedMac).toHaveLength(32);
+      expect(stretchedEnc.some((b) => b !== 0)).toBe(true);
+      expect(stretchedMac.some((b) => b !== 0)).toBe(true);
+    } finally {
+      wipeKeyMaterial(stretchedEnc, stretchedMac);
+    }
   });
 });

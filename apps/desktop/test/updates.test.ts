@@ -1,11 +1,36 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_CHECK_INTERVAL_MS,
+  platformUpdateFeed,
   SimulatedUpdater,
   UpdateController,
   UpdaterLike,
   UpdateState,
 } from "../src/updates.js";
+
+describe("platform update feed", () => {
+  it("keeps x64 and ARM64 Windows installers on separate feeds", () => {
+    expect(platformUpdateFeed("win32", "x64")).toBe(
+      "https://s3.us-west-2.amazonaws.com/releases.plow.co/domo/windows/x64",
+    );
+    expect(platformUpdateFeed("win32", "arm64")).toBe(
+      "https://s3.us-west-2.amazonaws.com/releases.plow.co/domo/windows/arm64",
+    );
+  });
+
+  it("keeps x64 and ARM64 Linux AppImages on separate feeds", () => {
+    expect(platformUpdateFeed("linux", "x64")).toBe(
+      "https://s3.us-west-2.amazonaws.com/releases.plow.co/domo/linux/x64",
+    );
+    expect(platformUpdateFeed("linux", "arm64")).toBe(
+      "https://s3.us-west-2.amazonaws.com/releases.plow.co/domo/linux/arm64",
+    );
+  });
+
+  it("does not invent an update feed for unsupported platforms", () => {
+    expect(platformUpdateFeed("darwin", "arm64")).toBeNull();
+  });
+});
 
 /** In-memory stand-in for electron-updater's autoUpdater. */
 class FakeUpdater implements UpdaterLike {

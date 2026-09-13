@@ -11,7 +11,7 @@
  * key to pin. That is provenance, not confinement — DESIGN.md §4 *The intent
  * object* owns where an intent's contents go.
  */
-import { capabilityDisplay, Intent, intentIsExpired, JSONValue, jv, overlapsRoot } from "@domo/protocol";
+import { canonicalize, capabilityDisplay, Intent, intentIsExpired, JSONValue, jv, overlapsRoot } from "@domo/protocol";
 import { PROVIDERS, vendoredProvider, type VendoredProvider } from "./providers/registry.js";
 import { MintError, type MintedAccounts, type Minter } from "./providers/mint.js";
 import { conflictRefusal, gogExitReason, mergeFanout, planPlowGog } from "./providers/plowGog.js";
@@ -29,7 +29,7 @@ import { VaultKeyStore } from "./browser/vaultKeyStore.js";
 import { VaultStore } from "./browser/vaultStore.js";
 import { haystackMatches, searchWords } from "./browser/vaultSearch.js";
 import { ResolvedBrowserRuntime } from "./browser/browserRuntime.js";
-import { BROWSING_SKILL } from "./browser/browsingSkill.js";
+import { browsingSkillFor } from "./browser/browsingSkill.js";
 import { ExecResult, Executor, REAPED_MESSAGE } from "./executor.js";
 import { FileOps, FileOpsError } from "./fileOps.js";
 import {
@@ -47,6 +47,7 @@ import {
   HostProbes,
   isHostGate,
   nodeProbes,
+  sandboxKindFor,
   stderrHint,
 } from "./hostGate/index.js";
 import { readCredentialsState } from "./browser/vaultCredentials.js";
@@ -196,7 +197,8 @@ interface ExecDiagnosisContext {
   writePaths: readonly string[];
   /** The app the run was approved to send Apple events to, when it was. */
   automationTarget: string | null;
-  /** Under a seatbelt profile (a command), or bare (a script). */
+  /** Under a cage (a seatbelt profile, a Job Object) for a command, or bare
+   *  for a script. */
   sandboxed: boolean;
 }
 
@@ -333,10 +335,19 @@ export class DeviceAgent {
     hostProbes: HostProbes | null = null,
   ) {
     this.identity = loadOrCreateIdentity(home, name);
-    this.ownerHome = ownerHome;
-    this.hostProbes = hostProbes ?? nodeProbes({ ownerHome });
+    // Physical path: 8.3 TEMP (`RUNNER~1`) vs the long form grants and
+    // collectFacts speak. Resolving once at construction does not follow a
+    // later-swapped symlink — this is the owner's home as it is now.
+    this.ownerHome = canonicalize(ownerHome);
+    this.hostProbes = hostProbes ?? nodeProbes({ ownerHome: this.ownerHome });
     this.audit = new AuditLog(path.join(home, "device/audit.ndjson"));
     this.policy = new PolicyEngine(path.join(home, "device/rules.json"));
+    for (const rule of this.policy.migratedDisabledRules()) {
+      this.audit.record("always_allow_rule_disabled", {
+        rule_key: rule.ruleKey,
+        reason: rule.disabledReason ?? "windows_sensitive_capability",
+      });
+    }
     this.executor = new Executor(path.join(home, "device/scratch"), undefined, this.vendorDirs);
     this.skills = new SkillRegistry();
     // `ownerHome`, not `home` — this describes where WhatsApp put the owner's
@@ -347,15 +358,15 @@ export class DeviceAgent {
     // happens to have WhatsApp installed. Presence is sampled ONCE, here — the
     // same start-time answer `browserRuntime` gives, so installing WhatsApp
     // while the app is running needs a restart to publish the skill.
-    registerWhatsappSkill(this.skills, ownerHome);
-    registerImessageSkill(this.skills, ownerHome);
+    registerWhatsappSkill(this.skills, this.ownerHome);
+    registerImessageSkill(this.skills, this.ownerHome);
     // The playground exists before any agent asks about it, and the skill can
     // therefore name a folder that is really there. `ownerHome` for the same
     // reason as WhatsApp above: the folder belongs to the owner's real home,
     // and a test's throwaway ownerHome keeps the suite off the developer's.
-    ensurePlowFolder(ownerHome);
-    registerPlowFolderSkill(this.skills, ownerHome);
-    registerContactsSkill(this.skills, ownerHome);
+    ensurePlowFolder(this.ownerHome);
+    registerPlowFolderSkill(this.skills, this.ownerHome);
+    registerContactsSkill(this.skills, this.ownerHome);
     // Registered only when the CLI it documents is actually staged: a skill
     // for a binary this Mac does not have teaches an agent commands the exec
     // path refuses unconditionally. The SAME predicate that gate uses — two
@@ -363,7 +374,7 @@ export class DeviceAgent {
     // driven off the registry, so a provider's name has one spelling.
     for (const p of PROVIDERS) if (this.hasStaged(p.binary)) this.skills.register(p.skill);
     if (browserRuntime) {
-      this.skills.register(BROWSING_SKILL);
+      this.skills.register(browsingSkillFor());
       const browserDir = path.join(home, "device/browser");
       // Earlier builds wrote every agent screenshot under here and never
       // removed one. Nothing reads them, so an install that still has the
@@ -391,9 +402,15 @@ export class DeviceAgent {
         // Sessions run in here, each on a clone of the user's own profile
         // below — Firefox locks a profile to one process, so several browsers
         // at once need a directory each — and hand it back when they close.
+        // Windows browsers start with an empty, disposable profile. The remote
+        // session never sees the owner's profile, cookies, downloads or history.
         profileDir: path.join(browserDir, "profiles"),
-        seedProfile: path.join(browserDir, "profile"),
-        mergeCookiesCommand: browserRuntime.mergeCookiesCommand,
+        // Windows and Linux sessions start empty: there is no owner-profile
+        // seed and cookies are not merged back. macOS still clones + merges.
+        ...(process.platform === "win32" || process.platform === "linux" ? {} : {
+          seedProfile: path.join(browserDir, "profile"),
+          mergeCookiesCommand: browserRuntime.mergeCookiesCommand,
+        }),
         executablePath: browserRuntime.executablePath,
         // Every `browser` action is non-deferrable and must answer inside the
         // relay's per-exchange ceiling; cap the per-action wait below it so
@@ -508,23 +525,43 @@ export class DeviceAgent {
    */
   async hostInventory(): Promise<HostInventory> {
     const vaultDir = this.vaultDir;
+    // The sandbox self-check runs a trivial command through the REAL
+    // executor: `/usr/bin/true` under seatbelt on macOS, `cmd /c exit 0`
+    // in a Job Object on Windows, a staged copy of `/usr/bin/true` under
+    // bubblewrap on Linux. Null where there is no cage at all.
+    const sandboxed =
+      process.platform === "darwin" || process.platform === "win32" || process.platform === "linux"
+        ? async (argv: string[]) => {
+            let readPaths: string[] = [];
+            let runArgv = argv;
+            if (process.platform === "linux") {
+              // Stage a single binary — never bind-walk /usr/bin (symlinks).
+              const probeDir = fs.mkdtempSync(path.join(this.home, "sandbox-probe-"));
+              const staged = path.join(probeDir, "true");
+              fs.copyFileSync("/usr/bin/true", staged);
+              fs.chmodSync(staged, 0o755);
+              runArgv = [staged];
+              readPaths = [probeDir];
+            }
+            const result = await this.executor.run({
+              argv: runArgv,
+              readPaths,
+              writePaths: [],
+              network: false,
+              appleEvents: false,
+              waitMs: 5_000,
+            });
+            return { exitCode: result.exitCode, output: result.output.toString("utf8") };
+          }
+        : null;
     return hostInventory({
       probes: this.hostProbes,
       ownerHome: this.ownerHome,
-      runSandboxed:
-        process.platform === "darwin"
-          ? async (argv) => {
-              const result = await this.executor.run({
-                argv,
-                readPaths: [],
-                writePaths: [],
-                network: false,
-                appleEvents: false,
-                waitMs: 5_000,
-              });
-              return { exitCode: result.exitCode, output: result.output.toString("utf8") };
-            }
-          : null,
+      runSandboxed: sandboxed,
+      sandboxProbeArgv:
+        process.platform === "win32" ? ["cmd", "/c", "exit", "0"] :
+        process.platform === "linux" ? ["/usr/bin/true"] :
+        undefined,
       vaultKey: vaultDir === null ? null : () => readCredentialsState(vaultDir),
     });
   }
@@ -533,6 +570,21 @@ export class DeviceAgent {
    * it is a file and a Keychain item, not a process. */
   async shutdown(): Promise<void> {
     await this.browserSessions?.closeAll("shutdown");
+  }
+
+  /**
+   * The workstation locked or was released. Recorded, so the owner can see
+   * what ran while nobody was at the keyboard — the audit trail of
+   * unattended windows.
+   *
+   * No standing key material is wiped here, because none stands: the vault
+   * key and the relay credential are re-read from disk per use (never
+   * cached), and the device signing key must stay for the agent channel.
+   * When the Hello phase holds a key worth protecting, its holder plugs
+   * into this seam.
+   */
+  workstationSessionChanged(locked: boolean): void {
+    this.audit.record(locked ? "workstation_locked" : "workstation_unlocked", {});
   }
 
   /**
@@ -768,6 +820,8 @@ export class DeviceAgent {
         paths: [p],
         error: hung ? null : detail,
         ranSandboxed: false,
+        // In-process: no cage of any kind, whatever the platform.
+        sandboxKind: "none",
         hung,
         mutable: () => this.executor.mutableRoots(),
         hold: (fn) => this.executor.holdProbes([p], fn),
@@ -1130,6 +1184,10 @@ export class DeviceAgent {
         ),
         stderr: output,
         ranSandboxed: diag.sandboxed,
+        // The cage the run actually ran under — a Job Object on Windows,
+        // seatbelt on macOS — so the verdict names the approval bound,
+        // never a profile that does not exist.
+        sandboxKind: sandboxKindFor(process.platform, diag.sandboxed),
         // A script ran under no profile; there is nothing to ask it.
         sandbox: diag.sandboxed ? (p) => this.executor.grants(result.handle, p) : null,
         hung: result.reaped,

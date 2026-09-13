@@ -180,6 +180,24 @@ describe("session lifecycle", () => {
     expect(ctx.sessions.current()).toBeNull();
   });
 
+  it("locks a hostless local-file navigation before any page content can be read", async () => {
+    const s = await openSession(["pizza.example"]);
+    await ctx.sessions.command(s, { action: "goto", url: "https://pizza.example/" });
+
+    const landed = jv(await ctx.sessions.command(s, { action: "click", selector: "#file" }));
+    expect(landed.get("status").str).toBe("completed");
+    expect(landed.get("out_of_scope").str).toBe("file:///C:/Users/owner/secret.txt");
+    expect(landed.get("text").value).toBeNull();
+    expect(ctx.sessions.current()).toMatchObject({
+      lastUrl: "file:///C:/Users/owner/secret.txt",
+      inScope: false,
+    });
+
+    const read = jv(await ctx.sessions.command(s, { action: "text" }));
+    expect(read.get("status").str).toBe("error");
+    expect(read.get("error").str).toContain("outside the approved origins");
+  });
+
 
   it("rejects a command for a session that is not open", async () => {
     await openSession(["pizza.example"]);

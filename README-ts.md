@@ -35,6 +35,14 @@ packages/
                                      serves the HTTP exchanges the relay tunnels down the socket
   native-keychain/ @domo/native-keychain  one N-API addon: a generic password in the data-protection
                                      Keychain under our access group (vault master key; optional)
+  native-wincred/ @domo/native-wincred  one N-API addon: a generic credential in Windows Credential
+                                     Manager (vault master key on Windows; optional)
+  native-winsandbox/ @domo/native-winsandbox  one N-API addon: a Job Object per command run
+                                      (kill-on-close + process cap — the Windows seatbelt seat; required)
+  native-linuxsandbox/ @domo/native-linuxsandbox  one N-API addon + launcher: bubblewrap + staged
+                                      workspace + systemd TasksMax (the Linux seatbelt seat; required)
+  native-fs/ @domo/native-fs  one N-API addon: Windows secret-file ACL lockdown (inherited
+                                      DACL → one protected owner-only ACE; required in the pack)
   native-credential-import/ @domo/native-credential-import  one N-API addon: bridges the app's Swift
                                      shim for macOS 26 credential exchange (Apple Passwords
                                      "Export to Another App…"; optional — docs/CREDENTIAL-EXCHANGE.md)
@@ -363,7 +371,14 @@ first place to look before calling a relay-leg gap untestable.
 ```
 npm run --workspace @domo/desktop build   # tsc + copy renderer assets
 npm run --workspace @domo/desktop start   # launch Electron
+npm run dev                               # build, launch, and reload on edits
 ```
+
+The development command watches `apps/desktop/src`. Changes to the plain
+HTML/CSS/JS renderer assets reload the open windows; changes to TypeScript or
+the CommonJS preload restart Electron after a successful build. The production
+`build` and `start` commands are unchanged. Stop all three development watchers
+with Ctrl+C.
 
 The Electron main process **is** the device agent (runs `@domo/device-core`
 in-process). The renderer is sandboxed (`contextIsolation` on, `nodeIntegration`

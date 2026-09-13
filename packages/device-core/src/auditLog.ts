@@ -15,6 +15,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { canonicalJSON, isoNow, JSONValue, parseJSON } from "@domo/protocol";
+import { lockdownSecretFile } from "./fileLockdown.js";
 
 /**
  * Where the current generation rolls over. Around a hundred thousand events —
@@ -52,6 +53,15 @@ export class AuditLog {
     this.rotateIfFull();
     const line = canonicalJSON(entry as JSONValue);
     fs.appendFileSync(this.file, line + "\n");
+    // Owner-only ACL on Windows: the log is the test oracle, so its
+    // integrity matters as much as any secret's. Best-effort like the
+    // listeners below — record() succeeds when the event is appended, and
+    // nothing after that may fail it.
+    try {
+      lockdownSecretFile(this.file);
+    } catch (error: unknown) {
+      console.error("[audit] ACL lockdown failed after a recorded event:", error);
+    }
     // "recorded" carries the entry itself (telemetry's allowlist tap wants the
     // fields, not just a refresh signal, and the live index wants the line as
     // a reader would parse it — undefined fields dropped, keys canonical);
@@ -106,6 +116,11 @@ export class AuditLog {
   clear(): void {
     fs.rmSync(this.previous, { force: true });
     fs.writeFileSync(this.file, "");
+    try {
+      lockdownSecretFile(this.file);
+    } catch (error: unknown) {
+      console.error("[audit] ACL lockdown failed after clearing the log:", error);
+    }
     this.reset();
     this.notify();
   }

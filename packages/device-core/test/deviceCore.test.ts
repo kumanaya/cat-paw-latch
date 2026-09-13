@@ -33,6 +33,27 @@ function tempDir(): string {
   return dir;
 }
 
+/** Whether this machine can make a file symlink (needs a privilege Windows
+ *  does not grant by default). The escape case below only exists where a
+ *  link can. */
+function canSymlink(): boolean {
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-link-probe-"));
+    try {
+      const target = path.join(dir, "t");
+      fs.writeFileSync(target, "x");
+      const link = path.join(dir, "l");
+      fs.symlinkSync(target, link);
+      fs.unlinkSync(link);
+      return true;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  } catch {
+    return false;
+  }
+}
+
 describe("FileOps bounds", () => {
   it("reads within scope, rejects outside", async () => {
     const dir = tempDir();
@@ -53,7 +74,7 @@ describe("FileOps bounds", () => {
     );
   });
 
-  it("rejects a symlink escaping the root", async () => {
+  it.skipIf(!canSymlink())("rejects a symlink escaping the root", async () => {
     const root = tempDir();
     const outside = tempDir();
     fs.writeFileSync(path.join(outside, "target.txt"), "leak");
@@ -61,6 +82,21 @@ describe("FileOps bounds", () => {
     fs.symlinkSync(path.join(outside, "target.txt"), link);
     // The symlink resolves outside root, so canonicalization catches it.
     await expect(FileOps.read(link, [root])).rejects.toThrow(/approved scope/);
+  });
+
+  // NTFS is case-insensitive but realpath preserves the caller's spelling, so
+  // without the Windows fold in isWithin one spelling approved as `C:\Dir`
+  // refused a later `c:\dir\file` — a false refusal of a legitimate call.
+  it.skipIf(process.platform !== "win32")("reads across case variants of the approved root", async () => {
+    const dir = tempDir();
+    const sub = path.join(dir, "Sub");
+    fs.mkdirSync(sub);
+    const file = path.join(sub, "MiXeD.txt");
+    fs.writeFileSync(file, "data");
+    expect((await FileOps.read(file.toLowerCase(), [dir])).toString()).toBe("data");
+    expect((await FileOps.read(file.toUpperCase(), [dir.toUpperCase()])).toString()).toBe("data");
+    await FileOps.write(path.join(sub, "NEW.TXT"), Buffer.from("hi"), [dir.toLowerCase()]);
+    expect(fs.readFileSync(path.join(sub, "NEW.TXT"), "utf8")).toBe("hi");
   });
 
   it("writes within scope and creates parent dirs", async () => {
@@ -117,14 +153,14 @@ describe("PolicyEngine", () => {
     const first = await engine.decide(intentWith(caps), always);
     expect(first.decision).toBe("always_allow");
     expect(first.source).toBe("prompt");
-    expect(engine.allRules()).toHaveLength(1);
+    expect(engine.allRules()).toHaveLength(process.platform === "win32" || process.platform === "linux" ? 0 : 1);
 
     // A fresh intent with the same capabilities matches the stored rule —
     // even though the delegate would now deny.
     const denyAll = new HeadlessPolicy({ intent: "deny" });
     const second = await engine.decide(intentWith(caps), denyAll);
-    expect(second.decision).toBe("always_allow");
-    expect(second.source).toBe("rule");
+    expect(second.decision).toBe(process.platform === "win32" || process.platform === "linux" ? "deny" : "always_allow");
+    expect(second.source).toBe(process.platform === "win32" || process.platform === "linux" ? "prompt" : "rule");
   });
 
   it("apple_events intents are never stored as rules, and never replayed from one", async () => {

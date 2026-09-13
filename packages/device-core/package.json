@@ -18,6 +18,11 @@
     "tldts": "7.4.11"
   },
   "optionalDependencies": {
-    "@domo/native-keychain": "*"
+    "@domo/native-keychain": "*",
+    "@domo/native-fs": "*",
+    "@domo/native-hello": "*",
+    "@domo/native-linuxsandbox": "*",
+    "@domo/native-wincred": "*",
+    "@domo/native-winsandbox": "*"
   }
 }

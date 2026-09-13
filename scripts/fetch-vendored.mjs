@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { VENDORED, providerNamed } from "./vendored-providers.mjs";
-import { MARKER, PROVIDER_ROOT, isStaged, stagedBinary } from "./vendored-staging.mjs";
+import { MARKER, PROVIDER_ROOT, isStaged, providerArches, stagedBinary, stagedFileName } from "./vendored-staging.mjs";
 
 // fileURLToPath, not `.pathname`: the latter leaves percent-encoding in place,
 // so a checkout under a path with a space resolves to a directory that does not
@@ -36,6 +36,11 @@ const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
 function fetchProvider(provider) {
   const { command, version } = provider;
+  const arches = providerArches(provider);
+  if (Object.keys(arches).length === 0) {
+    console.log(`vendor/${PROVIDER_ROOT}/${command}: no ${process.platform} assets`);
+    return;
+  }
   if (isStaged(provider, repoRoot)) {
     console.log(`vendor/${PROVIDER_ROOT}/${command} is already at ${version}`);
     return;
@@ -45,16 +50,16 @@ function fetchProvider(provider) {
   // the arm64 binary and die with `Bad CPU type in executable` — Rosetta
   // translates x86 to arm, not the reverse — failing the fetch, and
   // `just package` with it, on a supported build host for a perfectly good pin.
-  if (!provider.arches[process.arch]) {
+  if (!arches[process.arch]) {
     throw new Error(
-      `no pinned ${command} for ${process.arch} — this fetches darwin ` +
-        `${Object.keys(provider.arches).join("/")} only`,
+      `no pinned ${command} for ${process.platform}/${process.arch} — this fetches ` +
+        `${Object.keys(arches).join("/")} only`,
     );
   }
   const staging = mkdtempSync(path.join(tmpdir(), `${command}-fetch-`));
   try {
-    for (const [arch, { asset, sha256 }] of Object.entries(provider.arches)) {
-      const url = provider.url(version, asset);
+    for (const [arch, { asset, sha256, file }] of Object.entries(arches)) {
+      const url = process.platform === "win32" ? provider.windowsUrl(version, asset) : provider.url(version, asset);
       const tarball = path.join(staging, path.basename(new URL(url).pathname));
       console.log(`fetching ${command} ${version} ${asset}`);
       execFileSync("curl", ["-sSL", "--fail", "-o", tarball, url], { stdio: "inherit" });
@@ -66,7 +71,22 @@ function fetchProvider(provider) {
 
       const dest = path.join(repoRoot, "vendor", PROVIDER_ROOT, command, arch);
       mkdirSync(dest, { recursive: true });
-      execFileSync("tar", ["xzf", tarball, "-C", dest, command], { stdio: "inherit" });
+      // List first: GNU tar rejects a member named `gog` when the archive
+      // stores `./gog`. Extracting the whole (tiny) archive after refusing
+      // absolute/`..` paths is the same on BSD and GNU tar.
+      const listing = execFileSync(
+        "tar",
+        [process.platform === "win32" ? "tf" : "tzf", tarball],
+        { encoding: "utf8" },
+      );
+      if (listing.split(/\r?\n/).some((entry) => path.isAbsolute(entry) || entry.split(/[\\/]+/).includes(".."))) {
+        throw new Error(`${command} ${asset}: archive contains an unsafe path`);
+      }
+      execFileSync(
+        "tar",
+        [process.platform === "win32" ? "xf" : "xzf", tarball, "-C", dest],
+        { stdio: "inherit" },
+      );
       // The same check the skip makes, at the one moment the alternative is
       // knowable: a tarball whose digest is right but whose contents are not
       // what this pin was derived from fails HERE, rather than being cached and
@@ -75,7 +95,7 @@ function fetchProvider(provider) {
       if (!extracted.ok) {
         throw new Error(
           `${extracted.file}: sha256 ${extracted.actual ?? "(missing)"} does not match the ` +
-            `pinned binary ${provider.arches[arch].binary}`,
+            `pinned binary ${arches[arch].binary}`,
         );
       }
       console.log(`  verified and extracted → vendor/${PROVIDER_ROOT}/${command}/${arch}/${command}`);

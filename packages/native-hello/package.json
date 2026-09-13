@@ -1,0 +1,14 @@
+{
+  "name": "@domo/native-hello",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows Hello consent (UserConsentVerifier) plus a VirtualLock'd per-vault session holder for wrapping keys. Presence-gating for the vault; everything about vault providers lives in @domo/device-core.",
+  "main": "./index.cjs",
+  "scripts": {
+    "install": "node scripts/build.cjs"
+  },
+  "devDependencies": {
+    "node-addon-api": "^8.3.0",
+    "node-gyp": "^13.0.0"
+  }
+}

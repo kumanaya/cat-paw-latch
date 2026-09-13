@@ -34,6 +34,12 @@ import path from "node:path";
  */
 const PROVIDER_ROOT = "providers";
 
+/** Provider releases are native executables. Keep the public command spelling
+ * extension-free while selecting the actual Windows payload explicitly. */
+function providerFile(command: string): string {
+  return process.platform === "win32" ? `${command}.exe` : command;
+}
+
 /**
  * The override, e.g. `DOMO_GOG`: the command uppercased, with every
  * non-alphanumeric folded to `_`.
@@ -109,7 +115,7 @@ export function resolveVendoredBinary(
     // override at `/tmp/gog-0.36.0` leaves the child looking for `gog` finding
     // nothing — or worse, a different `/tmp/gog`, run with a minted Google
     // token. Refusing is the loud version of that. A symlink is the fix.
-    if (path.basename(resolved) !== command) {
+    if (path.basename(resolved) !== providerFile(command)) {
       return { path: null, problem: "override-misnamed", given: override, tried: attempted };
     }
     return { path: resolved };
@@ -117,14 +123,14 @@ export function resolveVendoredBinary(
 
   if (opts.resourcesDir) {
     const packaged = executable(
-      path.join(opts.resourcesDir, PROVIDER_ROOT, command, process.arch, command),
+      path.join(opts.resourcesDir, PROVIDER_ROOT, command, process.arch, providerFile(command)),
     );
     if (packaged) return { path: packaged };
   }
   if (opts.repoRoot) {
     // Where `just fetch-vendored` lands it, and electron-builder copies it from.
     const vendored = executable(
-      path.join(opts.repoRoot, "vendor", PROVIDER_ROOT, command, process.arch, command),
+      path.join(opts.repoRoot, "vendor", PROVIDER_ROOT, command, process.arch, providerFile(command)),
     );
     if (vendored) return { path: vendored };
   }

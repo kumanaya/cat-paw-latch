@@ -2,7 +2,13 @@ name: TypeScript
 
 # The shared packages (protocol, transport) are deliberately platform-neutral,
 # so they are kept building and passing on Linux as well as macOS. The device
-# half — sandbox (seatbelt) and the Electron app — is macOS-only.
+# half runs on macOS, Windows, AND Linux: the seatbelt sandbox is macOS-only,
+# the Job Object cage / Credential Manager provider are Windows-only, and the
+# bubblewrap + staged-workspace cage is Linux-only — each side's tests pin its
+# own platform and skip elsewhere. The Electron evidence still needs a
+# windowing environment, so macOS only.
+# Windows coverage is x64 (windows-2022). The hosted ARM image
+# (windows-11-vs2026-arm) is too new and too scarce to block a PR.
 
 on:
   push:
@@ -11,10 +17,13 @@ on:
 
 jobs:
   test:
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest]
+        # windows-latest is Server 2025: slow disk/Defender and a moving VS
+        # image. 2022 is the stable hosted x64 seat.
+        os: [macos-latest, ubuntu-latest, windows-2022]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -23,23 +32,50 @@ jobs:
           node-version: 22 # matches package.json engines (better-sqlite3 13 needs >=22)
           cache: npm
       - run: npm ci
+      # node-gyp needs a toolchain for the Windows addons (wincred, Hello,
+      # native-fs and winsandbox); VS Build Tools ship on both Windows runner
+      # architectures. macOS needs Xcode CLT for the keychain/permissions
+      # addons; Linux needs a C++ toolchain for linuxsandbox. All builds are
+      # tolerant, and a missing toolchain only disables its provider, never
+      # the install. Linux also needs bubblewrap for live cage tests.
+      - if: runner.os == 'Linux'
+        name: Install bubblewrap and enable the Linux cage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap dbus-user-session
+          # Ubuntu 24.04 blocks unprivileged user namespaces; bwrap then
+          # cannot configure loopback inside --unshare-net (RTM_NEWADDR).
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          uid="$(id -u)"
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@${uid}.service"
+          runtime="/run/user/${uid}"
+          for _ in $(seq 1 40); do
+            if [ -S "${runtime}/bus" ]; then break; fi
+            sleep 0.25
+          done
+          echo "XDG_RUNTIME_DIR=${runtime}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=${runtime}/bus" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="${runtime}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime}/bus"
+          systemd-run --user --quiet --scope -p TasksMax=256 -- /bin/true
       - run: npx tsc -b
       # Protocol + transport are platform-independent (golden vectors, crypto,
-      # the WebSocket client) and run everywhere.
+      # the WebSocket client) and run everywhere. The golden path vectors are
+      # macOS-path-shaped; Windows pins the same properties over real temp
+      # paths instead of those bytes (see golden.test.ts).
       - run: npx vitest run packages/protocol packages/transport
-      # The device sandbox needs macOS seatbelt (sandbox-exec); mcp-server's
-      # cases run real sandboxed commands through it. relay-client's own tests
-      # cover the wire contract plus the connection lifecycle against a fake
-      # connection; nothing here talks to a real relay
-      # (see README-ts.md § Integration coverage, which owns that list).
-      # browser-server drives its ported server logic against stub Playwright
-      # objects — its one real-Camoufox test skips itself when no browser is
-      # fetched, which is every run here.
-      - if: runner.os == 'macOS'
+      # The device half, the MCP surface, the relay client, the browser
+      # server and the desktop unit tests run on macOS, Windows, and Linux.
+      # The seatbelt/sandbox-exec cases, the AppleScript tool, the TCC probes
+      # and the macOS recipes are darwin-gated inside the suite; the Job
+      # Object cage, the CFA/ACL diagnosis and the Windows copy are
+      # win32-gated; the bubblewrap cage and Linux copy are linux-gated.
+      - if: runner.os == 'macOS' || runner.os == 'Windows' || runner.os == 'Linux'
         run: npx vitest run packages/device-core packages/mcp-server packages/relay-client packages/browser-server apps/desktop
-      # What is left under `e2e/`: the worktree-naming contract. The relay+MCP
-      # gate and the transcript runner went with the stand-in they needed; the
-      # directory did not.
+      # What is left under `e2e/`: the worktree-naming contract over POSIX
+      # shell. The relay+MCP gate and the transcript runner went with the
+      # stand-in they needed; the directory did not.
       - if: runner.os == 'macOS'
         run: npx vitest run e2e
       # The Electron-hosted evidence: the preload bridge, the approval dialog,
@@ -58,3 +94,87 @@ jobs:
           npx electron apps/desktop/scripts/connect-screenshot.mjs
         env:
           DOMO_HOME: ${{ runner.temp }}/domo-ci
+
+  # A Windows test run proves TypeScript and the native addons independently;
+  # this job proves the actual x64 app layout that a user receives. It is a
+  # directory package, deliberately unsigned, so pull requests never receive
+  # release credentials. Signed NSIS/update artifacts remain release-only.
+  windows-x64-package:
+    needs: test
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor/camoufox-browser
+            packages/browser-server/fingerprints.json
+          key: windows-x64-browser-${{ hashFiles('vendor/browser-server/runtime.lock.json', 'scripts/build-browser-runtime.mjs') }}
+      - run: npm ci
+      - run: npx tsc -b
+      - run: node scripts/fetch-vendored.mjs --all
+      - run: node scripts/build-browser-runtime.mjs --browser
+      - name: Pack and verify the x64 app layout
+        working-directory: apps/desktop
+        run: npx electron-builder --win --x64 --dir --publish never
+
+  # Same layout proof for Linux: unsigned --dir so PRs never receive
+  # release credentials. Needs bubblewrap + a systemd user session for the
+  # afterPack launcher --probe, the pinned Linux Camoufox payload, and
+  # vendored gog (afterPack refuses a missing or wrong-arch provider ELF).
+  # arm64 packs on ubuntu-24.04-arm so the cage addon and Camoufox ELF are
+  # native — afterPack refuses a host/target machine mismatch.
+  linux-package:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/cache@v4
+        with:
+          path: |
+            vendor/camoufox-browser
+            packages/browser-server/fingerprints.json
+          key: linux-${{ matrix.arch }}-browser-${{ hashFiles('vendor/browser-server/runtime.lock.json', 'scripts/build-browser-runtime.mjs') }}
+      - name: Install bubblewrap and enable the Linux cage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap dbus-user-session
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          uid="$(id -u)"
+          sudo loginctl enable-linger "$USER"
+          sudo systemctl start "user@${uid}.service"
+          runtime="/run/user/${uid}"
+          for _ in $(seq 1 40); do
+            if [ -S "${runtime}/bus" ]; then break; fi
+            sleep 0.25
+          done
+          echo "XDG_RUNTIME_DIR=${runtime}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=${runtime}/bus" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="${runtime}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime}/bus"
+          systemd-run --user --quiet --scope -p TasksMax=256 -- /bin/true
+      - run: npm ci
+      - run: npx tsc -b
+      - run: node scripts/fetch-vendored.mjs --all
+      - run: node scripts/build-browser-runtime.mjs --browser
+      - name: Pack and verify the ${{ matrix.arch }} app layout
+        working-directory: apps/desktop
+        run: npx electron-builder --linux --${{ matrix.arch }} --dir --publish never

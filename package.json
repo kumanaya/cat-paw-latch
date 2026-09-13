@@ -13,6 +13,7 @@
   "scripts": {
     "build": "tsc -b",
     "clean": "tsc -b --clean",
+    "dev": "npm run --workspace @domo/desktop dev",
     "test": "vitest run",
     "test:watch": "vitest"
   },

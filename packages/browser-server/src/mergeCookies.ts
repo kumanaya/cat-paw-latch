@@ -41,22 +41,34 @@ const KEY = ["name", "host", "path", "originAttributes"];
 /** Moved by a read, so it says nothing about what the session changed. */
 const READ_ONLY_COLUMN = "lastAccessed";
 
-/** `IS`, not `=`: a NULL column matches a NULL column. */
-function match(left: string, right: string, cols: string[]): string {
-  return cols.map((c) => `${left}.${c} IS ${right}.${c}`).join(" AND ");
-}
-
 /**
  * `into` the user's profile, `extra` the session's clone, `baseline` what that
  * clone started from (absent only on a profile with no cookie store).
  */
 export function mergeCookies(into: string, extra: string, baseline: string): void {
-  const db = new Database(into);
+  // All three stores are read fully, the merge is computed in memory, and
+  // only `into` is ever written — inside one transaction. No ATTACH: the
+  // WASM sqlite VFS cannot commit a multi-database transaction on Windows
+  // ("disk I/O error" on COMMIT even with nothing written), while a
+  // single-database transaction commits fine there — and one implementation
+  // runs identically on every host, so the suite below pins Windows behavior
+  // on macOS too.
+  //
+  // The comparisons below are the SQL's, spelled out: `IS` is null-safe
+  // equality (a NULL column matches a NULL column), and `mine.lastAccessed
+  // >= theirs.lastAccessed` is false when either side is NULL. Cookie
+  // stores are a few hundred rows; reading them whole is cheaper than the
+  // browser launch that precedes this call.
+  const mainDb = new Database(into);
+  const extraDb = new Database(extra);
+  const hasBaseline = fs.existsSync(baseline);
+  const baseDb = hasBaseline ? new Database(baseline) : null;
   try {
     // A session closing must not stall on a store another browser is writing.
-    db.run("PRAGMA busy_timeout = 10000");
-    db.run("ATTACH ? AS extra", [extra]);
-    const columns = (db.all("PRAGMA main.table_info(moz_cookies)") as { name: string }[])
+    mainDb.run("PRAGMA busy_timeout = 10000");
+    const columns = (
+      mainDb.all("PRAGMA main.table_info(moz_cookies)") as { name: string }[]
+    )
       .map((r) => r.name)
       .filter((n) => n !== "id");
     if (columns.length === 0) throw new Error("no moz_cookies table to merge into");
@@ -64,59 +76,90 @@ export function mergeCookies(into: string, extra: string, baseline: string): voi
     const state = columns.filter((c) => c !== READ_ONLY_COLUMN);
     const names = columns.join(",");
 
-    // A session that changed the same cookie more recently already won: true
-    // with a baseline and without one, which is why it is the only condition
-    // two sessions racing on a brand-new profile have.
-    const conditions = [
-      "NOT EXISTS (SELECT 1 FROM main.moz_cookies AS mine WHERE " +
-        `${match("mine", "theirs", keys)} AND mine.lastAccessed >= theirs.lastAccessed)`,
-    ];
+    const mains = readRows(mainDb, ["id", ...columns]);
+    const theirs = readRows(extraDb, columns);
+    const was = baseDb === null ? null : readRows(baseDb, columns);
 
-    const hasBaseline = fs.existsSync(baseline);
-    if (hasBaseline) {
-      // ATTACH cannot run inside a transaction, so it precedes BEGIN.
-      db.run("ATTACH ? AS base", [baseline]);
-      // Changed here: some state column differs from what it started as.
-      conditions.push(
-        "NOT EXISTS (SELECT 1 FROM base.moz_cookies AS was WHERE " +
-          `${match("was", "theirs", keys)} AND ${match("was", "theirs", state)})`,
-      );
-    }
+    // A session that changed the same cookie more recently already won.
+    const upserts = theirs.filter(
+      (t) =>
+        !mains.some((m) => sameKey(m, t, keys) && notBefore(m, t)) &&
+        (was === null || !was.some((w) => sameKey(w, t, keys) && sameState(w, t, state))),
+    );
+    // Signed out here: gone from the clone, and the profile still holds
+    // exactly what this session started from.
+    const deletions =
+      was === null
+        ? []
+        : mains.filter(
+            (m) =>
+              was.some((w) => sameKey(w, m, keys) && sameState(w, m, state)) &&
+              !theirs.some((t) => sameKey(t, m, keys)),
+          );
 
     // The delete (sign-outs) and the insert (changes) are one atomic write: a
     // crash or a lock timeout between them must not leave the profile with the
     // sign-outs applied but the new tokens missing — that is a half-merged
     // login. ROLLBACK on any failure leaves the profile exactly as it was.
-    db.run("BEGIN IMMEDIATE");
+    mainDb.run("BEGIN IMMEDIATE");
     try {
-      if (hasBaseline) {
-        // Signed out here: gone from the clone, and the profile still holds
-        // exactly what this session started from.
-        db.run(
-          "DELETE FROM main.moz_cookies WHERE EXISTS (" +
-            `  SELECT 1 FROM base.moz_cookies AS was WHERE ${match("was", "moz_cookies", keys)} ` +
-            `AND ${match("was", "moz_cookies", state)}` +
-            ") AND NOT EXISTS (" +
-            `  SELECT 1 FROM extra.moz_cookies AS theirs WHERE ${match("theirs", "moz_cookies", keys)}` +
-            ")",
+      for (const m of deletions) mainDb.run("DELETE FROM main.moz_cookies WHERE id = ?", [m.id]);
+      for (const t of upserts) {
+        mainDb.run(
+          `INSERT OR REPLACE INTO main.moz_cookies (${names}) VALUES (${columns.map(() => "?").join(",")})`,
+          columns.map((c) => t[c] ?? null),
         );
       }
-      db.run(
-        `INSERT OR REPLACE INTO main.moz_cookies (${names}) ` +
-          `SELECT ${names} FROM extra.moz_cookies AS theirs WHERE ${conditions.join(" AND ")}`,
-      );
-      db.run("COMMIT");
+      mainDb.run("COMMIT");
     } catch (err) {
       try {
-        db.run("ROLLBACK");
+        mainDb.run("ROLLBACK");
       } catch {
         /* the transaction was already undone by the failure */
       }
       throw err;
     }
   } finally {
-    db.close();
+    baseDb?.close();
+    extraDb.close();
+    mainDb.close();
   }
+}
+
+type Cell = number | bigint | string | Uint8Array | boolean | null;
+type Row = Record<string, Cell>;
+
+/** Every row of moz_cookies, with the given columns (plus `id` when asked). */
+function readRows(db: { all: (sql: string) => unknown }, columns: string[]): Row[] {
+  const quoted = columns.map((c) => `"${c.replace(/"/g, '""')}"`).join(",");
+  return db.all(`SELECT ${quoted} FROM moz_cookies`) as Row[];
+}
+
+/** SQLite `IS`: null-safe equality, byte-wise for blobs. */
+function isValue(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a == null || b == null) return false;
+  if (a instanceof Uint8Array && b instanceof Uint8Array) {
+    return a.length === b.length && a.every((v, i) => v === b[i]);
+  }
+  return false;
+}
+
+function sameKey(a: Row, b: Row, keys: string[]): boolean {
+  return keys.every((k) => isValue(a[k], b[k]));
+}
+
+function sameState(a: Row, b: Row, state: string[]): boolean {
+  return state.every((c) => isValue(a[c], b[c]));
+}
+
+/** `mine.lastAccessed >= theirs.lastAccessed`: false when either side is
+ *  NULL, exactly as the SQL comparison is. A session that changed the same
+ *  cookie more recently already won. */
+function notBefore(mine: Row, theirs: Row): boolean {
+  const m = mine[READ_ONLY_COLUMN];
+  const t = theirs[READ_ONLY_COLUMN];
+  return typeof m === "number" && typeof t === "number" && m >= t;
 }
 
 // CLI: into, extra, baseline — the argv shape BrowserHost spawns.

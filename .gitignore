@@ -8,6 +8,11 @@ apps/*/dist/
 
 # electron-builder output (signed app + DMG)
 apps/desktop/release/
+apps/desktop/release-*/
+
+# Local Windows package checks and native build intermediates.
+build/
+.agents/
 
 # Design specs live outside the repo (see PR descriptions for rationale)
 docs/superpowers/specs/
@@ -28,6 +33,11 @@ packages/browser-server/fingerprints.json
 # a stray bw run once defaulted its app data here
 Library/
 packages/native-keychain/build/
+packages/native-wincred/build/
+packages/native-winsandbox/build/
+packages/native-linuxsandbox/build/
+packages/native-linuxsandbox/node_modules/
+packages/native-fs/build/
 packages/native-credential-import/build/
 packages/native-permissions/build/
 eval/agent/out/

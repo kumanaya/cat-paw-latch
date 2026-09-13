@@ -190,7 +190,7 @@ describe("the static-credential fallback", () => {
     // on the account, which is not what one editor was being set up for.
     expect(plow.minted).toEqual([]);
     expect(state.credential).toBeNull();
-    expect(state.message).toBe("This Mac isn't registered with Plow yet. Try again in a moment.");
+    expect(state.message).toBe("This Desktop isn't registered with Plow yet. Try again in a moment.");
   });
 
   it("shows it once — after 'I've saved it' the app cannot produce it again", async () => {
@@ -242,7 +242,7 @@ describe("the static-credential fallback", () => {
 
   it("refuses when this Mac holds no credential to mint with", async () => {
     const state = await build().createCredential("Claude Code");
-    expect(state.message).toBe("This Mac isn't signed in yet.");
+    expect(state.message).toBe("This Desktop isn't signed in yet.");
     expect(plow.minted).toEqual([]);
   });
 
@@ -412,7 +412,7 @@ describe("removing a roster row", () => {
       { revoked: [] as number[], signOuts: 0 },
     ],
     [
-      "this Mac",
+      "this Desktop",
       () => key({ id: 4, key_prefix: keyPrefixOf(DEVICE_TOKEN) }),
       { revoked: [] as number[], signOuts: 1 },
     ],
@@ -521,6 +521,6 @@ describe("removing a roster row", () => {
     expect((await client.refreshRoster()).roster.mcp[0].deviceLabel).toBe("mbp");
 
     deviceUid = DEVICE_UID;
-    expect((await client.refreshRoster()).roster.mcp[0].deviceLabel).toBe("this Mac");
+    expect((await client.refreshRoster()).roster.mcp[0].deviceLabel).toBe("this Desktop");
   });
 });

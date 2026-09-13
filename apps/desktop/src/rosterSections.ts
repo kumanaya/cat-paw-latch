@@ -148,35 +148,35 @@ function rosterPermissions(scopes: readonly string[]): RosterPermissions {
 }
 
 /**
- * What to call the Mac a credential is bound to.
+ * What to call the desktop a credential is bound to.
  *
- * Four answers and no fifth: this Mac, the name Plow gave another one,
- * "another Mac" for a device row with no usable name, and "primary Mac" for one
+ * Four answers and no fifth: this Desktop, the name Plow gave another one,
+ * "another Desktop" for a device row with no usable name, and "primary Desktop" for one
  * bound to a resource Plow resolved no device row for. Never the uid, and never
  * nothing for a bound credential: one that rendered blank reads exactly like an
  * unbound one, and those differ in whether the thing holding it can reach this
- * screen's Mac at all.
+ * screen's desktop at all.
  *
  * That last answer is the ACCOUNT alias, and PRESENCE is the whole signal: a
  * resource naming a device arrives as `device`, so a row bound to something
  * with no device row is bound to the account — which Plow accepts only through
- * the primary Mac, so the primary Mac is where it lands. Deliberately not a
+ * the primary desktop, so the primary desktop is where it lands. Deliberately not a
  * comparison against the account uid: this app is never told what that is, and
  * a label that guessed would be wrong about a resource kind added later.
  *
- * "This Mac" is decided by the DEVICE uid rather than by `isThisMac`, which
- * answers a different question — whether the row IS this Mac's own login
- * session. A credential minted here for someone's editor is bound to this Mac
- * and is not this Mac's session.
+ * "This Desktop" is decided by the DEVICE uid rather than by `isThisMac`, which
+ * answers a different question — whether the row IS this desktop's own login
+ * session. A credential minted here for someone's editor is bound to this desktop
+ * and is not this desktop's session.
  */
 function deviceLabelOf(
   device: KeyDevice | null,
   relayResourceUid: string | null,
   ourDeviceUid: string,
 ): string | null {
-  if (!device) return relayResourceUid ? "primary Mac" : null;
-  if (ourDeviceUid && device.uid === ourDeviceUid) return "this Mac";
-  return device.name ?? "another Mac";
+  if (!device) return relayResourceUid ? "primary Desktop" : null;
+  if (ourDeviceUid && device.uid === ourDeviceUid) return "this Desktop";
+  return device.name ?? "another Desktop";
 }
 
 /** `["*"]` is every chat; `[]` is none of them; anything else is the list. */

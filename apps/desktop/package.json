@@ -7,7 +7,20 @@
   "main": "./dist/main.js",
   "scripts": {
     "build": "tsc -b && node scripts/copy-renderer.mjs && node scripts/build-native.mjs && node scripts/dev-usage-strings.mjs",
+    "dev": "npm run build && concurrently --kill-others --names typescript,renderer,electron \"npm run dev:typescript\" \"npm run dev:renderer\" \"npm run dev:electron\"",
+    "dev:electron": "electronmon .",
+    "dev:renderer": "chokidar \"src/renderer/**/*\" -c \"node scripts/copy-renderer.mjs && node scripts/signal-dev-reload.mjs renderer\" --debounce 250",
+    "dev:typescript": "chokidar \"src/**/*.{ts,cts}\" -c \"tsc -b && node scripts/signal-dev-reload.mjs main\" --debounce 250",
     "start": "electron ."
+  },
+  "electronmon": {
+    "patterns": [
+      "!src/**",
+      "!scripts/**",
+      "!test/**",
+      "!release/**",
+      "!dist/renderer/**"
+    ]
   },
   "dependencies": {
     "@domo/device-core": "*",
@@ -22,7 +35,10 @@
     "@domo/native-permissions": "*"
   },
   "devDependencies": {
+    "chokidar-cli": "^3.0.0",
+    "concurrently": "^10.0.5",
     "electron": "33.4.11",
-    "electron-builder": "^26.15.3"
+    "electron-builder": "^26.15.3",
+    "electronmon": "^2.0.4"
   }
 }

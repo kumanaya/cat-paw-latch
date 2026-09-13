@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { KeyPair } from "@domo/protocol";
+import { lockdownSecretFile } from "./fileLockdown.js";
 
 export interface DeviceKeyStore {
   loadKey(): KeyPair | null;
@@ -37,6 +38,9 @@ export class FileDeviceKeyStore implements DeviceKeyStore {
       JSON.stringify({ privateKeyBase64: keyPair.privateKeyBase64 }, null, 2) + "\n",
     );
     fs.chmodSync(this.file, 0o600);
+    // The device's signing key: owner-only ACL on Windows (throws on a real
+    // ACL failure — a loose private key must be visible, never silent).
+    lockdownSecretFile(this.file);
   }
 }
 
@@ -75,5 +79,6 @@ export function loadOrCreateIdentity(home: string, defaultName: string): DeviceI
     ) + "\n",
   );
   fs.chmodSync(file, 0o600);
+  lockdownSecretFile(file);
   return identity;
 }

@@ -42,6 +42,11 @@ import { BlockedError, DeferredResults, DeniedError, DeviceError, Progress } fro
 import { JobOwners } from "./jobs.js";
 import path from "node:path";
 
+/** Absolute for this host, including `~` which canonicalize expands. */
+function isAbsoluteUserPath(raw: string): boolean {
+  return path.isAbsolute(raw) || raw === "~" || raw.startsWith("~/") || raw.startsWith("~\\");
+}
+
 /** One promise, four descriptions: four wordings of it are four things to drift. */
 const EVAL_REFUSED =
   "'eval' is refused while a concealed field on ANY page of the session still holds the " +
@@ -212,6 +217,127 @@ export const MACOS_TOOLING =
   "and whatever else they have installed";
 
 /**
+ * The Windows tooling an agent is told to reach for — the same one-list
+ * rule as above. Every name here was RUN through the real executor inside
+ * a Job Object before being printed: `where`, `powershell -NoProfile
+ * -Command "Get-Date -Format o"`, `Get-ChildItem`, `cmd /c dir`, `type`
+ * and `clip /?` all exit 0 caged. `winget` is deliberately absent — it is
+ * not on the curated PATH (a per-user WindowsApps alias), so naming it
+ * would point an agent at a miss. Adding a name means running it first.
+ */
+export const WINDOWS_TOOLING =
+  "where for finding programs, powershell for scripting and structured output " +
+  "(Get-ChildItem, Get-Content, Get-Date), the cmd builtins (dir, type, copy) for files, " +
+  "clip for the clipboard, " +
+  "and whatever else they have installed";
+
+/**
+ * The Linux tooling an agent is told to reach for. Names here are ordinary
+ * POSIX utilities present on a desktop install; they still must be staged
+ * under an approved path to run inside the bubblewrap workspace.
+ */
+export const LINUX_TOOLING =
+  "find and grep for searching files, python3 for scripting, " +
+  "coreutils (ls, cat, cp, mkdir) for files, " +
+  "xclip or wl-clipboard for the clipboard when installed, " +
+  "and whatever else they have installed";
+
+/** The tooling list for this host. */
+export const HOST_TOOLING =
+  process.platform === "win32" ? WINDOWS_TOOLING :
+  process.platform === "linux" ? LINUX_TOOLING :
+  MACOS_TOOLING;
+
+/**
+ * The `plow_run_command` description's OS-shaped sentences: the workstation
+ * and its tooling, the cage, the scratch variable, how a run's tree ends,
+ * and what a refusal names. Everything else in the description is shared.
+ * Each fragment below was written per-OS rather than interpolated word by
+ * word, because the mechanisms genuinely differ (a seatbelt profile is not
+ * a Job Object, and Windows parks no consent dialog).
+ */
+const RUN_COMMAND_OS =
+  process.platform === "win32"
+    ? {
+        workstation:
+          "Their PC is a Windows machine, so reach for tooling your workspace does not have when " +
+          `it fits the job: ${WINDOWS_TOOLING}. ` +
+          "It runs inside a Windows Job Object that ends the whole command tree with the run and caps " +
+          "its process count. Declare every path you need: ",
+        reads:
+          "read_paths and write_paths are what the owner approves and what the audit record shows, and " +
+          "write access is granted from them. They are not a bound on reads — the job confines processes, " +
+          "not files. ",
+        scratchVar: "%TEMP%",
+        treeEnd:
+          "A run's whole tree ends with the run — a backgrounded job dies with it, its output is not " +
+          "captured, and no handle tracks it — so a long-lived server belongs in a service, not a " +
+          "background job. If the whole call outruns this PC's budget you get a pending handle instead: poll it with ",
+        refused:
+          "A 'completed' result with a non-zero exit and 'host_gate': 'none' failed " +
+          "on its own terms: this PC refused nothing and no Windows gate is missing, whatever the " +
+          "program's own error text says — do not send the user to Windows Security for it.",
+      }
+    : process.platform === "linux"
+    ? {
+        workstation:
+          "Their PC is a Linux machine, so reach for tooling your workspace does not have when " +
+          `it fits the job: ${LINUX_TOOLING}. ` +
+          "It runs inside a bubblewrap sandbox over a staged workspace, with a systemd TasksMax process " +
+          "cap that ends the whole command tree with the run. Declare every path you need: ",
+        reads:
+          "read_paths and write_paths are what the owner approves and what the audit record shows. " +
+          "Approved roots are copied into a private workspace before launch — the command never receives " +
+          "a live bind of the owner's home. The executable must itself sit under an approved root. ",
+        scratchVar: "$TMPDIR",
+        treeEnd:
+          "A run's whole tree ends with the run — a backgrounded job dies with it, its output is not " +
+          "captured, and no handle tracks it — so a long-lived server belongs in a service, not a " +
+          "background job. If the whole call outruns this PC's budget you get a pending handle instead: poll it with ",
+        refused:
+          "A 'completed' result with a non-zero exit and 'host_gate': 'none' failed " +
+          "on its own terms: this PC refused nothing and no Linux gate is missing, whatever the " +
+          "program's own error text says — do not send the user to system settings for it.",
+      }
+    : {
+        workstation:
+          "Their Mac is a macOS workstation, so reach for tooling your workspace does not have when " +
+          `it fits the job: ${MACOS_TOOLING}. ` +
+          "It runs inside a seatbelt sandbox. Declare every path you need: ",
+        reads:
+          "read_paths and write_paths are what the owner approves and what the audit record shows, and " +
+          "write access is granted from them. They are NOT the full extent of what the command can " +
+          "read — the sandbox profile permits reads more broadly than the paths declared here. ",
+        scratchVar: "$TMPDIR",
+        treeEnd:
+          "A run ends when the command itself exits, and its stdout and stderr close with it — so a job " +
+          "left running in the background will normally be killed by its next write unless it redirects " +
+          "both (`>log 2>&1`), its output is not captured, and no handle tracks it. " +
+          "If the whole call outruns this Mac's budget you get a pending handle instead: poll it with ",
+        refused:
+          "A 'completed' result with a non-zero exit and 'host_gate': 'none' failed " +
+          "on its own terms: this Mac refused nothing and no macOS permission is missing, whatever the " +
+          "program's own error text says — do not send the user to System Settings for it.",
+      };
+
+/** The parked-dialog paragraph exists only where a dialog can park a run: macOS. */
+const RUN_COMMAND_PARKED =
+  process.platform === "darwin"
+    ? " A result that is still 'running' but carries a 'diagnosis' is parked on a macOS permission " +
+      "dialog on the Mac's screen: leave it running, tell the user, and poll plow_get_output — their " +
+      "click lets it finish."
+    : "";
+
+/** The sandboxed-sender retry exists only where the unsandboxed script tool does: macOS. */
+const RUN_COMMAND_SCRIPT_RETRY =
+  process.platform === "darwin"
+    ? " A 'blocked' result whose diagnosis's 'retry' is 'with_plow_run_applescript' is an app refusing the sandboxed " +
+      "sender: run the script through plow_run_applescript, which runs outside the sandbox — but only " +
+      "the statements that did not land. Everything the script did before the refusal already " +
+      "happened, and a whole-script re-run does it twice."
+    : "";
+
+/**
  * Appended to every skill body `plow_read_skill` returns — one seam, not
  * per-skill prose, so the contribution path is stated once.
  *
@@ -234,14 +360,18 @@ export const SKILL_FOOTER =
   "made with this Mac's own tools act as the owner and are approval-gated like any command.";
 
 /**
- * What every tool that can be stopped by this Mac itself says about it, in
+ * What every tool that can be stopped by this host itself says about it, in
  * one sentence — the server instructions carry the full account, and a client
  * may drop those. The words matter: "not the user saying no" is the
  * distinction agents got wrong when a permission refusal wore the same shape
  * as a denial, and "word for word" is what keeps the fixed owner sentence
- * from being paraphrased into the wrong System Settings pane.
+ * from being paraphrased into the wrong Settings pane.
+ *
+ * Per-OS, like the gate it describes: TCC and consent dialogs on macOS,
+ * Controlled Folder Access and ACLs on Windows (where no dialog ever parks
+ * a refusal — it fails at once).
  */
-export const BLOCKED_COPY =
+const MACOS_BLOCKED_COPY =
   "A result with status 'blocked' means the user approved it and their Mac itself then refused — a " +
   "macOS privacy permission the app lacks, or a permission dialog waiting on the Mac's screen; not " +
   "the user saying no. Read its 'diagnosis': when 'confidence' is 'confirmed', tell the user the " +
@@ -249,14 +379,35 @@ export const BLOCKED_COPY =
   "One exception, and the diagnosis names it: when its 'retry' names a tool, that tool is the one " +
   "move left, and the only one.";
 
+const WINDOWS_BLOCKED_COPY =
+  "A result with status 'blocked' means the user approved it and their PC itself then refused — a " +
+  "Windows gate the app has not been allowed through (Controlled Folder Access, an ACL, a system " +
+  "location); not the user saying no. Read its 'diagnosis': when 'confidence' is 'confirmed', tell " +
+  "the user the 'owner_action' sentence word for word and stop; otherwise share the 'evidence' and " +
+  "let them decide. One exception, and the diagnosis names it: when its 'retry' names a tool, that " +
+  "tool is the one move left, and the only one.";
+
+const LINUX_BLOCKED_COPY =
+  "A result with status 'blocked' means the user approved it and their PC itself then refused — a " +
+  "Linux gate the app has not been allowed through (permissions, an immutable file, a system " +
+  "location); not the user saying no. Read its 'diagnosis': when 'confidence' is 'confirmed', tell " +
+  "the user the 'owner_action' sentence word for word and stop; otherwise share the 'evidence' and " +
+  "let them decide. One exception, and the diagnosis names it: when its 'retry' names a tool, that " +
+  "tool is the one move left, and the only one.";
+
+export const BLOCKED_COPY =
+  process.platform === "win32" ? WINDOWS_BLOCKED_COPY :
+  process.platform === "linux" ? LINUX_BLOCKED_COPY :
+  MACOS_BLOCKED_COPY;
+
 /**
  * Appended to every skill body, before the contribution footer: a skill
  * teaches queries against the owner's app data, which is exactly where a
- * missing macOS grant bites, and the agent reading a recipe is the one that
+ * missing grant bites, and the agent reading a recipe is the one that
  * will meet the refusal. No tool names here (the skill body's own examples
  * name them), and nothing owner-specific.
  */
-export const HOST_GATE_NOTE =
+const MACOS_HOST_GATE_NOTE =
   "\n\n## When this Mac itself says no\n\n" +
   "A call may come back with status 'blocked', with a 'diagnosis' beside it. That is neither " +
   "\"no messages\" nor the owner refusing: their Mac would not let the app do what they approved — " +
@@ -265,6 +416,71 @@ export const HOST_GATE_NOTE =
   "diagnosis is 'confirmed', tell the owner its 'owner_action' word for word and stop; do not " +
   "retry, and do not reword the goal. When it is 'likely' or 'unknown', pass on the 'evidence' and " +
   "'ruled_out' lists and let them decide.";
+
+const WINDOWS_HOST_GATE_NOTE =
+  "\n\n## When this PC itself says no\n\n" +
+  "A call may come back with status 'blocked', with a 'diagnosis' beside it. That is neither " +
+  "\"no messages\" nor the owner refusing: their PC would not let the app do what they approved — " +
+  "usually Controlled Folder Access or an ACL the app has not been allowed through. When the " +
+  "diagnosis is 'confirmed', tell the owner its 'owner_action' word for word and stop; do not " +
+  "retry, and do not reword the goal. When it is 'likely' or 'unknown', pass on the 'evidence' and " +
+  "'ruled_out' lists and let them decide.";
+
+const LINUX_HOST_GATE_NOTE =
+  "\n\n## When this PC itself says no\n\n" +
+  "A call may come back with status 'blocked', with a 'diagnosis' beside it. That is neither " +
+  "\"no messages\" nor the owner refusing: their PC would not let the app do what they approved — " +
+  "usually a permission, an immutable file, or a system location. When the " +
+  "diagnosis is 'confirmed', tell the owner its 'owner_action' word for word and stop; do not " +
+  "retry, and do not reword the goal. When it is 'likely' or 'unknown', pass on the 'evidence' and " +
+  "'ruled_out' lists and let them decide.";
+
+export const HOST_GATE_NOTE =
+  process.platform === "win32" ? WINDOWS_HOST_GATE_NOTE :
+  process.platform === "linux" ? LINUX_HOST_GATE_NOTE :
+  MACOS_HOST_GATE_NOTE;
+
+const WINDOWS_DEVICE_STATUS_COPY =
+  "Which Windows protections this app can work with, and whether its own machinery works — checked " +
+  "fresh each call, no approval needed. For when the user asks what you can reach on their PC, or " +
+  "after a 'blocked' result, to see the whole picture in one call. Do NOT call it to decide whether " +
+  "to try: an attempt that this PC refuses comes back 'blocked' with the exact sentence for the user, " +
+  "and shows the user in the app which switch to change. A status check does none of that. The other " +
+  "rows are self-checks — the AppContainer sandbox launches, a child inherits its bounds, and the vault " +
+  "key opens — and a failed one is for the user to hear, not for you to work around. 'not_asked' and " +
+  "'target_not_running' do not apply here and are never a reason to skip an attempted Windows operation.";
+
+const LINUX_DEVICE_STATUS_COPY =
+  "Which Linux protections this app can work with, and whether its own machinery works — checked " +
+  "fresh each call, no approval needed. For when the user asks what you can reach on their PC, or " +
+  "after a 'blocked' result, to see the whole picture in one call. Do NOT call it to decide whether " +
+  "to try: an attempt that this PC refuses comes back 'blocked' with the exact sentence for the user. " +
+  "The other rows are self-checks — the bubblewrap sandbox launches, a child inherits its bounds, and " +
+  "the vault key opens — and a failed one is for the user to hear, not for you to work around.";
+
+/** Tool copy predates multi-OS support. Keep platform-neutral prose in one
+ * manifest rather than duplicating every tool definition, but never advertise
+ * a Windows or Linux machine as a Mac. */
+function windowsHostWords(text: string): string {
+  return text.replaceAll("Mac's", "PC's").replaceAll("Mac", "PC");
+}
+
+function linuxHostWords(text: string): string {
+  return text.replaceAll("Mac's", "PC's").replaceAll("Mac", "PC");
+}
+
+function rewriteHostWordsInJson(value: JSONValue, rewrite: (text: string) => string): JSONValue {
+  if (typeof value === "string") return rewrite(value);
+  if (Array.isArray(value)) return value.map((child) => rewriteHostWordsInJson(child, rewrite));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, rewriteHostWordsInJson(child ?? null, rewrite)]));
+  }
+  return value;
+}
+
+function windowsHostWordsInJson(value: JSONValue): JSONValue {
+  return rewriteHostWordsInJson(value, windowsHostWords);
+}
 
 export const TOOLS: ToolSpec[] = [
   {
@@ -360,37 +576,25 @@ export const TOOLS: ToolSpec[] = [
       "Run a command on the user's own Mac through Latch — their installed tools, their data, " +
       "their network, their speakers. This Mac is where the user's world lives; default here for " +
       "anything about them or their machine, and use your own shell only for your own work. " +
-      "Their Mac is a macOS workstation, so reach for tooling your workspace does not have when " +
-      `it fits the job: ${MACOS_TOOLING}. ` +
-      "It runs inside a seatbelt sandbox. Declare every path you need: " +
-      "read_paths and write_paths are what the owner approves and what the audit record shows, and " +
-      "write access is granted from them. They are NOT the full extent of what the command can " +
-      "read — the sandbox profile permits reads more broadly than the paths declared here. " +
+      RUN_COMMAND_OS.workstation +
+      RUN_COMMAND_OS.reads +
       "If the command is still running when the wait elapses you get a job handle for plow_get_output. " +
       "A command that declares neither write_paths nor network can be killed if it has produced no " +
       "output at all after 15 minutes — so if long silent work is expected, have it print progress — " +
-      "and in exchange its only writable place is `$TMPDIR`, a directory of its own that is deleted " +
+      `and in exchange its only writable place is \`${RUN_COMMAND_OS.scratchVar}\`, a directory of its own that is deleted ` +
       "when it is killed. Declare a write path (or " +
       "network, or apple_events) and it is never killed that way, because it could be mid-work and a " +
       "truncated file — or a message already sent — is worse than the wait. A vendored provider command counts as having declared network even " +
-      "though you did not — so it is never killed that way either, and the `$TMPDIR` exchange is " +
+      `though you did not — so it is never killed that way either, and the \`${RUN_COMMAND_OS.scratchVar}\` exchange is ` +
       "off — unless it asks for help (`--help`/`-h` last, no `--` before it), which " +
       "reaches nothing and is exempt. " +
-      "A run ends when the command itself exits, and its stdout and stderr close with it — so a job " +
-      "left running in the background will normally be killed by its next write unless it redirects " +
-      "both (`>log 2>&1`), its output is not captured, and no handle tracks it. "  +
-      "If the whole call outruns this Mac's budget you get a pending handle instead: poll it with " +
+      RUN_COMMAND_OS.treeEnd +
       "plow_get_result, and the ready payload is the plow_run_command result — including its job handle. " +
       BLOCKED_COPY +
-      " A result that is still 'running' but carries a 'diagnosis' is parked on a macOS permission " +
-      "dialog on the Mac's screen: leave it running, tell the user, and poll plow_get_output — their " +
-      "click lets it finish. A 'completed' result with a non-zero exit and 'host_gate': 'none' failed " +
-      "on its own terms: this Mac refused nothing and no macOS permission is missing, whatever the " +
-      "program's own error text says — do not send the user to System Settings for it. A 'blocked' " +
-      "result whose diagnosis's 'retry' is 'with_plow_run_applescript' is an app refusing the sandboxed " +
-      "sender: run the script through plow_run_applescript, which runs outside the sandbox — but only " +
-      "the statements that did not land. Everything the script did before the refusal already " +
-      "happened, and a whole-script re-run does it twice.",
+      RUN_COMMAND_PARKED +
+      " " +
+      RUN_COMMAND_OS.refused +
+      RUN_COMMAND_SCRIPT_RETRY,
     inputSchema: {
       type: "object",
       required: ["argv"],
@@ -430,7 +634,12 @@ export const TOOLS: ToolSpec[] = [
             "(default false). Shown to the approver like any capability; without " +
             "it the sandbox denies the event and the command fails. For an AppleScript " +
             "prefer plow_run_applescript: some apps (Mail's compose among them) refuse " +
-            "commands from any sandboxed sender, which that tool is not.",
+            "commands from any sandboxed sender, which that tool is not." +
+            (process.platform === "win32"
+              ? " This capability is unavailable on Windows."
+              : process.platform === "linux"
+              ? " This capability is unavailable on Linux."
+              : ""),
         },
         wait_ms: {
           type: "integer",
@@ -472,7 +681,7 @@ export const TOOLS: ToolSpec[] = [
         const normalized = [...argv];
         for (const fileArg of provider.fileArgs(argv)) {
           const resolvedPaths = await Promise.all(fileArg.paths.map(async (raw) => {
-            const absolute = raw.startsWith("/") || raw === "~" || raw.startsWith("~/")
+            const absolute = isAbsoluteUserPath(raw)
               ? raw
               : cwd === undefined
                 ? null
@@ -522,6 +731,9 @@ export const TOOLS: ToolSpec[] = [
       // entry, which would change the approval rule hash of every command
       // that doesn't touch Apple events at all.
       if (a.get("apple_events").bool === true) {
+        // Apple events do not exist off macOS: refusing at the boundary
+        // rather than minting an approval for a capability nothing honors.
+        if (process.platform !== "darwin") throw new ToolError("apple_events is macOS-only on this host");
         capabilities.push({ kind: "apple_events", allowed: true });
       }
       if (readPaths.length > 0) capabilities.push({ kind: "fs.read", paths: readPaths });
@@ -562,9 +774,14 @@ export const TOOLS: ToolSpec[] = [
       return result;
     },
   },
-  {
-    name: "plow_run_applescript",
-    title: "Script an app on the user's Mac",
+  // `plow_run_applescript` is macOS-only: osascript does not exist
+  // elsewhere, and the executor refuses it too. Absent from the surface
+  // rather than a guaranteed denial.
+  ...(process.platform === "darwin"
+    ? [
+        {
+          name: "plow_run_applescript",
+          title: "Script an app on the user's Mac",
     description:
       "Run an AppleScript that controls one app on the user's own Mac through Latch — Mail, Finder, " +
       "Calendar, Notes, Reminders, Messages, System Events — and return what it produces. Use this " +
@@ -651,24 +868,32 @@ export const TOOLS: ToolSpec[] = [
         if (error instanceof BlockedError) claim(error.payload);
         throw error;
       }
-      claim(result);
-      return result;
-    },
-  },
+          claim(result);
+          return result;
+        },
+      } satisfies ToolSpec,
+    ] : []),
   {
     name: "plow_get_output",
     title: "Get output from a running command",
     description:
-      "Fetch incremental output of a command still running from plow_run_command, or a script from " +
-      "plow_run_applescript. Pass 'since' = the output_length you last saw. Takes the job handle that " +
+      "Fetch incremental output of a command still running from plow_run_command" +
+      (process.platform === "darwin" ? ", or a script from plow_run_applescript. " : ". ") +
+      "Pass 'since' = the output_length you last saw. Takes the job handle that " +
       "tool returned, not a handle from plow_get_result. " +
       "A read-only command that produces nothing and never exits is eventually killed by this Mac: " +
       "the reply then carries an 'error' saying so, which is for the user to hear. One approved to " +
       "write or to use the network is not — it could be mid-work — so polling will not resolve on " +
       "its own; tell the user, who is the only one who can end it. " +
-      "A reply with status 'blocked', or one still 'running' with a 'diagnosis', is a run this Mac " +
-      "itself stopped or is holding — a macOS permission, or a dialog waiting on its screen: relay the " +
-      "diagnosis's 'owner_action' to the user.",
+      (process.platform === "win32"
+        ? "A reply with status 'blocked' is a run this PC itself stopped — a Windows gate it was not " +
+          "allowed through: relay the diagnosis's 'owner_action' to the user."
+        : process.platform === "linux"
+        ? "A reply with status 'blocked' is a run this PC itself stopped — a Linux gate it was not " +
+          "allowed through: relay the diagnosis's 'owner_action' to the user."
+        : "A reply with status 'blocked', or one still 'running' with a 'diagnosis', is a run this Mac " +
+          "itself stopped or is holding — a macOS permission, or a dialog waiting on its screen: relay the " +
+          "diagnosis's 'owner_action' to the user."),
     inputSchema: {
       type: "object",
       required: ["handle"],
@@ -1111,8 +1336,9 @@ export const TOOLS: ToolSpec[] = [
   },
   {
     name: "plow_device_status",
-    title: "What this Mac lets the app do right now",
-    description:
+    title: process.platform === "darwin" ? "What this Mac lets the app do right now" : "What this PC lets the app do right now",
+    description: process.platform === "win32" ? WINDOWS_DEVICE_STATUS_COPY :
+      process.platform === "linux" ? LINUX_DEVICE_STATUS_COPY :
       "Which macOS permissions this app holds on the user's Mac, and whether its own machinery " +
       "works — checked fresh each call, no approval needed. For when the user asks what you can " +
       "reach on their Mac, or after a 'blocked' result, to see the whole picture in one call. Do " +
@@ -1156,6 +1382,22 @@ export const TOOLS: ToolSpec[] = [
     },
   },
 ];
+
+if (process.platform === "win32") {
+  for (const tool of TOOLS) {
+    tool.title = windowsHostWords(tool.title);
+    tool.description = windowsHostWords(tool.description);
+    tool.inputSchema = windowsHostWordsInJson(tool.inputSchema);
+  }
+}
+
+if (process.platform === "linux") {
+  for (const tool of TOOLS) {
+    tool.title = linuxHostWords(tool.title);
+    tool.description = linuxHostWords(tool.description);
+    tool.inputSchema = rewriteHostWordsInJson(tool.inputSchema, linuxHostWords);
+  }
+}
 
 /** An MCP content block a tool result can become. */
 export type ToolBlock =

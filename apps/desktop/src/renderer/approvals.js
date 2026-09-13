@@ -19,6 +19,6 @@ export const PURPOSE_PLACEHOLDER =
  * turning this mode on is what stops the questions.
  */
 export const PURPOSE_CAVEATS = [
-  "It describes the errand — it can widen what gets approved as easily as narrow it. Each approval still lists the capabilities this Mac will enforce.",
+  "It describes the errand — it can widen what gets approved as easily as narrow it. Each approval still lists the capabilities this Desktop will enforce.",
   "Requests that fit may be approved without asking you.",
 ];

@@ -214,16 +214,16 @@ describe("which Mac a credential is bound to", () => {
   it.each([
     // Our own uid wins over the name plow has for us: the owner is looking at
     // this Mac, and "mbp" would make them go and check which one that is.
-    ["this Mac", { uid: OUR_DEVICE, name: "mbp" }, null, "this Mac"],
-    ["another Mac by name", { uid: "dev_other", name: "mba" }, null, "mba"],
+    ["this Desktop", { uid: OUR_DEVICE, name: "mbp" }, null, "this Desktop"],
+    ["another Desktop by name", { uid: "dev_other", name: "mba" }, null, "mba"],
     // Bound somewhere, name unusable. Not blank — blank reads as "works from
     // any Mac", which is the opposite of the truth.
-    ["another Mac with no name", { uid: "dev_other", name: null }, null, "another Mac"],
+    ["another Desktop with no name", { uid: "dev_other", name: null }, null, "another Desktop"],
     ["no Mac at all", null, null, null],
     // Plow resolved no device row because the binding names the ACCOUNT, which
     // it accepts only through the primary Mac. Presence is the whole signal: a
     // resource naming a device would have arrived as `device`.
-    ["the account alias", null, "u_account", "primary Mac"],
+    ["the account alias", null, "u_account", "primary Desktop"],
     // Both arrive together for a device-bound credential; the nameable one wins.
     ["a device despite an alias", { uid: "dev_other", name: "mba" }, "u_account", "mba"],
   ])("labels a credential bound to %s", (_shape, device, relay_resource_uid, expected) => {

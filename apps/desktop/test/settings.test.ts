@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { loadSettings, saveSettings, useCredentialCodec } from "../src/settings.js";
+import { credentialStorage, loadSettings, saveSettings, useCredentialCodec } from "../src/settings.js";
 
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -30,7 +30,9 @@ function write(home: string, json: string): void {
 }
 
 describe("settings storage", () => {
-  it("writes the file owner-only", () => {
+  // Unix mode bits do not exist on Windows (ACLs instead); the OS-store
+  // providers are the floor there. These two pin the POSIX floor only.
+  it.skipIf(process.platform === "win32")("writes the file owner-only", () => {
     const home = tempHome();
     const settings = loadSettings(home);
     settings.relayCredential = "plow_sk_secret";
@@ -39,7 +41,7 @@ describe("settings storage", () => {
     expect(mode(file)).toBe(0o600);
   });
 
-  it("repairs the permissions of a file that predates the change", () => {
+  it.skipIf(process.platform === "win32")("repairs the permissions of a file that predates the change", () => {
     const home = tempHome();
     const file = path.join(home, "app/settings.json");
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -346,7 +348,11 @@ describe("the credential at rest", () => {
 
     expect(fileOf(home).relayCredential).toBe("plow_sk_unsealed");
     expect(fileOf(home).relayCredentialEnc).toBeUndefined();
-    expect(fs.statSync(path.join(home, "app/settings.json")).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      // Unix mode bits do not exist on Windows; the credential assertions
+      // above are the platform-neutral part.
+      expect(fs.statSync(path.join(home, "app/settings.json")).mode & 0o777).toBe(0o600);
+    }
     expect(loadSettings(home).relayCredential).toBe("plow_sk_unsealed");
     expect(log).toHaveBeenCalledWith(
       "[settings] no OS keychain available; credential stored unencrypted (0600)",
@@ -373,7 +379,11 @@ describe("the credential at rest", () => {
 
     expect(fileOf(home).relayCredential).toBe("plow_sk_must_survive");
     expect(fileOf(home).relayCredentialEnc).toBeUndefined();
-    expect(fs.statSync(path.join(home, "app/settings.json")).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      // Unix mode bits do not exist on Windows; the credential assertions
+      // above are the platform-neutral part.
+      expect(fs.statSync(path.join(home, "app/settings.json")).mode & 0o777).toBe(0o600);
+    }
     expect(loadSettings(home).relayCredential).toBe("plow_sk_must_survive");
   });
 
@@ -397,5 +407,25 @@ describe("the credential at rest", () => {
       mcpUrl: "",
     });
     expect(fileOf(home).relayCredentialEnc).toBeUndefined();
+  });
+});
+
+describe("credentialStorage — how the credential rests on disk", () => {
+  it("reads sealed, plaintext, empty and missing off the file", () => {
+    const home = tempHome();
+    // No file at all.
+    expect(credentialStorage(home)).toBe("empty");
+    // Plaintext, as a codec-less save leaves it.
+    write(home, JSON.stringify({ relayCredential: "plow_sk_secret" }));
+    expect(credentialStorage(home)).toBe("plaintext");
+    // A blank credential protects nothing.
+    write(home, JSON.stringify({ relayCredential: "  " }));
+    expect(credentialStorage(home)).toBe("empty");
+    // Sealed wins where it exists.
+    write(home, JSON.stringify({ relayCredential: "x", relayCredentialEnc: "sealed:whatever" }));
+    expect(credentialStorage(home)).toBe("sealed");
+    // Not an object at all.
+    write(home, "42");
+    expect(credentialStorage(home)).toBe("empty");
   });
 });

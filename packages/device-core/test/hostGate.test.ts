@@ -19,17 +19,24 @@ import {
   candidatePaths,
   collectFacts,
   diagnose,
+  diagnosisPayload,
   guardedPrefix,
   HostFacts,
   isHostGate,
   nodeProbes,
+  probeWindowsFolderAccess,
   sandboxGrants,
+  sandboxKindFor,
   scriptedProbes,
   errnoFromHint,
   serviceBehind,
   sipProtected,
   stderrHint,
   tildeRelative,
+  windowsGuardedPrefix,
+  windowsSystemProtected,
+  linuxGuardedPrefix,
+  linuxSystemProtected,
 } from "@domo/device-core";
 
 const cleanups: (() => void)[] = [];
@@ -43,6 +50,16 @@ function tempDir(): string {
 }
 
 const HOME = "/Users/probe";
+
+/** The macOS tree, pinned: these leaves assert TCC sentences, so they run
+ *  under the darwin platform on any host — including Windows and Linux CI. */
+const diagnoseMac = (f: HostFacts) => diagnose(f, { platform: "darwin" });
+
+/** The macOS profile's decision, pinned for the same reason. */
+const grantsMac = (
+  args: Parameters<typeof sandboxGrants>[0],
+  target: string,
+) => sandboxGrants(args, target, { platform: "darwin" });
 
 /** A fact set with nothing wrong in it; each case overrides what it needs. */
 function facts(overrides: Partial<HostFacts> = {}): HostFacts {
@@ -59,6 +76,7 @@ function facts(overrides: Partial<HostFacts> = {}): HostFacts {
     syscall: null,
     stderr_hint: null,
     ran_sandboxed: false,
+    sandbox_kind: "none",
     sandbox_allows_read: null,
     sandbox_allows_write: null,
     path_approved: true,
@@ -141,8 +159,8 @@ describe("reading an error", () => {
 
   it("reads -10004 as the app refusing a sandboxed sender, and names it so", () => {
     expect(stderrHint("59:141: execution error: Mail got an error: A privilege violation occurred. (-10004)")).toBe("apple_event_privilege_violation");
-    const base = { automation_target: "Mail", stderr_hint: "apple_event_privilege_violation" as const, ran_sandboxed: true };
-    const granted = diagnose(facts({ ...base, automation_status: "granted" }));
+    const base = { automation_target: "Mail", stderr_hint: "apple_event_privilege_violation" as const, ran_sandboxed: true, sandbox_kind: "seatbelt" as const };
+    const granted = diagnoseMac(facts({ ...base, automation_status: "granted" }));
     expect(granted.cause).toBe("app_refuses_sandboxed_sender");
     expect(granted.confidence).toBe("confirmed");
     expect(granted.permission).toBeNull();
@@ -151,10 +169,10 @@ describe("reading an error", () => {
     expect(granted.owner_action).toMatch(/^Mail refuses this command from any sandboxed process/);
     expect(granted.owner_action).toMatch(/no permission in System Settings changes that/);
     expect(granted.owner_action).toMatch(/AppleScript tool instead, which runs outside the sandbox/);
-    expect(diagnose(facts({ ...base, automation_status: "not_asked" })).confidence).toBe("likely");
+    expect(diagnoseMac(facts({ ...base, automation_status: "not_asked" })).confidence).toBe("likely");
     // The same error from a script that ran OUTSIDE the sandbox is not the
     // sender's doing: the app refused on its own terms, and no gate is named.
-    const bare = diagnose(facts({ ...base, ran_sandboxed: false, automation_status: "granted" }));
+    const bare = diagnoseMac(facts({ ...base, ran_sandboxed: false, sandbox_kind: "none" as const, automation_status: "granted" }));
     expect(bare.cause).toBe("unknown");
     expect(bare.evidence.join(" ")).toMatch(/ran outside the sandbox/);
   });
@@ -179,20 +197,20 @@ describe("reading an error", () => {
       stderr_hint: "scripted_data_not_permitted" as const,
       service_permission: "contacts" as const,
     };
-    const denied = diagnose(facts({ ...base, service_status: "denied" }));
+    const denied = diagnoseMac(facts({ ...base, service_status: "denied" }));
     expect(denied.cause).toBe("macos_permission");
     expect(denied.confidence).toBe("confirmed");
     expect(denied.permission).toBe("contacts");
     expect(denied.owner_action).toMatch(/Capabilities tab, allow Contacts/);
     expect(denied.owner_action).toMatch(/System Settings > Privacy & Security > Contacts/);
-    const unasked = diagnose(facts({ ...base, service_status: "not_asked" }));
+    const unasked = diagnoseMac(facts({ ...base, service_status: "not_asked" }));
     expect(unasked.cause).toBe("macos_permission");
     expect(unasked.confidence).toBe("likely");
     expect(unasked.evidence.join(" ")).toMatch(/never asked/);
-    const granted = diagnose(facts({ ...base, service_status: "granted" }));
+    const granted = diagnoseMac(facts({ ...base, service_status: "granted" }));
     expect(granted.cause).toBe("unknown");
     // Not a data-holding target: the hint means nothing, and the tree moves on.
-    const messages = diagnose(facts({ ...base, automation_target: "Messages", service_permission: null, service_status: null }));
+    const messages = diagnoseMac(facts({ ...base, automation_target: "Messages", service_permission: null, service_status: null }));
     expect(messages.cause).not.toBe("macos_permission");
   });
 
@@ -239,7 +257,7 @@ describe("reading an error", () => {
 
 describe("diagnose — the tree, one leaf per case", () => {
   it("names the hang: a consent dialog is holding the open", () => {
-    const d = diagnose(facts({ app_process_open: "hung", tcc_guarded_prefix: "files_downloads" }));
+    const d = diagnoseMac(facts({ app_process_open: "hung", tcc_guarded_prefix: "files_downloads" }));
     expect(d.cause).toBe("prompt_waiting");
     expect(d.confidence).toBe("confirmed");
     expect(d.permission).toBe("files_downloads");
@@ -249,13 +267,13 @@ describe("diagnose — the tree, one leaf per case", () => {
   });
 
   it("a hang outside any known gate is only likely a prompt", () => {
-    const d = diagnose(facts({ hung: true, app_process_open: null, path: "/Volumes/x", tcc_guarded_prefix: null }));
+    const d = diagnoseMac(facts({ hung: true, app_process_open: null, path: "/Volumes/x", tcc_guarded_prefix: null }));
     expect(d.cause).toBe("prompt_waiting");
     expect(d.confidence).toBe("likely");
   });
 
   it("confirms a TCC refusal: the app itself is refused, the path is guarded, FDA is off", () => {
-    const d = diagnose(
+    const d = diagnoseMac(
       facts({
         errno: "EPERM",
         app_process_open: "EPERM",
@@ -275,7 +293,7 @@ describe("diagnose — the tree, one leaf per case", () => {
   });
 
   it("a folder gate names its own switch and offers FDA as the umbrella", () => {
-    const d = diagnose(
+    const d = diagnoseMac(
       facts({
         errno: "EPERM",
         app_process_open: "EPERM",
@@ -292,7 +310,7 @@ describe("diagnose — the tree, one leaf per case", () => {
   });
 
   it("rules TCC out when Full Disk Access is granted and the path is still refused", () => {
-    const d = diagnose(
+    const d = diagnoseMac(
       facts({
         errno: "EPERM",
         app_process_open: "EPERM",
@@ -307,11 +325,12 @@ describe("diagnose — the tree, one leaf per case", () => {
   });
 
   it("tells our own seatbelt from macOS: the app can open it, the profile could not", () => {
-    const d = diagnose(
+    const d = diagnoseMac(
       facts({
         op: "exec",
         errno: "EPERM",
         ran_sandboxed: true,
+        sandbox_kind: "seatbelt",
         app_process_open: "ok",
         sandbox_allows_read: true,
         sandbox_allows_write: false,
@@ -323,14 +342,17 @@ describe("diagnose — the tree, one leaf per case", () => {
     expect(d.retry).toBe("with_declared_path");
     expect(d.ruled_out).toContain("macOS permission");
     expect(d.owner_action).toMatch(/write_paths/);
+    // Under seatbelt the profile is the mechanism, and the evidence says so.
+    expect(d.evidence.join(" ")).toMatch(/sandbox profile allows no writes/);
   });
 
   it("does not blame the sandbox when the profile allowed the path too", () => {
-    const d = diagnose(
+    const d = diagnoseMac(
       facts({
         op: "exec",
         errno: "EPERM",
         ran_sandboxed: true,
+        sandbox_kind: "seatbelt",
         app_process_open: "ok",
         sandbox_allows_read: true,
         sandbox_allows_write: true,
@@ -341,11 +363,12 @@ describe("diagnose — the tree, one leaf per case", () => {
   });
 
   it("sqlite's WAL case under a read-only profile is the sandbox, not a missing file", () => {
-    const d = diagnose(
+    const d = diagnoseMac(
       facts({
         op: "exec",
         stderr_hint: "sqlite_unable_to_open",
         ran_sandboxed: true,
+        sandbox_kind: "seatbelt",
         app_process_open: "ok",
         sandbox_allows_read: true,
         sandbox_allows_write: false,
@@ -358,39 +381,39 @@ describe("diagnose — the tree, one leaf per case", () => {
   });
 
   it("EACCES with denying mode bits is ordinary permissions", () => {
-    const d = diagnose(facts({ errno: "EACCES", posix_readable: false, app_process_open: "EACCES" }));
+    const d = diagnoseMac(facts({ errno: "EACCES", posix_readable: false, app_process_open: "EACCES" }));
     expect(d.cause).toBe("posix_permissions");
     expect(d.confidence).toBe("confirmed");
     expect(d.owner_action).toMatch(/chown\/chmod/);
     // EACCES with bits that should allow it: still the best guess, less sure.
-    expect(diagnose(facts({ errno: "EACCES", posix_readable: true })).confidence).toBe("likely");
+    expect(diagnoseMac(facts({ errno: "EACCES", posix_readable: true })).confidence).toBe("likely");
   });
 
   it("sqlite's 'unable to open' is the WAL bound only when the app itself can open the file", () => {
     // The words are the same for a database the app is refused — Full
     // Disk Access off — and that refusal is the story, not the -shm index.
-    const base = { stderr_hint: "sqlite_unable_to_open" as const, ran_sandboxed: true, sandbox_allows_read: true, sandbox_allows_write: false, path: "~/Library/Messages/chat.db", tcc_guarded_prefix: "full_disk_access" as const, full_disk_access_granted: false, errno: null };
-    const refused = diagnose(facts({ ...base, app_process_open: "EPERM" }));
+    const base = { stderr_hint: "sqlite_unable_to_open" as const, ran_sandboxed: true, sandbox_kind: "seatbelt" as const, sandbox_allows_read: true, sandbox_allows_write: false, path: "~/Library/Messages/chat.db", tcc_guarded_prefix: "full_disk_access" as const, full_disk_access_granted: false, errno: null };
+    const refused = diagnoseMac(facts({ ...base, app_process_open: "EPERM" }));
     expect(refused.cause).toBe("macos_permission");
     expect(refused.permission).toBe("full_disk_access");
     expect(refused.confidence).toBe("confirmed");
-    const wal = diagnose(facts({ ...base, app_process_open: "ok" }));
+    const wal = diagnoseMac(facts({ ...base, app_process_open: "ok" }));
     expect(wal.cause).toBe("outside_approved_bound");
   });
 
   it("a locked flag and a SIP root each get their own verdict", () => {
-    const locked = diagnose(facts({ errno: "EPERM", immutable_flag: true, app_process_open: "EPERM" }));
+    const locked = diagnoseMac(facts({ errno: "EPERM", immutable_flag: true, app_process_open: "EPERM" }));
     expect(locked.cause).toBe("immutable_file");
     expect(locked.owner_action).toMatch(/chflags nouchg/);
-    const sip = diagnose(facts({ errno: "EPERM", sip_protected: true, path: "/System/x", app_process_open: "EPERM" }));
+    const sip = diagnoseMac(facts({ errno: "EPERM", sip_protected: true, path: "/System/x", app_process_open: "EPERM" }));
     expect(sip.cause).toBe("sip_protected");
     expect(sip.retry).toBe("with_different_path");
-    const rofs = diagnose(facts({ errno: "EROFS", sip_protected: true, path: "/usr/x" }));
+    const rofs = diagnoseMac(facts({ errno: "EROFS", sip_protected: true, path: "/usr/x" }));
     expect(rofs.cause).toBe("sip_protected");
   });
 
   it("a missing file is a finding, not a gate", () => {
-    const d = diagnose(facts({ errno: "ENOENT", path_exists: false, app_process_open: "ENOENT" }));
+    const d = diagnoseMac(facts({ errno: "ENOENT", path_exists: false, app_process_open: "ENOENT" }));
     expect(d.cause).toBe("not_found");
     expect(d.confidence).toBe("confirmed");
     expect(isHostGate(d.cause)).toBe(false);
@@ -398,7 +421,7 @@ describe("diagnose — the tree, one leaf per case", () => {
   });
 
   it("with no probe answer, a guarded prefix is only a likely TCC refusal", () => {
-    const d = diagnose(
+    const d = diagnoseMac(
       facts({ errno: "EPERM", app_process_open: null, tcc_guarded_prefix: "files_documents", full_disk_access_granted: false }),
     );
     expect(d.cause).toBe("macos_permission");
@@ -406,21 +429,21 @@ describe("diagnose — the tree, one leaf per case", () => {
   });
 
   it("an EPERM the app itself cannot reproduce, on an unguarded path, is unknown with evidence", () => {
-    const d = diagnose(facts({ errno: "EPERM", app_process_open: "EPERM", path: "/opt/x" }));
+    const d = diagnoseMac(facts({ errno: "EPERM", app_process_open: "EPERM", path: "/opt/x" }));
     expect(d.cause).toBe("unknown");
     expect(d.evidence.join(" ")).toMatch(/not under any location macOS is known to guard/);
     expect(d.ruled_out).toContain("sandbox bound");
   });
 
   it("a failure with no errno and no path is honestly unknown", () => {
-    const d = diagnose(facts({ path: null, path_exists: null, app_process_open: null }));
+    const d = diagnoseMac(facts({ path: null, path_exists: null, app_process_open: null }));
     expect(d.cause).toBe("unknown");
     expect(d.evidence.join(" ")).toMatch(/no errno and no path/);
   });
 
   describe("Apple events", () => {
     it("denied Automation consent is a confirmed permission", () => {
-      const d = diagnose(facts({ op: "exec", automation_target: "Messages", automation_status: "denied" }));
+      const d = diagnoseMac(facts({ op: "exec", automation_target: "Messages", automation_status: "denied" }));
       expect(d.cause).toBe("macos_permission");
       expect(d.permission).toBe("automation");
       expect(d.confidence).toBe("confirmed");
@@ -428,7 +451,7 @@ describe("diagnose — the tree, one leaf per case", () => {
     });
 
     it("-1743 with consent never asked is the dialog, likely", () => {
-      const d = diagnose(
+      const d = diagnoseMac(
         facts({
           op: "exec",
           automation_target: "Messages",
@@ -441,7 +464,7 @@ describe("diagnose — the tree, one leaf per case", () => {
     });
 
     it("-1743 with consent granted points at the build, not the owner", () => {
-      const d = diagnose(
+      const d = diagnoseMac(
         facts({
           op: "exec",
           automation_target: "Messages",
@@ -454,7 +477,7 @@ describe("diagnose — the tree, one leaf per case", () => {
     });
 
     it("-1743 with the target not running is a likely permission with that noted", () => {
-      const d = diagnose(
+      const d = diagnoseMac(
         facts({
           op: "exec",
           automation_target: "Messages",
@@ -468,7 +491,7 @@ describe("diagnose — the tree, one leaf per case", () => {
     });
 
     it("a hang with consent never asked is the consent dialog, confirmed", () => {
-      const d = diagnose(facts({ op: "exec", hung: true, automation_target: "Messages", automation_status: "not_asked" }));
+      const d = diagnoseMac(facts({ op: "exec", hung: true, automation_target: "Messages", automation_status: "not_asked" }));
       expect(d.cause).toBe("prompt_waiting");
       expect(d.confidence).toBe("confirmed");
       expect(d.permission).toBe("automation");
@@ -476,7 +499,11 @@ describe("diagnose — the tree, one leaf per case", () => {
   });
 });
 
-describe("collectFacts — the battery over scripted probes", () => {
+// POSIX fixture paths (/Users/probe, /opt, /x) resolved through the
+// platform path module: these pin the macOS battery and run darwin-only.
+// Windows coverage of the same battery lives in the "Windows gates"
+// block below, against real temp paths.
+describe.skipIf(process.platform !== "darwin")("collectFacts — the battery over scripted probes", () => {
   it("examines every candidate and settles on the one the app is refused", async () => {
     const probes = scriptedProbes({
       openAsApp: { [`${HOME}/Library/Messages/chat.db`]: "EPERM" },
@@ -596,7 +623,7 @@ describe("collectFacts — the battery over scripted probes", () => {
     expect(f.path_exists).toBe(false);
     expect(f.app_process_open).toBe("EPERM");
     expect(probes.calls).toContain(`openAsApp ${HOME}/Documents`);
-    const d = diagnose(f);
+    const d = diagnoseMac(f);
     expect(d.cause).toBe("macos_permission");
     expect(d.permission).toBe("files_documents");
     expect(d.evidence.join(" ")).toMatch(/refusal is on creating it/);
@@ -626,7 +653,7 @@ describe("collectFacts — the battery over scripted probes", () => {
     expect(f.app_process_open).toBeNull();
     expect(f.path_exists).toBeNull();
     expect(probes.calls.filter((c) => c.startsWith("inspect") || c.startsWith("openAsApp"))).toEqual([]);
-    const d = diagnose(f);
+    const d = diagnoseMac(f);
     expect(d.cause).toBe("outside_approved_bound");
     expect(d.confidence).toBe("confirmed");
   });
@@ -691,7 +718,7 @@ describe("collectFacts — the battery over scripted probes", () => {
       scriptedProbes({ fullDiskAccess: false }),
       HOME,
     );
-    const d = diagnose(guarded);
+    const d = diagnoseMac(guarded);
     expect(d.cause).toBe("macos_permission");
     expect(d.confidence).toBe("likely");
     expect(d.permission).toBe("files_documents");
@@ -731,7 +758,10 @@ describe("collectFacts — the battery over scripted probes", () => {
   });
 });
 
-describe("sandboxGrants — the profile's decision, asked after the fact", () => {
+describe.skipIf(process.platform !== "darwin")("sandboxGrants — the profile's decision, asked after the fact", () => {
+  // The seatbelt profile is macOS-only: these pin its over-approximation
+  // (broad home, boilerplate roots, housekeeping) over macOS paths.
+  // Windows answers the approval instead of a cage — pinned below.
   // Canonical, like every path the generator sees: a temp dir under /var is
   // really under /private/var, and the profile is written in physical paths.
   const home = canonicalize(tempDir());
@@ -740,26 +770,52 @@ describe("sandboxGrants — the profile's decision, asked after the fact", () =>
 
   it("grants reads broadly under home and the boilerplate roots, writes only where approved", () => {
     const out = path.join(home, "Plow/out.txt");
-    expect(sandboxGrants(base, out)).toEqual({ read: true, write: false });
-    expect(sandboxGrants({ ...base, writePaths: [path.join(home, "Plow")] }, out)).toEqual({ read: true, write: true });
-    expect(sandboxGrants(base, "/usr/bin/ls")).toEqual({ read: true, write: false });
-    expect(sandboxGrants(base, "/private/var/db/x")).toEqual({ read: true, write: false });
-    expect(sandboxGrants(base, "/Users/Shared/x")).toEqual({ read: false, write: false });
-    expect(sandboxGrants(base, "/Users")).toEqual({ read: true, write: false });
-    expect(sandboxGrants(base, path.join(scratch, "tmp.txt"))).toEqual({ read: true, write: true });
+    expect(grantsMac(base, out)).toEqual({ read: true, write: false });
+    expect(grantsMac({ ...base, writePaths: [path.join(home, "Plow")] }, out)).toEqual({ read: true, write: true });
+    expect(grantsMac(base, "/usr/bin/ls")).toEqual({ read: true, write: false });
+    expect(grantsMac(base, "/private/var/db/x")).toEqual({ read: true, write: false });
+    expect(grantsMac(base, "/Users/Shared/x")).toEqual({ read: false, write: false });
+    expect(grantsMac(base, "/Users")).toEqual({ read: true, write: false });
+    expect(grantsMac(base, path.join(scratch, "tmp.txt"))).toEqual({ read: true, write: true });
   });
 
   it("gives housekeeping writes only to a run the reaper cannot kill", () => {
     const cache = path.join(home, ".cache/x");
-    expect(sandboxGrants(base, cache).write).toBe(false);
-    expect(sandboxGrants({ ...base, network: true }, cache).write).toBe(true);
-    expect(sandboxGrants({ ...base, appleEvents: true }, cache).write).toBe(true);
+    expect(grantsMac(base, cache).write).toBe(false);
+    expect(grantsMac({ ...base, network: true }, cache).write).toBe(true);
+    expect(grantsMac({ ...base, appleEvents: true }, cache).write).toBe(true);
   });
 
   it("reads outside home need a declared read path", () => {
     const outside = canonicalize(tempDir());
-    expect(sandboxGrants(base, path.join(outside, "x")).read).toBe(false);
-    expect(sandboxGrants({ ...base, readPaths: [outside] }, path.join(outside, "x")).read).toBe(true);
+    expect(grantsMac(base, path.join(outside, "x")).read).toBe(false);
+    expect(grantsMac({ ...base, readPaths: [outside] }, path.join(outside, "x")).read).toBe(true);
+  });
+});
+
+describe("sandboxGrants on Windows — the approval, not a cage", () => {
+  // No Job Object confines files, so these answer what the owner approved:
+  // reads are the broad home grant plus declared roots, writes are the
+  // writable roots. Pinned explicitly to win32 so they run on any host.
+  const win = (args: Parameters<typeof sandboxGrants>[0], target: string) =>
+    sandboxGrants(args, target, { platform: "win32" });
+  const home = "C:\\Users\\x";
+  const scratch = `${home}\\scratch`;
+  const base = { readPaths: [] as string[], writePaths: [] as string[], network: false, appleEvents: false, scratch, home };
+
+  it("reads home broadly and case-insensitively, writes only where approved", () => {
+    const out = `${home}\\Plow\\out.txt`;
+    expect(win(base, out)).toEqual({ read: true, write: false });
+    expect(win({ ...base, writePaths: [`${home}\\Plow`] }, out)).toEqual({ read: true, write: true });
+    expect(win(base, `${home}\\PLOW\\OUT.TXT`)).toEqual({ read: true, write: false });
+    expect(win(base, "C:\\Windows\\System32\\x")).toEqual({ read: false, write: false });
+    expect(win(base, `${scratch}\\tmp.txt`)).toEqual({ read: true, write: true });
+  });
+
+  it("reads outside home need a declared read path", () => {
+    const outside = "D:\\data\\x";
+    expect(win(base, outside).read).toBe(false);
+    expect(win({ ...base, readPaths: ["D:\\data"] }, outside).read).toBe(true);
   });
 });
 
@@ -784,9 +840,9 @@ describe("nodeProbes — the real answers, against fixtures", () => {
     expect(await probes.fullDiskAccess()).toBe(false);
   });
 
-  // Root reads a 0o000 file regardless; the suite runs as a user everywhere
-  // that matters.
-  it.skipIf(process.getuid?.() === 0)("reads a chmod 000 file as EACCES, with the mode bits saying so", async () => {
+  // Root reads a 0o000 file regardless; Windows ACLs do not express Unix
+  // mode bits at all, so there is nothing to assert there.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("reads a chmod 000 file as EACCES, with the mode bits saying so", async () => {
     const dir = tempDir();
     const file = path.join(dir, "locked.txt");
     fs.writeFileSync(file, "x");
@@ -797,7 +853,9 @@ describe("nodeProbes — the real answers, against fixtures", () => {
     expect((await probes.inspect(file))?.readable).toBe(false);
   });
 
-  it("answers 'hung' for an open that never returns, and kills the child", async () => {
+  // mkfifo(1) and a parked FIFO open are POSIX: on Windows the probe
+  // reads in-process and a hang is not a state it can report.
+  it.skipIf(process.platform === "win32")("answers 'hung' for an open that never returns, and kills the child", async () => {
     const dir = tempDir();
     const fifo = path.join(dir, "blocked.pipe");
     execFileSync("/usr/bin/mkfifo", [fifo]);
@@ -848,7 +906,7 @@ describe("nodeProbes — the real answers, against fixtures", () => {
     expect(nodeProbes({ ownerHome: tempDir() }).canRequestInProcess()).toBe(false);
   });
 
-  it("reads the helper's answer, and the request mode's, off its one JSON line", async () => {
+  it.skipIf(process.platform === "win32")("reads the helper's answer, and the request mode's, off its one JSON line", async () => {
     // A stand-in helper: a shell script that answers by flag, so the parsing
     // and flag spelling are checked without the Swift toolchain.
     const dir = tempDir();
@@ -879,4 +937,206 @@ describe("nodeProbes — the real answers, against fixtures", () => {
       expect((await nodeProbes().inspect(file))?.flags).toContain("uchg");
     },
   );
+});
+
+describe("Windows gates — the CFA/ACL/system table and its verdicts", () => {
+  // These pin the win32 platform explicitly, so they run on any host —
+  // including macOS and Linux CI. The collectFacts battery itself stays
+  // darwin-gated above (POSIX fixture paths); here it is exercised once
+  // against real temp paths with scripted probes.
+  const win = (overrides: Partial<HostFacts> = {}) => diagnose(facts(overrides), { platform: "win32" });
+
+  it("maps user folders to their switches, OneDrive included, case-insensitively", () => {
+    const profile = "C:\\Users\\x";
+    expect(windowsGuardedPrefix(`${profile}\\Desktop\\a.txt`, profile)).toBe("files_desktop");
+    expect(windowsGuardedPrefix(`${profile}\\Documents\\a.txt`, profile)).toBe("files_documents");
+    expect(windowsGuardedPrefix(`${profile}\\Downloads\\a.txt`, profile)).toBe("files_downloads");
+    expect(windowsGuardedPrefix(`${profile}\\OneDrive\\Desktop\\a.txt`, profile)).toBe("files_desktop");
+    expect(windowsGuardedPrefix(`${profile}\\OneDrive\\Documents\\a.txt`, profile)).toBe("files_documents");
+    expect(windowsGuardedPrefix(`${profile}\\DESKTOP\\a.txt`, profile)).toBe("files_desktop");
+    expect(windowsGuardedPrefix(`${profile}\\Pictures\\a.txt`, profile)).toBeNull();
+    expect(windowsGuardedPrefix("C:\\Windows\\x", profile)).toBeNull();
+    expect(windowsGuardedPrefix(`${profile}\\Desktop`, "")).toBeNull();
+  });
+
+  it("seals the system locations against every process", () => {
+    expect(windowsSystemProtected("C:\\Windows\\System32\\x")).toBe(true);
+    expect(windowsSystemProtected("C:\\Program Files\\App\\x")).toBe(true);
+    expect(windowsSystemProtected("C:\\Program Files (x86)\\App\\x")).toBe(true);
+    expect(windowsSystemProtected("C:\\Users\\x\\Documents\\a.txt")).toBe(false);
+  });
+
+  it("confirms an os_permission refusal with the Controlled Folder Access sentence", () => {
+    const d = win({
+      errno: "EPERM",
+      path: "C:\\Users\\x\\Documents\\a.txt",
+      path_exists: true,
+      app_process_open: "EPERM",
+      tcc_guarded_prefix: "files_documents",
+      full_disk_access_granted: false,
+    });
+    expect(d.cause).toBe("os_permission");
+    expect(d.confidence).toBe("confirmed");
+    expect(d.permission).toBe("files_documents");
+    expect(d.retry).toBe("after_owner_grants");
+    expect(d.owner_action).toMatch(/Controlled folder access/);
+    expect(isHostGate(d.cause)).toBe(true);
+  });
+
+  it("names an unguarded Windows EPERM as an ACL, not Controlled Folder Access", () => {
+    // Node maps ERROR_ACCESS_DENIED to EPERM. Off the CFA folders that is
+    // an ACL, not a Windows Security switch — the icacls sentence, never
+    // "allow the app through ransomware protection".
+    const d = win({ errno: "EPERM", path_exists: true, app_process_open: "EPERM", tcc_guarded_prefix: null });
+    expect(d.cause).toBe("posix_permissions");
+    expect(d.owner_action).toMatch(/icacls/);
+    expect(d.owner_action).not.toMatch(/Controlled folder access/);
+  });
+
+  it("reads a withheld Windows path as a likely os_permission", () => {
+    const d = win({ errno: "EPERM", probe_withheld: true, tcc_guarded_prefix: "files_desktop" });
+    expect(d.cause).toBe("os_permission");
+    expect(d.confidence).toBe("likely");
+  });
+
+  it("words POSIX and system-location verdicts for Windows", () => {
+    const perms = win({ errno: "EACCES", posix_readable: false, app_process_open: "EACCES" });
+    expect(perms.cause).toBe("posix_permissions");
+    expect(perms.owner_action).toMatch(/icacls/);
+    // Node reports ACL deny as EPERM. Same sentence as chmod 000, not CFA.
+    const acl = win({ errno: "EPERM", posix_readable: false, app_process_open: "EPERM" });
+    expect(acl.cause).toBe("posix_permissions");
+    expect(acl.owner_action).toMatch(/icacls/);
+    const sys = win({ errno: "EPERM", sip_protected: true, app_process_open: "EPERM" });
+    expect(sys.cause).toBe("sip_protected");
+    expect(sys.owner_action).toMatch(/elevated/);
+  });
+
+  // A Job Object is a process cage, not a file cage: the bound verdicts must
+  // name the approval, never a sandbox profile that does not exist — while
+  // the seatbelt wording above stays untouched.
+  it("names the approval bound under a Job Object, never a sandbox profile", () => {
+    const d = win({
+      op: "exec",
+      errno: "EPERM",
+      path: "C:\\Users\\x\\Documents\\a.txt",
+      path_exists: true,
+      ran_sandboxed: true,
+      sandbox_kind: "job",
+      app_process_open: "ok",
+      sandbox_allows_read: true,
+      sandbox_allows_write: false,
+      path_approved: false,
+    });
+    expect(d.cause).toBe("outside_approved_bound");
+    expect(d.confidence).toBe("confirmed");
+    expect(d.retry).toBe("with_declared_path");
+    const text = d.evidence.join("\n");
+    expect(text).toMatch(/not among the paths approved for this run/);
+    expect(text).not.toMatch(/sandbox profile/);
+  });
+
+  it("words a grants refusal as the approval under a Job Object", () => {
+    const d = win({
+      op: "exec",
+      errno: "EPERM",
+      path_exists: true,
+      ran_sandboxed: true,
+      sandbox_kind: "job",
+      app_process_open: "ok",
+      sandbox_allows_read: true,
+      sandbox_allows_write: false,
+    });
+    expect(d.cause).toBe("outside_approved_bound");
+    const text = d.evidence.join("\n");
+    expect(text).toMatch(/the approval for this run allows no writes/);
+    expect(text).not.toMatch(/sandbox profile/);
+  });
+
+  it("maps platform and cage to the kind, and carries it in the payload", () => {
+    expect(sandboxKindFor("win32", true)).toBe("job");
+    expect(sandboxKindFor("darwin", true)).toBe("seatbelt");
+    expect(sandboxKindFor("darwin", false)).toBe("none");
+    expect(sandboxKindFor("linux", true)).toBe("bwrap");
+    expect(sandboxKindFor("linux", false)).toBe("none");
+    // The kind rides beside ran_sandboxed into the tool result and the
+    // audit line, so neither reader can mistake a Job for file confinement.
+    const f = facts({ ran_sandboxed: true, sandbox_kind: "job" });
+    const payload = diagnosisPayload(diagnose(f, { platform: "win32" }), f);
+    expect((payload.probes as { sandbox_kind: unknown }).sandbox_kind).toBe("job");
+  });
+
+  it("reports missing guarded folders as ENOENT, never as refusals", async () => {
+    const profile = path.join(tempDir(), "profile");
+    const results = await probeWindowsFolderAccess(profile);
+    expect(results).toHaveLength(6);
+    expect(results.every((r) => r.outcome === "ENOENT")).toBe(true);
+  });
+
+  it.skipIf(process.platform !== "win32")("runs the battery on Windows paths without touching the disk it was not given", async () => {
+    // TEMP is often 8.3 on GHA (`RUNNER~1`). Canonicalize so the scripted
+    // probe key matches the path collectFacts actually opens.
+    const dir = canonicalize(tempDir());
+    const file = canonicalize(path.join(dir, "a.txt"));
+    fs.writeFileSync(file, "x");
+    const probes = scriptedProbes({ openAsApp: { [file]: "EPERM" } });
+    const f = await collectFacts({ op: "read", paths: [file], ranSandboxed: false }, probes, dir);
+    expect(f.app_process_open).toBe("EPERM");
+    expect(f.tcc_guarded_prefix).toBeNull();
+    // Off the CFA folders, in-process EPERM is an ACL (posix_permissions),
+    // not "unknown" and not Controlled Folder Access.
+    expect(diagnose(f, { platform: "win32" }).cause).toBe("posix_permissions");
+  });
+});
+
+describe("Linux gates — bwrap kind and approval wording", () => {
+  it("names the approval bound under bwrap, never a seatbelt profile", () => {
+    const d = diagnose(
+      facts({
+        op: "exec",
+        errno: "EPERM",
+        path: "/home/x/Documents/a.txt",
+        path_exists: true,
+        ran_sandboxed: true,
+        sandbox_kind: "bwrap",
+        app_process_open: "ok",
+        sandbox_allows_read: true,
+        sandbox_allows_write: false,
+        path_approved: false,
+      }),
+      { platform: "linux" },
+    );
+    expect(d.cause).toBe("outside_approved_bound");
+    const text = d.evidence.join("\n");
+    expect(text).toMatch(/not among the paths approved for this run/);
+    expect(text).not.toMatch(/sandbox profile/);
+  });
+
+  it("maps XDG user folders and system roots on Linux", () => {
+    const home = "/home/owner";
+    expect(linuxGuardedPrefix(`${home}/Desktop/a.txt`, home)).toBe("files_desktop");
+    expect(linuxGuardedPrefix(`${home}/Documents/a.txt`, home)).toBe("files_documents");
+    expect(linuxGuardedPrefix(`${home}/Downloads/a.txt`, home)).toBe("files_downloads");
+    expect(linuxGuardedPrefix(`${home}/Pictures/a.txt`, home)).toBeNull();
+    expect(linuxSystemProtected("/etc/passwd")).toBe(true);
+    expect(linuxSystemProtected("/usr/bin/true")).toBe(true);
+    expect(linuxSystemProtected(`${home}/file.txt`)).toBe(false);
+  });
+
+  it("owner sentences name Linux fixes, never Windows CFA or macOS SIP", () => {
+    const d = diagnose(
+      facts({
+        op: "write",
+        errno: "EPERM",
+        path: "/etc/hosts",
+        path_exists: true,
+        sip_protected: true,
+        app_process_open: "EPERM",
+      }),
+      { platform: "linux" },
+    );
+    expect(d.cause).toBe("sip_protected");
+    expect(d.owner_action).toMatch(/Linux system locations/);
+    expect(d.owner_action).not.toMatch(/Controlled folder access|System Integrity Protection/);
+  });
 });

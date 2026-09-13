@@ -589,7 +589,7 @@ describe("activation — the path a brand-new user takes", () => {
     const state = onboarding.state();
     expect(state.step).not.toBe("connected");
     expect(state.activationStale).toBe(true);
-    expect(state.message).toBe("Plow verified this Mac but didn't hand back a login. Try again for a fresh code.");
+    expect(state.message).toBe("Plow verified this Desktop but didn't hand back a login. Try again for a fresh code.");
     expect(plow.redeemCalls).toHaveLength(1);
 
     // The spent code is dropped, so the promised control actually works: the
@@ -719,7 +719,7 @@ describe("signing out", () => {
   it("shows the fixed revoke warning on the setup screen", () => {
     const onboarding = build({}, false);
     const warning =
-      "Signed out on this Mac. Plow could not be reached to revoke the session — revoke it in Plow's account settings.";
+      "Signed out on this Desktop. Plow could not be reached to revoke the session — revoke it in Plow's account settings.";
 
     const state = onboarding.showMessage(warning);
 
@@ -876,7 +876,9 @@ describe("the activation credential handoff", () => {
     expect(started).toBe(1);
   });
 
-  it("writes settings owner-only", async () => {
+  // Unix mode bits do not exist on Windows (ACLs instead); the OS-store
+  // providers are the floor there, as in settings.test.ts.
+  it.skipIf(process.platform === "win32")("writes settings owner-only", async () => {
     await signIn();
 
     const mode = fs.statSync(path.join(home, "app/settings.json")).mode & 0o777;

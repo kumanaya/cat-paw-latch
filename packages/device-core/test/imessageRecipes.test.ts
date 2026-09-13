@@ -240,7 +240,9 @@ const cleanup = (d: string): void => {
 afterEach(() => dirs.splice(0).forEach(cleanup));
 afterAll(() => cleanup(storeDir));
 
-describe("the imessage recipes the skill publishes", () => {
+// Built and read through /usr/bin/sqlite3 against the macOS Messages store:
+// a mac-machine suite, like its contacts/whatsapp siblings.
+describe.skipIf(process.platform !== "darwin")("the imessage recipes the skill publishes", () => {
   it("lists chats newest first, and says which are groups", () => {
     const rows = query(store, IMESSAGE_QUERIES.recentChats);
     const chat1 = rows.findIndex((r) => r[1] === "chat-guid-1");

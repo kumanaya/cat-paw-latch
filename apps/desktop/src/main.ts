@@ -47,6 +47,11 @@ import {
   resolveBrowserRuntime,
   totpCode,
   VaultItemInput,
+  WindowsPresenceGate,
+  LinuxPresenceGate,
+  PresencePolicy,
+  type PresenceGate,
+  type PresenceReason,
 } from "@domo/device-core";
 import { createDomoMcpServer, DomoMcpServer } from "@domo/mcp-server";
 import { RelayClient } from "@domo/relay-client";
@@ -65,7 +70,7 @@ import { migrateLegacyHome } from "./migrateHome.js";
 import { buildMinter, vendorDirs } from "./providerWiring.js";
 import { resolveInstancePaths } from "./paths.js";
 import { ImportStaging, passwordsAppCanHandOff } from "./importStaging.js";
-import { loadSettings, saveSettings, useCredentialCodec, WindowBounds } from "./settings.js";
+import { loadSettings, saveSettings, useCredentialCodec, credentialStorage, WindowBounds } from "./settings.js";
 import { resolveTelemetryConfig, SimulatedError, Telemetry, telemetryMaySend } from "./telemetry.js";
 import { PlowApi, PlowApiError, relaySocketUrl, resolveApiBaseUrl } from "./plowApi.js";
 import { Onboarding } from "./onboarding.js";
@@ -76,7 +81,7 @@ import { CloudAgentState, CloudChatsClient, CloudLinesClient, tabShowsCloudAgent
 import { cloudAgentsIpcResult } from "./cloudAgentsIpc.js";
 import { loggingFetch } from "./wireLog.js";
 import { WindowGate } from "./windowGate.js";
-import { SimulatedScenario, SimulatedUpdater, UpdateController } from "./updates.js";
+import { platformUpdateFeed, SimulatedScenario, SimulatedUpdater, UpdateController } from "./updates.js";
 import { adversarialReview } from "./adversarialAgent.js";
 import {
   ApprovalDecision,
@@ -115,14 +120,26 @@ const instance = resolveInstancePaths({ env: process.env, appData: app.getPath("
 if (migrateLegacyHome(instance.home)) {
   console.log(`[app] moved legacy home into ${instance.home}`);
 }
-// THE NAME SET HERE IS THE ONE THE KEYCHAIN SEES. Chromium captures the string
-// it derives `<name> Safe Storage` from at startup, BEFORE `app.whenReady`, and
-// a later `setName` does not move it (measured: an item is created under the
-// pre-ready name and never under the post-ready one). So the frozen vault
-// identity goes on first, and the display name is put back as the first thing
-// in `whenReady` — early enough that the menus, windows and tray built after it
-// all read the real product name.
-app.setName(instance.vaultIdentity);
+// THE NAME SET HERE IS THE ONE THE KEYCHAIN SEES — on macOS. Chromium
+// captures the string it derives `<name> Safe Storage` from at startup,
+// BEFORE `app.whenReady`, and a later `setName` does not move it (measured:
+// an item is created under the pre-ready name and never under the post-ready
+// one). So on macOS the frozen vault identity goes on first, and the display
+// name is put back as the first thing in `whenReady` — early enough that the
+// menus, windows and tray built after it all read the real product name.
+//
+// On Windows and Linux safeStorage does NOT key on `app.name` (DPAPI is
+// per-user/machine, Secret Service is per D-Bus collection), so there is
+// nothing to freeze and the product name goes on directly: branding a
+// Windows install "Domo Desktop" would be the rename bug in reverse.
+// The same string still labels the native-secret account per vault
+// (vaultKeyStore.ts) on every platform — that names a secret, not the app.
+// See vaultKeychain.ts for the frozen identity's history.
+if (process.platform === "darwin") {
+  app.setName(instance.vaultIdentity);
+} else {
+  app.setName(instance.appName);
+}
 app.setPath("userData", instance.electronData);
 app.setPath("sessionData", instance.electronData);
 
@@ -224,6 +241,10 @@ let device: DeviceAgent | null = null;
 let mcp: DomoMcpServer | null = null;
 let approvals: ApprovalStore | null = null;
 let relay: RelayClient | null = null;
+// This is presence state only, never vault key material.  It is shared by the
+// approval policy and the vault so every workstation lifecycle event revokes
+// both uses even when this device has no vault client.
+let ownerPresence: PresenceGate | null = null;
 let onboarding: Onboarding | null = null;
 let connectors: Connectors | null = null;
 let connectClient: ConnectClient | null = null;
@@ -236,6 +257,13 @@ let onboardingWindow: BrowserWindow | null = null;
 let onboardingWindowReady: BrowserWindow | null = null;
 let updates: UpdateController | null = null;
 let telemetry: Telemetry | null = null;
+
+function lockOwnerPresence(): void {
+  ownerPresence?.lock();
+  // They normally point at the same gate. Keep the vault call as a defensive
+  // invariant if a future vault implementation owns a separate gate.
+  device?.vaultClient?.presence.lock();
+}
 
 // MARK: The audit log's live index (auditIndex.ts)
 
@@ -502,6 +530,9 @@ function createMainWindow(): void {
   // global before it closes the window on sign-out, and a persist that reads
   // the global would find null there and quietly stop saving bounds.
   const win = mainWindow;
+  // On Windows this is emitted for logoff, restart and force shutdown. It can
+  // bypass the ordinary app quit sequence, so drop presence synchronously.
+  win.on("session-end", lockOwnerPresence);
   const persist = () => {
     if (win.isDestroyed()) return;
     const b = win.getBounds();
@@ -696,7 +727,7 @@ async function signOutThisMac(): Promise<void> {
   await startRelay();
   if (!(await revoking)) {
     onboarding?.showMessage(
-      "Signed out on this Mac. Plow could not be reached to revoke the session — revoke it in Plow's account settings.",
+      "Signed out on this Desktop. Plow could not be reached to revoke the session — revoke it in Plow's account settings.",
     );
   }
 }
@@ -2050,7 +2081,25 @@ app.whenReady().then(async () => {
   // asked, so a pending approval is a record on disk rather than only a promise
   // in memory. It also bounds the wait: an approval nobody answers expires and
   // fails closed instead of pending forever.
-  approvals = new ApprovalStore(path.join(home, "device/approvals"), new ElectronPolicy());
+  ownerPresence =
+    process.platform === "win32" ? new WindowsPresenceGate()
+    : process.platform === "linux"
+      ? new LinuxPresenceGate(async (reason: PresenceReason) => {
+          const { response } = await dialog.showMessageBox({
+            type: "question",
+            buttons: ["Cancel", "Continue"],
+            defaultId: 1,
+            cancelId: 0,
+            message: reason === "vault" ? "Unlock Plow Latch vault?" : "Approve this Plow Latch action?",
+            detail: "Confirm you are at this computer.",
+          });
+          return response === 1;
+        })
+      : null;
+  approvals = new ApprovalStore(
+    path.join(home, "device/approvals"),
+    ownerPresence ? new PresencePolicy(new ElectronPolicy(), ownerPresence) : new ElectronPolicy(),
+  );
   // A vaultwarden orphaned by a hard quit of a PRE-cutover build outlives its
   // app: it was launched detached, and nothing in this build knows it exists —
   // left alone it keeps serving the old vault database and web UI on loopback
@@ -2094,6 +2143,26 @@ app.whenReady().then(async () => {
     // degrades — the same contract as the Full Disk Access tracker.
     nodeProbes({ ownerHome: os.homedir(), helperPath: hostPermissionsHelperPath, native: nativePermissions() }),
   );
+  // The workstation locked or was released: an audited window, so the owner
+  // can see what ran while nobody was at the keyboard. lock-screen and
+  // unlock-screen fire on Windows and macOS alike; the device owns the
+  // events, this owns the subscription.
+  powerMonitor.on("lock-screen", () => {
+    lockOwnerPresence();
+    device?.workstationSessionChanged(true);
+  });
+  powerMonitor.on("suspend", () => {
+    lockOwnerPresence();
+    device?.workstationSessionChanged(true);
+  });
+  powerMonitor.on("unlock-screen", () => device?.workstationSessionChanged(false));
+  // A relay credential resting in cleartext is a finding, not a crash: one
+  // audit line where the owner can see it (the terminal warning in
+  // saveSettings is for the console, this is for the Audit tab). A home the
+  // codec can seal heals itself on load; what remains is codec-absent.
+  if (credentialStorage(home) === "plaintext") {
+    device.audit.record("credential_stored_plaintext", {});
+  }
   // Same tick as the store's construction (see onAbandoned): an approval that
   // was pending when the app last quit gets closed out in the audit log too,
   // not only in the approvals directory.
@@ -2112,7 +2181,12 @@ app.whenReady().then(async () => {
   // account is a random string this app generated — so the Mac asks who is at
   // the keyboard instead, and refuses when it cannot.
   if (device.vaultClient) {
-    device.vaultClient.onReprompt = async () => {
+    const vaultClient = device.vaultClient;
+    if (ownerPresence) vaultClient.presence = ownerPresence;
+    vaultClient.onReprompt = async () => {
+      if (process.platform === "win32" || process.platform === "linux") {
+        return vaultClient.presence.verify("vault");
+      }
       if (!systemPreferences.canPromptTouchID()) return false;
       try {
         await systemPreferences.promptTouchID("show a vault item that asks for you");
@@ -2250,13 +2324,15 @@ app.whenReady().then(async () => {
     if (simulate) console.log(`[updates] SIMULATED updater active (${simulate}) — not a real update`);
     // Testing seam: point a packaged build at a feed that isn't production —
     // `just serve-updates` + DOMO_UPDATE_FEED_URL=http://127.0.0.1:8043 is the
-    // whole local update loop. Safe to honor unconditionally: Squirrel.Mac
-    // only installs an update signed by the same Developer ID as the running
-    // app, so a hostile feed can offer nothing this app will accept.
+    // whole local update loop. Windows and Linux otherwise use one signed
+    // feed per CPU; macOS keeps electron-builder's universal default. A
+    // hostile feed can offer nothing an updater with signature verification
+    // enabled will install.
     const feedOverride = (process.env.DOMO_UPDATE_FEED_URL ?? "").trim();
-    if (feedOverride && !simulate) {
-      electronUpdater.autoUpdater.setFeedURL({ provider: "generic", url: feedOverride });
-      console.log(`[updates] feed overridden: ${feedOverride}`);
+    const feedUrl = feedOverride || platformUpdateFeed(process.platform, process.arch);
+    if (feedUrl && !simulate) {
+      electronUpdater.autoUpdater.setFeedURL({ provider: "generic", url: feedUrl });
+      if (feedOverride) console.log(`[updates] feed overridden: ${feedOverride}`);
     }
     const settings = loadSettings(home);
     if (!simulate) electronUpdater.autoUpdater.autoInstallOnAppQuit = settings.autoInstallUpdates;
@@ -2439,6 +2515,9 @@ function mayLeaveMain(win: BrowserWindow | null): Promise<boolean> {
 let quitting = false;
 let cleanedUp = false;
 app.on("before-quit", (event) => {
+  // A clean quit must not leave a successful Hello/password assertion live
+  // while asynchronous browser and relay teardown is still running.
+  lockOwnerPresence();
   // The only quit that goes through is the one this handler asks for, once the
   // browsers are down and their profiles are back where they belong. Everybody
   // else waits — including somebody hitting Quit again because the first one
@@ -2521,7 +2600,7 @@ function noteHostGateBlock(fields: { [k: string]: unknown }): void {
   const notification = new Notification({
     title: permission
       ? `Plow Latch needs ${PERMISSION_LABELS[permission as keyof typeof PERMISSION_LABELS] ?? permission}`
-      : "Plow Latch was blocked by this Mac",
+      : "Plow Latch was blocked by this Desktop",
     body: ownerAction ?? "An agent's approved request was refused by macOS. Open Capabilities for details.",
   });
   // The click navigates from THIS block, not from whatever the attention
@@ -2604,7 +2683,7 @@ function refreshTray(): void {
           {
             label: hostGateAttention.permission
               ? `Needs ${PERMISSION_LABELS[hostGateAttention.permission as keyof typeof PERMISSION_LABELS] ?? hostGateAttention.permission}…`
-              : "An agent was blocked by this Mac…",
+              : "An agent was blocked by this Desktop…",
             click: () => showCapabilitiesForHostGate(),
           },
         ]
@@ -2788,6 +2867,6 @@ function hostName(): string {
   try {
     return os.hostname();
   } catch {
-    return "Mac";
+    return "Desktop";
   }
 }

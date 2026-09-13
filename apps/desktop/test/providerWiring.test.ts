@@ -13,6 +13,7 @@ import { vendoredProvider } from "@domo/device-core";
 
 const GOG = vendoredProvider(["gog"])!;
 const cleanups: (() => void)[] = [];
+const executableName = (name: string): string => process.platform === "win32" ? `${name}.exe` : name;
 // BEFORE, not only after: `DOMO_GOG` is a documented operator override for
 // driving a run against another Mac, so a developer with it exported would
 // otherwise get a red suite from their own shell.
@@ -37,7 +38,7 @@ function homeWith(credential: string): string {
 function tree(rel: string, name = "gog", base = newBase()): string {
   const dir = path.join(base, rel, process.arch);
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, name), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, executableName(name)), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
   return base;
 }
 
@@ -278,7 +279,7 @@ describe("vendorDirs", () => {
     },
     {
       why: "says which of the two problems it is",
-      override: () => path.join(tree("misnamed", "slack-0.1"), "misnamed", process.arch, "slack-0.1"),
+      override: () => path.join(tree("misnamed", "slack-0.1"), "misnamed", process.arch, executableName("slack-0.1")),
       has: ["must name a file called `slack`"],
       lacks: ["names no executable"],
     },
@@ -293,7 +294,7 @@ describe("vendorDirs", () => {
       // "names whatever resolve returned".
       why: "logs what was typed AND what was looked for",
       override: () => "relative/slack",
-      has: ["relative/slack →", `${process.cwd()}/relative/slack`],
+      has: ["relative/slack →", path.join(process.cwd(), "relative", "slack")],
       lacks: [],
     },
     {

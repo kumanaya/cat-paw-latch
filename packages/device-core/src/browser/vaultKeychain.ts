@@ -1,10 +1,20 @@
 /**
- * The Keychain identity the vault account's encryption is bound to.
+ * The Keychain identity the vault account's encryption is bound to — on macOS.
  *
  * Electron's `safeStorage` derives its macOS Keychain item from `app.name`
  * (`<app.name> Safe Storage`). That made the ciphertext hostage to a display
  * string: renaming the app from "Domo Desktop" to "Plow" pointed it at a key
  * that had never existed, and every vault account on disk became unreadable.
+ *
+ * On Windows and Linux this binding does not exist: `safeStorage` there is
+ * DPAPI (per user/machine) and Secret Service (per D-Bus collection),
+ * neither of which keys on `app.name` — so main.ts sets the product name
+ * directly on those platforms and nothing is orphaned by a rename. The
+ * constant below is still reused everywhere as the native-secret ACCOUNT
+ * label (vaultKeyStore.ts: the per-vault SecItem / Credential Manager /
+ * Secret Service account), where it names a secret rather than the app and
+ * renaming it would still orphan stored keys. The freeze stands on all
+ * platforms; only the `app.setName` half is macOS-specific.
  *
  * The fix is to stop asking `app.name` and freeze the string instead. The value
  * below is the OLD naming formula, kept deliberately, because it is what every

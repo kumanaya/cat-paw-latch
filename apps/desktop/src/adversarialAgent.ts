@@ -74,7 +74,7 @@ Prefer a clear allow or deny; use ask sparingly.`,
     enum: `"allow"|"deny"|"ask"`,
   },
   absent: {
-    verdict: `There is no "ask": the owner has set this Mac to let YOU decide, so nobody \
+    verdict: `There is no "ask": the owner has set this Desktop to let YOU decide, so nobody \
 will see this operation and nobody will answer for it. Every answer is allow or \
 deny.`,
     enum: `"allow"|"deny"`,
@@ -85,7 +85,7 @@ deny.`,
 function standingInstructions(humanAvailable: boolean): string {
   const ask = ASK_RULES[humanAvailable ? "available" : "absent"];
   return `You are the safety reviewer for "Plow Latch", which lets the owner's AI agent use \
-their Mac through capabilities this Mac derives and enforces. You see ONE \
+their Desktop through capabilities this Desktop derives and enforces. You see ONE \
 requested operation and decide whether it is reasonably within the owner's errand.
 
 The capability list is derived locally from the tool call and is authoritative \
@@ -198,7 +198,7 @@ function systemPrompt(purpose: string, humanAvailable: boolean): string {
   }
   return (
     base +
-    `\n\nWhat the owner of this Mac says agents are for (set by the device owner, ` +
+    `\n\nWhat the owner of this Desktop says agents are for (set by the device owner, ` +
     `not by the agent): ${text}\n` +
     `That is the errand. It widens the job as readily as it narrows it — if the ` +
     `owner describes work that involves sensitive material, that work IS the ` +
@@ -263,7 +263,7 @@ function buildPrompt(intent: Intent, humanAvailable: boolean): string {
   return (
     `Operation to review:\n` +
     `Agent: ${encoded(intent.agentDisplay)} (${encoded(intent.agentId)})\n` +
-    `Request (composed on this Mac from the tool call): ${encoded(intent.request)}\n` +
+    `Request (composed on this Desktop from the tool call): ${encoded(intent.request)}\n` +
     `Requested capability bounds (what will be enforced if allowed — the sandbox for commands and files; for a script, its own text):\n${caps || "  (none)"}\n\n` +
     `Decide ${humanAvailable ? "allow, deny, or ask" : "allow or deny"}.`
   );

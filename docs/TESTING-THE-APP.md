@@ -33,6 +33,30 @@ real MCP call through the relay to an installed app and reads the verdict out of
 proves the relay, the device socket, the MCP server and the exec path — it does not walk the UI, and
 it needs an install and a client registration, so it does not make the walk above optional.
 
+### Linux AppImage smoke
+
+The same script is the Linux proof. Package on a Linux host
+(`just package-linux` — needs bubblewrap, a systemd user session, the pinned
+Camoufox payload, and vendored `gog`). The AppImage needs FUSE 2
+(`libfuse.so.2`) on the *target* host: `fuse2` on Arch, `libfuse2` on Debian
+/ Ubuntu. Without it the file prints `dlopen(): error loading libfuse.so.2`
+and does not start — then either install that package or run
+`APPIMAGE_EXTRACT_AND_RUN=1 ./Plow-Latch-*.AppImage` (or
+`--appimage-extract` and `./squashfs-root/AppRun`). Sign in once, record
+`~/.latch/<client>.json`, then:
+
+```sh
+scripts/latch-smoke --config ~/.latch/<client>.json --server <name> \
+  --home "~/.config/Plow-Latch"
+```
+
+From-source Linux uses `--home "$(just --evaluate apphome)"` the same way a
+Mac does. CI's `linux-package` job (x64 and arm64) only proves the `--dir` layout and
+afterPack gates (sandbox probe + Camoufox/gog ELF); the live relay call stays
+manual, as on the other platforms. Packaged AppImages poll
+`releases.plow.co/domo/linux/<arch>` after `just promote-linux`. Do not run
+this on the head-chef Mac.
+
 What went, and what it did:
 
 | Deleted | What it did |

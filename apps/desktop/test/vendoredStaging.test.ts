@@ -31,6 +31,10 @@ const provider = () => ({
     arm64: { asset: "darwin_arm64", sha256: "unused", binary: sha("arm64-bytes") },
     x64: { asset: "darwin_amd64", sha256: "unused", binary: sha("x64-bytes") },
   },
+  linuxArches: {
+    arm64: { asset: "linux_arm64", sha256: "unused", binary: sha("arm64-bytes") },
+    x64: { asset: "linux_amd64", sha256: "unused", binary: sha("x64-bytes") },
+  },
 });
 
 let root: string;
@@ -43,47 +47,49 @@ afterEach(() => {
 
 /** Write `<root>/vendor/providers/demo/<arch>/demo` for both arches, plus the marker. */
 function stage(opts: { arm64?: string; x64?: string; version?: string } = {}) {
+  const name = process.platform === "win32" ? "demo.exe" : "demo";
   for (const [arch, fallback] of [
     ["arm64", "arm64-bytes"],
     ["x64", "x64-bytes"],
   ] as const) {
     const dir = path.join(root, "vendor/providers/demo", arch);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "demo"), opts[arch] ?? fallback);
+    fs.writeFileSync(path.join(dir, name), opts[arch] ?? fallback);
   }
   fs.writeFileSync(path.join(root, "vendor/providers/demo/VERSION"), `${opts.version ?? "1.2.3"}\n`);
 }
 
 describe("isStaged", () => {
-  it.each([
-    ["both arches carry the pinned bytes at the pinned version", true, () => stage()],
-    // The case that matters: the marker still attests 1.2.3, so an
-    // existence-only check skips the fetch and signs the tampered binary.
-    [
-      "a cached binary's bytes changed, marker notwithstanding",
-      false,
-      () => stage({ arm64: "tampered" }),
-    ],
-    // The case the skip exists for. A tree carrying only the packaging Mac's
-    // arch reaches the other arch's users with no provider at all.
-    [
-      "one arch is missing entirely",
-      false,
-      () => {
-        stage();
-        fs.rmSync(path.join(root, "vendor/providers/demo/x64/demo"));
-      },
-    ],
-    ["an arch's binary is empty", false, () => stage({ x64: "" })],
-    ["the marker names another version", false, () => stage({ version: "1.2.2" })],
-    ["nothing is staged at all", false, () => {}],
-    // [case, expected, arrange] so the template's two %s land on the case and
-    // the boolean: vitest fills them from the row's first N items, so arrange
-    // in slot two printed the whole function body as the test name.
-  ])("is %s → %s", (_case, expected, arrange) => {
-    arrange();
-    expect(isStaged(provider(), root)).toBe(expected);
+  it("is both arches carry the pinned bytes at the pinned version → true", () => {
+    stage();
+    expect(isStaged(provider(), root)).toBe(true);
   });
+
+  it("is a cached binary's bytes changed, marker notwithstanding → false", () => {
+    stage({ arm64: "tampered" });
+    expect(isStaged(provider(), root)).toBe(false);
+  });
+
+  it("is one arch is missing entirely → false", () => {
+    stage();
+    fs.rmSync(path.join(root, "vendor/providers/demo/x64", process.platform === "win32" ? "demo.exe" : "demo"));
+    expect(isStaged(provider(), root)).toBe(false);
+  });
+
+  it("is an arch's binary is empty → false", () => {
+    stage({ x64: "" });
+    expect(isStaged(provider(), root)).toBe(false);
+  });
+
+  it("is the marker names another version → false", () => {
+    stage({ version: "1.2.2" });
+    expect(isStaged(provider(), root)).toBe(false);
+  });
+
+  it("is nothing is staged at all → false", () => {
+    expect(isStaged(provider(), root)).toBe(false);
+  });
+
 });
 
 /**

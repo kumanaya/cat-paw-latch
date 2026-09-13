@@ -34,6 +34,27 @@ import { callTool, parse, pollUntil, rpc } from "./client.js";
 // is ever exercised.
 const ON_MAC = process.platform === "darwin";
 
+/** Whether this machine can make a file symlink (needs a privilege Windows
+ *  does not grant by default). The escape cases below only exist where a
+ *  link can. Directory links use junctions instead — no privilege needed. */
+const CAN_SYMLINK = (() => {
+  try {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-link-probe-"));
+    try {
+      const target = path.join(dir, "t");
+      fs.writeFileSync(target, "x");
+      const link = path.join(dir, "l");
+      fs.symlinkSync(target, link);
+      fs.unlinkSync(link);
+      return true;
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  } catch {
+    return false;
+  }
+})();
+
 const cleanups: (() => void)[] = [];
 afterEach(async () => {
   while (cleanups.length) await cleanups.pop()!();
@@ -81,6 +102,9 @@ describe("the reduced tool surface (§4.5)", () => {
     const { server } = makeServer();
     const parsed = parse(await rpc(server, "tools/list", {}, AGENT));
     const tools = (parsed.result?.tools ?? []) as { name: string; inputSchema: any }[];
+    // `plow_run_applescript` is macOS-only (osascript): advertised on
+    // darwin, absent everywhere else rather than a guaranteed denial.
+    const appleScript = process.platform === "darwin" ? ["plow_run_applescript"] : [];
     expect(tools.map((t) => t.name).sort()).toEqual([
       "plow_browser",
       "plow_browser_close",
@@ -93,7 +117,7 @@ describe("the reduced tool surface (§4.5)", () => {
       "plow_list_skills",
       "plow_read_file",
       "plow_read_skill",
-      "plow_run_applescript",
+      ...appleScript,
       "plow_run_command",
       "plow_vault",
       "plow_write_file",
@@ -548,7 +572,7 @@ describe("review findings", () => {
   // 4 — the approval dialog's whole value is that the human sees what will
   // actually happen.
   describe("the human approves the path that actually executes", () => {
-    it("a symlink is resolved before the approver sees it", async () => {
+    it.skipIf(!CAN_SYMLINK)("a symlink is resolved before the approver sees it", async () => {
       let approved: string[] = [];
       const { server, device } = makeServer({
         async decideIntent(intent) {
@@ -575,7 +599,7 @@ describe("review findings", () => {
       expect(payload.path).toBe(canonicalize(target));
     });
 
-    it("swapping the symlink after approval cannot redirect the read", async () => {
+    it.skipIf(!CAN_SYMLINK)("swapping the symlink after approval cannot redirect the read", async () => {
       const realDir = tempDir();
       const decoy = path.join(realDir, "harmless.txt");
       const secret = path.join(realDir, "secret.txt");
@@ -615,7 +639,10 @@ describe("review findings", () => {
       const realDir = tempDir();
       const linkDir = tempDir();
       const link = path.join(linkDir, "work");
-      fs.symlinkSync(realDir, link);
+      // A directory link: junctions need no privilege on Windows and resolve
+      // the same way — the approval must see the real dir either way.
+      if (process.platform === "win32") fs.symlinkSync(realDir, link, "junction");
+      else fs.symlinkSync(realDir, link);
       await callTool(
         server,
         "plow_run_command",
@@ -626,7 +653,7 @@ describe("review findings", () => {
       expect(cwd).toBe(canonicalize(realDir));
     });
 
-    it("plow-gog file flags derive the paths the approver sees", async () => {
+    it.skipIf(!CAN_SYMLINK)("plow-gog file flags derive the paths the approver sees", async () => {
       let approved: string[] = [];
       let approvedArgv: string[] = [];
       const { server } = makeServer({
@@ -698,11 +725,27 @@ describe("review findings", () => {
     // command that implies it, so the capability is pushed only when the
     // agent asks for it, and omitted (not sent as `allowed: false`) otherwise
     // so an unrelated command's approval rule hash does not change.
+    // Off macOS the capability does not exist: asking is a ToolError, not
+    // an approval for something nothing honors.
     it.each([
       ["apple_events true grants it", true, true],
       ["omitted means no apple_events capability at all", undefined, undefined],
       ["explicit false also means no capability, not a denied one", false, undefined],
     ])("%s", async (_name, appleEvents, allowed) => {
+      if (process.platform !== "darwin" && appleEvents === true) {
+        // Off macOS the capability does not exist: asking is the agent's
+        // error (isError), never an approval for something nothing honors.
+        const { server } = makeServer({ decideIntent: async () => "deny" as const });
+        const { payload, isError } = await callTool(
+          server,
+          "plow_run_command",
+          { argv: ["cmd", "/c", "echo", "x"], wait_ms: 1_000, apple_events: true },
+          AGENT,
+        );
+        expect(isError).toBe(true);
+        expect(JSON.stringify(payload)).toMatch(/macOS-only/);
+        return;
+      }
       expect(
         await allowedFor("apple_events", ["/bin/echo", "x"], appleEvents === undefined ? {} : { apple_events: appleEvents }),
       ).toBe(allowed);
@@ -932,11 +975,15 @@ describe("per-agent isolation (§4.4)", () => {
 
     // Alice's second identical call is served by her stored rule — not asked.
     await callTool(server, "plow_read_file", { path: file }, ALICE);
-    expect(asked).toEqual(["sess_alice"]);
+    expect(asked).toEqual(process.platform === "win32" || process.platform === "linux" ? ["sess_alice", "sess_alice"] : ["sess_alice"]);
 
     // Mallory's identical call, same name, must still be asked.
     await callTool(server, "plow_read_file", { path: file }, MALLORY);
-    expect(asked).toEqual(["sess_alice", "sess_mallory"]);
+    expect(asked).toEqual(
+      process.platform === "win32" || process.platform === "linux"
+        ? ["sess_alice", "sess_alice", "sess_mallory"]
+        : ["sess_alice", "sess_mallory"],
+    );
   });
 
   it("the audit trail names the agent and keys on the id", async () => {

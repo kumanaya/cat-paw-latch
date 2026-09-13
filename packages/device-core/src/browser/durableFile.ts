@@ -12,6 +12,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { lockdownSecretFile } from "../fileLockdown.js";
 
 export function writeFileDurable(file: string, data: Buffer | string, mode = 0o600): void {
   const tmp = `${file}.tmp-${process.pid}`;
@@ -21,6 +22,18 @@ export function writeFileDurable(file: string, data: Buffer | string, mode = 0o6
     fs.fsyncSync(fd);
   } finally {
     fs.closeSync(fd);
+  }
+  try {
+    // Before the rename carries it into place: the ACL rides the rename, so
+    // the secret is never visible under the inherited DACL — not even
+    // between the write and this call. A lockdown failure removes the tmp
+    // and throws: a secret written loose must be visible, never silent.
+    lockdownSecretFile(tmp);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {}
+    throw error;
   }
   fs.renameSync(tmp, file);
   let dir: number | undefined;

@@ -21,13 +21,14 @@ import {
 } from "@domo/device-core";
 
 /**
- * Only the tests that SPAWN need macOS — /usr/bin/sandbox-exec exists nowhere
- * else. The refusal and mint-failure paths never reach the executor, and they
- * carry the token-leak assertions, so guarding the whole suite would have
- * taken this PR's security coverage off CI entirely.
+ * Spawn tests need a real cage: seatbelt on macOS, bubblewrap on Linux.
+ * Windows is a `.exe` payload and a Job Object; the stand-in here is a
+ * POSIX script, so those rows stay macOS/Linux. Refusal and mint-failure
+ * never reach the executor and run everywhere — they carry the token-leak
+ * assertions, so guarding the whole suite would take that coverage off CI.
  */
-const ON_MAC = process.platform === "darwin";
-const itSpawns = it.skipIf(!ON_MAC);
+const CAN_SPAWN = process.platform === "darwin" || process.platform === "linux";
+const itSpawns = it.skipIf(!CAN_SPAWN);
 
 const TOKEN = "ya29.a0AfB_byExampleTokenValue0000000000";
 /**
@@ -53,6 +54,7 @@ function expectNoToken(text: string, sink: string): void {
   }
 }
 const cleanups: (() => void)[] = [];
+afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
 
 function tmp(): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), "latch-prov-"));
@@ -245,8 +247,21 @@ describe("a vendored provider through the exec path", () => {
 
   itSpawns("leaves a non-provider command completely alone", async () => {
     const mint = vi.fn(async () => TOKEN);
-    const d = device(minterOf(mint), [vendorDir()]);
-    const out = String(jv(await run(d, ["/bin/echo", "hello"])).get("output").str ?? "");
+    const dirs = [vendorDir()];
+    // Linux will not exec a live `/bin/echo` — argv[0] must sit under an
+    // approved root. Stage a copy next to the stand-in gog so the command is
+    // ordinary exec, not the provider path.
+    const echo =
+      process.platform === "linux"
+        ? (() => {
+            const bin = path.join(dirs[0]!, "echo");
+            fs.copyFileSync("/usr/bin/echo", bin);
+            fs.chmodSync(bin, 0o755);
+            return bin;
+          })()
+        : "/bin/echo";
+    const d = device(minterOf(mint), dirs);
+    const out = String(jv(await run(d, [echo, "hello"])).get("output").str ?? "");
     expect(out).toContain("hello");
     expect(mint).not.toHaveBeenCalled();
   });
@@ -333,8 +348,6 @@ esac
   ];
 
   describe("calendar discovery", () => {
-    afterEach(() => { while (cleanups.length) cleanups.pop()!(); });
-
     itSpawns("lists calendars across connected accounts without an account flag", async () => {
       const d = device(accountsMinter(AB), [plowVendorDir()]);
       const response = await run(d, ["gog", "calendar", "calendars", "--json", "--results-only"]);

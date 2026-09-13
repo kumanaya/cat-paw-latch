@@ -8,10 +8,12 @@
  * safety probe.
  *
  * `command` is the ONE spelling: argv[0], the vendor directory, the binary
- * inside it, the member extracted from the release tarball, and the row in
- * `PROVIDERS`. A release naming its binary anything else — `bin/foo`,
- * `foocli` — is unrepresentable, because tar preserves interior paths and
- * `resolveVendoredBinary` only ever looks at `vendor/<command>/<arch>/<command>`.
+ * inside it, and the row in `PROVIDERS`. The fetcher extracts the whole
+ * (tiny) archive after refusing absolute/`..` members — GNU tar rejects a
+ * member named `gog` when the archive stores `./gog`. A release naming its
+ * binary anything else — `bin/foo`, `foocli` — is unrepresentable, because
+ * tar preserves interior paths and `resolveVendoredBinary` only ever looks
+ * at `vendor/<command>/<arch>/<command>`.
  * `registry.test.ts` asserts the two lists agree, because they live in
  * different halves of the repo.
  */
@@ -23,10 +25,10 @@ import { execFileSync } from "node:child_process";
  * Per-version verdicts about gog's own grammar. They live on gog's row rather
  * than in the fetcher, which knows nothing about any particular CLI.
  *
- *  1. Set `version`, and set all four digests: each arch's `sha256` (the
- *     tarball) and `binary` (what comes out of it). Derive them from the
- *     release, not from a disk — check the tarball against upstream's
- *     `checksums.txt`, then extract and hash.
+ *  1. Set `version`, and set every digest: each arch's `sha256` (the
+ *     tarball) and `binary` (what comes out of it), on darwin, Windows, and
+ *     Linux. Derive them from the release, not from a disk — check the
+ *     tarball against upstream's `checksums.txt`, then extract and hash.
  *  2. Run `just fetch-vendored gog`. It asserts, against the binary it just
  *     extracted, that no gog flag is negatable — the one spelling
  *     `gogFlags.ts` cannot see — and that the extracted bytes match `binary`.
@@ -99,8 +101,36 @@ const GOG = {
       binary: "a5a1b2715d60c1112f0c06f79b919fe7cf58c9431e3fab27d50dd5d11be15ac8",
     },
   },
+  windowsArches: {
+    arm64: {
+      asset: "windows_arm64",
+      file: "gog.exe",
+      sha256: "a8e205c7f532e97f6b83e5c6241387ac5c01db0227e22e3d940c76b390c0e9ce",
+      binary: "46f5c0ac2f931f6d5b92568909b16af00bce9e2bf053bcc50e7514272fb2d163",
+    },
+    x64: {
+      asset: "windows_amd64",
+      file: "gog.exe",
+      sha256: "070b5675621dc5f90d8d9bc3ab959e77e5c76ba196dbc979d395471687b94f03",
+      binary: "29d7d92b050d0c7bb67527de80a0393ce142cba2b5fa88ac83edde91344ce116",
+    },
+  },
+  linuxArches: {
+    arm64: {
+      asset: "linux_arm64",
+      sha256: "f68e3c35c9364dea5a4e515d13a23ab30ded46401c90d89e2953dca395d7fe42",
+      binary: "4b3070e678e5a88eaf234a7053b0dc72edf2dedd4e90a2d36f2b102dc3d4127b",
+    },
+    x64: {
+      asset: "linux_amd64",
+      sha256: "b290fcfe907789a1efb685a9336e2a6c7f9598c3c00aada8d6c437eebc86c891",
+      binary: "1d7bf860738829dcf2722b6d140f514b505a6e8cedb321be13c246fcc45ff214",
+    },
+  },
   url: (version, asset) =>
     `https://github.com/openclaw/gogcli/releases/download/v${version}/gogcli_${version}_${asset}.tar.gz`,
+  windowsUrl: (version, asset) =>
+    `https://github.com/openclaw/gogcli/releases/download/v${version}/gogcli_${version}_${asset}.zip`,
   probe: gogNoNegatableFlags,
 };
 

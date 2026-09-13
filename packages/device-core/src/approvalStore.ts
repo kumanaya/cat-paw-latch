@@ -51,6 +51,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { Decision, Intent, capabilityDisplay } from "@domo/protocol";
 import { IntentDecision, PolicyDelegate } from "./policyEngine.js";
+import { lockdownSecretFile } from "./fileLockdown.js";
 
 /** Same fifteen minutes as a deferred handle — §4.3 uses one window. */
 export const APPROVAL_TTL_MS = 15 * 60_000;
@@ -164,6 +165,13 @@ export class ApprovalStore implements PolicyDelegate {
     // is a real permissions problem and still throws.
     try {
       await fs.chmod(file, 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+    }
+    // Owner-only ACL on Windows. Same ENOENT tolerance as the chmod above:
+    // a swept-away record has no ACL left to enforce.
+    try {
+      lockdownSecretFile(file);
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
     }

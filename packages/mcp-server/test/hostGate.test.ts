@@ -63,8 +63,42 @@ function unreadable(dir: string): string {
   return file;
 }
 
+/**
+ * A file this Windows user cannot open: a deny ACE for the current user.
+ * chmod 000 is a no-op here (ACLs instead of mode bits), so the refusal the
+ * POSIX tests get from the mode needs an ACE. Owner-set, no elevation.
+ * Null when no denial is in force — then there is no refusal to test.
+ */
+function windowsUnreadable(dir: string): string | null {
+  const file = path.join(dir, "secret.txt");
+  fs.writeFileSync(file, "x");
+  const user = process.env.USERNAME;
+  if (!user) return null;
+  try {
+    execFileSync("icacls", [file, "/deny", `${user}:(R)`], { stdio: "pipe" });
+  } catch {
+    return null;
+  }
+  cleanups.push(() => {
+    try {
+      execFileSync("icacls", [file, "/remove", `${user}`], { stdio: "pipe" });
+    } catch {
+      /* best effort: the temp dir goes either way */
+    }
+  });
+  try {
+    // Prove the denial is real before any assertion rests on it.
+    fs.readFileSync(file);
+    return null;
+  } catch {
+    return file;
+  }
+}
+
 describe.skipIf(AS_ROOT)("a file this Mac refused", () => {
-  it("plow_read_file answers blocked, as an error, with the whole diagnosis", async () => {
+  // chmod 000 is a mode-bits refusal: POSIX-only. Windows covers the same
+  // wire shape below through an ACL denial.
+  it.skipIf(process.platform !== "darwin")("plow_read_file answers blocked, as an error, with the whole diagnosis", async () => {
     const { server, device, home } = makeServer();
     const file = unreadable(path.join(home, "Plow"));
     const { payload, isError, status } = await callTool(server, "plow_read_file", { path: file }, AGENT);
@@ -115,6 +149,27 @@ describe.skipIf(AS_ROOT)("a file this Mac refused", () => {
     expect(JSON.stringify(payload.diagnosis)).not.toContain(home);
     expect(JSON.stringify(payload.probes)).not.toContain(home);
     expect(payload.probes.path).toBe("~/Documents/notes.txt");
+  });
+
+  it.skipIf(process.platform !== "win32")("an ACL-denied file answers blocked, with the Windows sentence", async () => {
+    // The Windows shape of the case above: a real refusal (deny ACE, no
+    // mode bits involved), the same wire shape, the platform's own cause
+    // wording. Skipped where icacls cannot deny — then there is no refusal.
+    const { server, device, home } = makeServer();
+    const file = windowsUnreadable(path.join(home, "Plow"));
+    if (file === null) return;
+    const { payload, isError, status } = await callTool(server, "plow_read_file", { path: file }, AGENT);
+    expect(status).toBe(200);
+    expect(isError).toBe(true);
+    expect(payload.status).toBe("blocked");
+    // Node on Windows reports ACL deny as EPERM (ERROR_ACCESS_DENIED).
+    expect(payload.error).toMatch(/EACCES|EPERM/);
+    expect(payload.diagnosis.cause).toBe("posix_permissions");
+    expect(payload.diagnosis.owner_action).toMatch(/icacls/);
+    expect(payload.diagnosis.retry).toBe("with_different_path");
+    expect(payload.probes.errno).toMatch(/EACCES|EPERM/);
+    expect(payload.probes.path).toBe("~/Plow/secret.txt");
+    expect(events(device)).toEqual(["intent_received", "intent_decision", "host_permission_blocked"]);
   });
 
   it("a missing file stays failed, and keeps the facts this Mac gathered", async () => {
@@ -168,7 +223,11 @@ describe.skipIf(AS_ROOT)("a file this Mac refused", () => {
       },
     };
     const { server, home } = makeServer(null, slow, 40);
-    const file = unreadable(path.join(home, "Plow"));
+    // The refusal primitive is per-OS (mode bits vs ACL); the
+    // pending-to-blocked path under test is not.
+    const file =
+      process.platform === "win32" ? windowsUnreadable(path.join(home, "Plow")) : unreadable(path.join(home, "Plow"));
+    if (file === null) return;
     const first = await callTool(server, "plow_read_file", { path: file }, AGENT);
     expect(first.payload.status).toBe("pending");
     const handle = first.payload.handle as string;
@@ -180,7 +239,7 @@ describe.skipIf(AS_ROOT)("a file this Mac refused", () => {
     expect(settled.payload.status).toBe("blocked");
     expect(settled.payload.handle).toBe(handle);
     expect(settled.payload.diagnosis.cause).toBe("posix_permissions");
-    expect(settled.payload.probes.errno).toBe("EACCES");
+    expect(settled.payload.probes.errno).toMatch(/EACCES|EPERM/);
     // Ownership holds for blocked results like every other terminal state.
     const theirs = await callTool(server, "plow_get_result", { handle }, OTHER);
     expect(theirs.payload.status).toBe("unknown");

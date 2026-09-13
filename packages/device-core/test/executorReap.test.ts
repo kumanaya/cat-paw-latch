@@ -96,8 +96,11 @@ const silentBlockedRuns = [
   },
 ];
 
-// Pure profile generation — no seatbelt, so this one runs everywhere.
-describe("what a run that may be killed is allowed to write", () => {
+// Pure profile generation — no seatbelt, but the profile IS seatbelt: its
+// strings only mean anything on macOS, and the generator canonicalizes
+// through the platform path module. macOS pins the bytes; Windows pins its
+// own reaper behavior below.
+describe.skipIf(!ON_MAC)("what a run that may be killed is allowed to write", () => {
   it("gets its scratch and nothing else persistent", () => {
     // Both profiles come from the capabilities alone — the same derivation the
     // reaper's own guard makes — so the two cannot be set against each other.
@@ -321,5 +324,36 @@ describe.skipIf(!ON_MAC)("the audit record of a reaped run", () => {
       .filter((e) => jv(e).get("event").str === "exec_end");
     expect(ends).toHaveLength(1);
     expect(jv(ends[0]!).get("reaped").bool).toBe(true);
+  });
+});
+
+// A silent Windows run is reaped out of its Job Object: the timer fires,
+// the run is abandoned, and closing the job ends the whole tree — so the
+// scratch a reapable run may write is deleted with it. `timeout.exe` is out:
+// it refuses to wait with redirected stdin. PowerShell sleeps silently.
+describe.skipIf(process.platform !== "win32")("a silent run on Windows is reaped out of its job", () => {
+  it("is killed once it outlives the reap window, and its scratch goes with it", async () => {
+    const dir = tempDir();
+    const executor = new Executor(path.join(dir, "scratch"), 300);
+    let started: Awaited<ReturnType<Executor["run"]>>;
+    try {
+      started = await executor.run({
+        argv: ["powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 30"],
+        cwd: dir,
+        readPaths: [dir],
+        writePaths: [],
+        network: false,
+        appleEvents: false,
+        waitMs: 50,
+      });
+    } catch (error) {
+      // No cage, no commands: the fail-closed run is the assertion then.
+      expect(String(error)).toMatch(/Windows (sandbox|command execution|command executable)/);
+      return;
+    }
+    expect(started.running).toBe(true);
+    const ended = await settle(executor, started.handle);
+    expect(ended.reaped).toBe(true);
+    await until(() => fs.readdirSync(path.join(dir, "scratch")).length === 0);
   });
 });

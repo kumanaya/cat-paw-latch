@@ -33,12 +33,25 @@ export const PROVIDER_ROOT = "providers";
  */
 export const MARKER = "VERSION";
 
+/** The platform-specific source of a provider payload. */
+export function providerArches(provider, platform = process.platform) {
+  if (platform === "win32") return provider.windowsArches ?? provider.arches;
+  if (platform === "linux") return provider.linuxArches ?? {};
+  if (platform === "darwin") return provider.arches;
+  return {};
+}
+
+export function stagedFileName(provider, platform = process.platform) {
+  return platform === "win32" ? `${provider.command}.exe` : provider.command;
+}
+
 /** The staged binary's path, and whether its bytes are the pinned ones. */
 export function stagedBinary(provider, arch, root) {
-  const file = path.join(root, "vendor", PROVIDER_ROOT, provider.command, arch, provider.command);
+  const assets = providerArches(provider);
+  const file = path.join(root, "vendor", PROVIDER_ROOT, provider.command, arch, stagedFileName(provider));
   if (!existsSync(file)) return { file, ok: false };
   const actual = createHash("sha256").update(readFileSync(file)).digest("hex");
-  return { file, ok: actual === provider.arches[arch].binary, actual };
+  return { file, ok: actual === assets[arch]?.binary, actual };
 }
 
 /**
@@ -56,5 +69,8 @@ export function stagedBinary(provider, arch, root) {
 export function isStaged(provider, root) {
   const marker = path.join(root, "vendor", PROVIDER_ROOT, provider.command, MARKER);
   if (!existsSync(marker) || readFileSync(marker, "utf8").trim() !== provider.version) return false;
-  return Object.keys(provider.arches).every((arch) => stagedBinary(provider, arch, root).ok);
+  const arches = Object.keys(providerArches(provider));
+  // No arches for this platform means there is nothing to trust as staged.
+  if (arches.length === 0) return false;
+  return arches.every((arch) => stagedBinary(provider, arch, root).ok);
 }

@@ -741,7 +741,7 @@ async function renderRules() {
     } else if (mode === "approve") {
       modeHintLine.textContent =
         "Every request is allowed without asking you and without review — including AppleScript, " +
-        "which runs outside the sandbox. Agents get full access to this Mac.";
+        "which runs outside the sandbox. Agents get full access to this Desktop.";
     } else if (mode === "deny") {
       modeHintLine.textContent =
         "Every request is refused without asking you.";
@@ -765,12 +765,14 @@ async function renderRules() {
 
   const ruleItems = rules.length
     ? rules.map((r) => {
-        const remove = el("button", { class: "btn danger", text: "Revoke Rule" });
+        const remove = el("button", { class: "btn danger", text: r.disabled ? "Remove Rule" : "Revoke Rule" });
         remove.addEventListener("click", async () => { await window.domo.rulesRemove(r.ruleKey); renderRules(); });
         const caps = (r.capabilities || []).map((c) => el("span", { class: "cap", text: capText(c) }));
         return el("div", { class: "item" }, [
           el("div", { class: "row" }, [el("h4", { text: r.agentDisplay || r.agentId }), el("div", { class: "spacer" }), remove]),
           el("div", { class: "capchips" }, caps),
+          ...(r.disabled ? [el("p", { class: "faint", text:
+            "Disabled on Windows: this rule has sensitive permissions and now requires local presence for every request." })] : []),
         ]);
       })
     : [el("div", { class: "empty", text: "No always-allow rules." })];
@@ -778,11 +780,11 @@ async function renderRules() {
   view.replaceChildren(el("div", { class: "panel rules settings" }, [
     group(
       "Approvals",
-      "What happens when an agent asks to do something on this Mac. Requests already covered " +
+      "What happens when an agent asks to do something on this Desktop. Requests already covered " +
         "by an always-allow rule skip Ask and Approve; AI Reviewer and Deny still apply to every " +
         "request. Manage those rules below. The reviewer sees which " +
         "agent is asking, what it's asking to do, the exact bounds it would get, and the purpose " +
-        "you wrote for it. It never sees your files, your history on this Mac, or anything the " +
+        "you wrote for it. It never sees your files, your history on this Desktop, or anything the " +
         "agent hasn't asked for.",
       [modeChips, modeNote, purposeBlock, modeHintLine],
     ),
@@ -1057,7 +1059,7 @@ function syncStaticModal(s, redraw) {
         el("div", { class: "group-title", text: "Static credential" }),
         el("p", {
           class: "faint conn-note",
-          text: "For a tool that only needs MCP access to this Mac — a client that can't do OAuth. It reaches no chats and answers on no line.",
+          text: "For a tool that only needs MCP access to this Desktop — a client that can't do OAuth. It reaches no chats and answers on no line.",
         }),
         el("div", { class: "field" }, [el("label", { text: "Name this connection" }), staticModal.nameInput]),
         el("p", {
@@ -1099,7 +1101,7 @@ function connectNodes(s, redraw, openStatic = (trigger) => {
   // is a group that renders in both states.
   if (!s.hasCredential) {
     return [
-      el("p", { class: "faint conn-note", text: "Sign in below — a client reaches this Mac through your Plow account." }),
+      el("p", { class: "faint conn-note", text: "Sign in below — a client reaches this Desktop through your Plow account." }),
     ];
   }
 
@@ -1770,7 +1772,7 @@ function rosterPermissionCopy(row) {
     );
   }
   if (row?.permissions?.canReachMac === true) {
-    permissions.push("Can reach this Mac");
+    permissions.push("Can reach this Desktop");
   }
   if (row?.permissions?.canSpendInference === true) permissions.push("Can spend inference");
   if (!permissions.length) {
@@ -1788,7 +1790,7 @@ function entityMark(name, client = false) {
 }
 
 function rosterBadge(row) {
-  if (row.isThisMac) return badge("blue", "This Mac");
+  if (row.isThisMac) return badge("blue", "This Desktop");
   if (row.kind === "Plow web login") return badge("zinc", "Web login");
   if (row.kind === "Admin — full access") return badge("amber", "Admin *:*");
   if (row.kind === "Session") return badge("zinc", "Session");
@@ -1805,8 +1807,8 @@ function openRosterConfirm(row, trigger, redraw) {
   let title = `Revoke ${name}?`;
   let copy = "Any client or session using this credential will stop working.";
   if (row.isThisMac) {
-    title = "Sign this Mac out?";
-    copy = "Revoking this credential immediately signs this Mac out and stops agents from reaching it.";
+    title = "Sign this Desktop out?";
+    copy = "Revoking this credential immediately signs this Desktop out and stops agents from reaching it.";
   } else if (row.kind === "Plow web login") {
     copy = "Revoking this session signs you out of the Plow website.";
   }
@@ -1949,7 +1951,7 @@ function sessionEntityRow(row, section, redraw) {
   ].filter(Boolean).join(" · ");
   const permissions = rosterPermissionCopy(row);
   if (row.kind === "Plow web login") permissions.push("Revoking signs you out of the Plow website");
-  if (row.isThisMac) permissions.push("Revoking signs this Mac out");
+  if (row.isThisMac) permissions.push("Revoking signs this Desktop out");
   return el("div", { class: "entity-row" }, [
     entityMark(name, true),
     el("div", { class: "entity-main" }, [
@@ -2083,7 +2085,7 @@ function capText(c) {
     case "fs.write": return "write: " + (c.paths || []).join(", ");
     case "process.exec": return "run " + (c.argv || []).join(" ");
     case "network": return c.allowed ? "network: allowed" : "network: denied";
-    case "apple_events": return c.allowed ? "apple events: may control this Mac's apps" : "apple events: denied";
+    case "apple_events": return c.allowed ? "apple events: may control this Desktop's apps" : "apple events: denied";
     case "tool": return "tool: " + (c.tool || "?");
     case "browser": return "browse: " + (c.origins || []).join(", ");
     case "credential":
@@ -2305,7 +2307,7 @@ async function renderCapabilities() {
   const act = async (key, button) => {
     button.disabled = true;
     const was = button.textContent;
-    button.textContent = "Asking macOS…";
+    button.textContent = "Asking the system…";
     try {
       draw(await window.domo.capabilitiesAct(key));
     } catch {
@@ -2586,8 +2588,8 @@ async function renderSettings() {
       ...(relay.hasCredential
         ? [
             el("div", { class: "field" }, [
-              el("label", { text: "This Mac" }),
-              el("div", { class: "mono faint", text: `Plow Latch (${status.name || "Mac"})` }),
+              el("label", { text: "This Desktop" }),
+              el("div", { class: "mono faint", text: `Plow Latch (${status.name || "Desktop"})` }),
             ]),
           ]
         : []),
@@ -2669,7 +2671,7 @@ async function renderSettings() {
   const awakeBox = el("input", { attrs: { type: "checkbox" } });
   const awakeLabel = el("label", { class: "check" }, [
     awakeBox,
-    el("span", { text: "Keep this Mac awake while plugged in" }),
+    el("span", { text: "Keep this Desktop awake while plugged in" }),
   ]);
   const applyAwake = () => { awakeBox.checked = awake.enabled; };
   awakeBox.addEventListener("change", async () => {
@@ -2747,23 +2749,23 @@ async function renderSettings() {
     // The old subtitle promised a phone number this screen never shows. The
     // activation flow learns it server-side from the inbound SMS, so say what
     // is true of what is on screen.
-    group("Plow Account", "The account agents reach this Mac through.", [
+    group("Plow Account", "The account agents reach this Desktop through.", [
       accountBox,
       el("div", { class: "row" }, [relayNote, el("div", { class: "spacer" }), viewAccount, signOut, signIn]),
     ]),
-    group("Availability", "Agents can reach this Mac only while Plow Latch is running and the Mac is awake.", [
+    group("Availability", "Agents can reach this Desktop only while Plow Latch is running and the desktop is awake.", [
       el("div", { class: "support-row" }, [
         el("div", { class: "support-copy" }, [
           el("div", { class: "support-title", text: "Launch at Login" }),
           el("p", { class: "faint", text:
-            "Open Plow Latch automatically, so a restart doesn't take this Mac off the roster." }),
+            "Open Plow Latch automatically, so a restart doesn't take this Desktop off the roster." }),
           launchLabel,
           launchNote,
         ]),
       ]),
       el("div", { class: "support-row" }, [
         el("div", { class: "support-copy" }, [
-          el("div", { class: "support-title", text: "Keep Mac Awake" }),
+          el("div", { class: "support-title", text: "Keep Desktop Awake" }),
           el("p", { class: "faint", text:
             "Prevent idle and display sleep while plugged in, so the screen never locks out work an agent is doing on it. " +
             "On battery it sleeps normally to conserve power, and closing the lid still sleeps it." }),

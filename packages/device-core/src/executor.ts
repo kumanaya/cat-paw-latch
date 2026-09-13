@@ -9,7 +9,12 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { canonicalize, isLexicallyWithin, overlapsRoot } from "@domo/protocol";
+import { WindowsWorkspace } from "./windowsWorkspace.js";
+import { writeWindowsLaunchConfig } from "./windowsLaunchConfig.js";
+import { LinuxWorkspace } from "./linuxWorkspace.js";
+import { writeLinuxLaunchConfig } from "./linuxLaunchConfig.js";
 
 const READ_BOILERPLATE = [
   "/usr",
@@ -148,11 +153,44 @@ export function sandboxGrants(
     home?: string;
   },
   target: string,
+  opts: { platform?: NodeJS.Platform } = {},
 ): { read: boolean; write: boolean } {
   const under = isLexicallyWithin;
+  const platform = opts.platform ?? process.platform;
+  if (platform === "win32") {
+    // Answer the APPROVAL with Windows path rules even when this suite runs
+    // on a POSIX host (injected `platform: "win32"`). Do not posix-canonicalize
+    // synthetic `C:\…` strings — that would turn them into cwd-relative junk.
+    const fold = (s: string) => s.replace(/\//g, "\\").normalize("NFC").toLowerCase();
+    const within = (candidate: string, root: string) => {
+      const p = fold(candidate);
+      const r = fold(root);
+      return p === r || p.startsWith(r.endsWith("\\") ? r : r + "\\");
+    };
+    const home = process.platform === "win32"
+      ? canonicalize(args.home ?? os.homedir())
+      : (args.home ?? "C:\\Users");
+    const writeRoots = process.platform === "win32"
+      ? writableRoots(args)
+      : [args.scratch, ...args.writePaths];
+    const readRoots = [home, ...writeRoots, ...args.readPaths];
+    return {
+      read: readRoots.some((root) => within(target, root)),
+      write: writeRoots.some((root) => within(target, root)),
+    };
+  }
   const home = canonicalize(args.home ?? os.homedir());
   const writable = writableRoots(args);
   const write = writable.some((root) => under(target, root));
+  if (platform === "linux") {
+    // Linux bwrap+workspace answers the APPROVAL against host paths (the
+    // child never opens them live). Bytewise, like seatbelt path roots.
+    const readRoots = [home, ...writable, ...args.readPaths];
+    return {
+      read: write || readRoots.some((root) => under(target, root)),
+      write,
+    };
+  }
   const readRoots = [...READ_BOILERPLATE, home, ...writable, ...args.readPaths, "/dev/fd"];
   const literals = new Set([
     "/", "/private", "/private/var", "/private/tmp", "/tmp", "/var", "/etc", "/Users",
@@ -183,6 +221,70 @@ export function writableRoots(args: {
 }
 
 export class ExecutorError extends Error {}
+
+/**
+ * The Windows Job Object cage (@domo/native-winsandbox), when it is built
+ * and we are on Windows, else null. Absent is not a fallback to uncaged
+ * execution: `run` fails closed, because an approved command with no cage
+ * is the guarantee this class exists to keep.
+ */
+interface WinSandbox {
+  create(): number;
+  assign(job: number, pid: number): void;
+  close(job: number): void;
+  appContainerAvailable(): boolean;
+}
+
+function winSandbox(): WinSandbox | null {
+  try {
+    const require_ = createRequire(import.meta.url);
+    return require_("@domo/native-winsandbox") as WinSandbox | null;
+  } catch {
+    return null;
+  }
+}
+
+/** The trusted helper shipped beside the native addon, never an agent path. */
+function winLauncher(): string | null {
+  try {
+    const require_ = createRequire(import.meta.url);
+    const addon = require_.resolve("@domo/native-winsandbox");
+    const launcher = path.join(path.dirname(addon), "build", "Release", "winsandbox_launcher.exe");
+    return fs.existsSync(launcher) ? launcher : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The Linux bubblewrap + cgroup cage (@domo/native-linuxsandbox), when it is
+ * built and we are on Linux, else null. Absent is not a fallback to uncaged
+ * execution: `run` fails closed.
+ */
+interface LinuxSandbox {
+  available(): boolean;
+}
+
+function linuxSandbox(): LinuxSandbox | null {
+  try {
+    const require_ = createRequire(import.meta.url);
+    return require_("@domo/native-linuxsandbox") as LinuxSandbox | null;
+  } catch {
+    return null;
+  }
+}
+
+/** The trusted helper shipped beside the native addon, never an agent path. */
+function linuxLauncher(): string | null {
+  try {
+    const require_ = createRequire(import.meta.url);
+    const addon = require_.resolve("@domo/native-linuxsandbox");
+    const launcher = path.join(path.dirname(addon), "build", "Release", "linuxsandbox_launcher");
+    return fs.existsSync(launcher) ? launcher : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Whether a run may be killed for going silent — and, because it is the same
@@ -360,14 +462,26 @@ function shape(snap: ReturnType<OutputBuffer["snapshot"]>): Omit<ExecResult, "ha
 }
 
 /**
- * Runs approved commands under /usr/bin/sandbox-exec with a per-run generated
- * profile, buffering merged stdout+stderr for the plow_get_output streaming path.
+ * Runs approved commands caged per run — under /usr/bin/sandbox-exec with a
+ * generated profile on macOS, in a Windows Job Object (kill-on-close plus a
+ * process cap) on Windows — buffering merged stdout+stderr for the
+ * plow_get_output streaming path.
+ *
+ * The cage differs per OS and says so: seatbelt confines files and (when
+ * approved) network; the Job Object ends the whole tree with the run and
+ * caps its process count, and does NOT confine files or network. File
+ * writes stay approval-scoped through the in-process tools and the
+ * diagnosis, which is why `grants` answers the approval on Windows rather
+ * than a cage that is not there.
  */
 export class Executor {
   private buffers = new Map<string, OutputBuffer>();
   /** What each run's profile was built from, kept so a diagnosis can ask
    *  after the fact what that profile allowed (`grants`). */
   private profiles = new Map<string, Parameters<typeof sandboxGrants>[0]>();
+  /** Each run's Job Object id on Windows: closing it ends the run's whole
+   *  tree (kill-on-close), which is the reaper's guarantee there. */
+  private jobs = new Map<string, number>();
   /** Each run's process group (it is spawned as a session leader, so the
    *  group is its pid): what `mutableRoots` asks about after the command
    *  itself has exited, since a job it backgrounded lives on in it. */
@@ -478,8 +592,48 @@ export class Executor {
     };
     // No new writer over what a hold is about, while it is out.
     while (this.conflicts(writableRoots(profileArgs))) await new Promise<void>((wake) => this.holdWaiters.push(wake));
-    const profile = SandboxProfile.generate(profileArgs);
     this.profiles.set(handle, profileArgs);
+    // The cage is per-OS: seatbelt on macOS, Job Object + AppContainer on
+    // Windows, bubblewrap + staged workspace on Linux. The approval bound in
+    // `profiles` is recorded on all three, so the diagnosis asks one question.
+    //
+    // Windows and Linux will not exec a bare name: argv[0] must rewrite into
+    // the staged workspace. The owner approved `gog`; resolve it against the
+    // same vendor dirs we put on PATH so the staged bytes are what run.
+    const argv =
+      process.platform === "win32" || process.platform === "linux"
+        ? this.resolveVendorArgv(args.argv)
+        : args.argv;
+    if (process.platform === "win32") {
+      return this.runWindows(handle, scratch, {
+        argv,
+        cwd: args.cwd === undefined ? undefined : workingDir,
+        // `profileArgs` also contains this run's scratch.  It is not an
+        // owner input and staging it would recursively copy the workspace
+        // into itself, so feed only real approved/runtime roots here.
+        readPaths: [...args.readPaths, ...this.vendorDirs, ...(args.cwd === undefined ? [] : [workingDir])]
+          .map((p) => canonicalize(p)),
+        writePaths: args.writePaths.map((p) => canonicalize(p)),
+        network: args.network,
+        env: args.env,
+        waitMs: args.waitMs,
+        reapable: isReapable(args),
+      });
+    }
+    if (process.platform === "linux") {
+      return this.runLinux(handle, scratch, {
+        argv,
+        cwd: args.cwd === undefined ? undefined : workingDir,
+        readPaths: [...args.readPaths, ...this.vendorDirs, ...(args.cwd === undefined ? [] : [workingDir])]
+          .map((p) => canonicalize(p)),
+        writePaths: args.writePaths.map((p) => canonicalize(p)),
+        network: args.network,
+        env: args.env,
+        waitMs: args.waitMs,
+        reapable: isReapable(args),
+      });
+    }
+    const profile = SandboxProfile.generate(profileArgs);
     if (process.env.DOMO_DEBUG_SANDBOX) {
       process.stderr.write(`=== PROFILE ===\n${profile}\n=== ARGV ===\n${args.argv.join(" ")}\n`);
     }
@@ -490,6 +644,184 @@ export class Executor {
       waitMs: args.waitMs,
       reapable: isReapable(args),
     });
+  }
+
+  /**
+   * Turn a bare provider name into the staged file under `vendorDirs`.
+   *
+   * Seatbelt can search PATH. The Windows/Linux cages cannot: they refuse an
+   * argv[0] that does not rewrite into the workspace. Without this, plow-gog
+   * would pass `"gog"` and the cage would fail closed on a binary we shipped.
+   */
+  private resolveVendorArgv(argv: readonly string[]): string[] {
+    const head = argv[0];
+    if (head === undefined || path.isAbsolute(head)) return [...argv];
+    const want =
+      process.platform === "win32" && !/\.[A-Za-z0-9]+$/.test(head) ? `${head}.exe` : head;
+    for (const dir of this.vendorDirs) {
+      const candidate = path.join(dir, want);
+      try {
+        if (fs.statSync(candidate).isFile()) return [candidate, ...argv.slice(1)];
+      } catch {
+        /* next dir */
+      }
+    }
+    return [...argv];
+  }
+
+  /**
+   * Run an approved command on Windows: argv directly (no shell, no
+   * sandbox-exec), caged in a Job Object. Fail CLOSED when the cage is not
+   * here — an uncaged command is not a degraded command.
+   */
+  private runWindows(
+    handle: string,
+    scratch: string,
+    args: {
+      argv: string[];
+      cwd?: string;
+      readPaths: readonly string[];
+      writePaths: readonly string[];
+      network: boolean;
+      env?: Readonly<Record<string, string>>;
+      waitMs: number;
+      reapable: boolean;
+    },
+  ): Promise<ExecResult> {
+    const sandbox = winSandbox();
+    if (!sandbox) {
+      throw new ExecutorError(
+        "command execution needs the Windows sandbox (@domo/native-winsandbox), which is not built on this host — " +
+          "install the VS Build Tools and `npm rebuild @domo/native-winsandbox`",
+      );
+    }
+    if (!sandbox.appContainerAvailable()) {
+      throw new ExecutorError(
+        "Windows command execution needs AppContainer, which this Windows installation does not provide; refusing an uncaged command",
+      );
+    }
+    const launcher = winLauncher();
+    if (!launcher) {
+      throw new ExecutorError("Windows command execution needs the packaged AppContainer launcher; refusing an uncaged command");
+    }
+    const workspace = WindowsWorkspace.create({ scratch, readPaths: args.readPaths, writePaths: args.writePaths });
+    const argv = args.argv.map((value) => workspace.rewrite(value));
+    // An AppContainer must execute only a staged executable.  Keeping a host
+    // executable in argv[0] would quietly recreate the broad runtime grant
+    // this workspace boundary exists to remove.
+    if (argv[0] === args.argv[0]) {
+      throw new ExecutorError("Windows command executable is outside the approved staged workspace");
+    }
+    const cwd = args.cwd === undefined ? workspace.root : workspace.rewriteCwd(args.cwd);
+    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+    let config: string | null = null;
+    try {
+      config = writeWindowsLaunchConfig(scratch, {
+        workspace: workspace.root,
+        cwd,
+        argv,
+        network: args.network,
+        env: {
+          ...args.env,
+          ComSpec: `${systemRoot}\\System32\\cmd.exe`,
+          LOCALAPPDATA: workspace.root,
+          OS: "Windows_NT",
+          PATHEXT: ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL",
+          Path: `${systemRoot}\\System32;${systemRoot}`,
+          SystemDrive: path.parse(systemRoot).root.slice(0, -1),
+          SystemRoot: systemRoot,
+          TEMP: workspace.root,
+          TMP: workspace.root,
+          windir: systemRoot,
+        },
+      });
+      return this.launch(handle, scratch, launcher, ["--config", config], {
+        cwd: scratch,
+        waitMs: args.waitMs,
+        reapable: args.reapable,
+        windowsAppContainerHelper: true,
+        onCommandExited: () => workspace.reconcile(),
+      });
+    } catch (error) {
+      if (config !== null) {
+        try { fs.rmSync(config, { force: true }); } catch {}
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Run an approved command on Linux: argv directly (no shell), staged into
+   * a bubblewrap workspace and caged with systemd-run TasksMax. Fail CLOSED
+   * when the cage is not here — an uncaged command is not a degraded command.
+   */
+  private runLinux(
+    handle: string,
+    scratch: string,
+    args: {
+      argv: string[];
+      cwd?: string;
+      readPaths: readonly string[];
+      writePaths: readonly string[];
+      network: boolean;
+      env?: Readonly<Record<string, string>>;
+      waitMs: number;
+      reapable: boolean;
+    },
+  ): Promise<ExecResult> {
+    const sandbox = linuxSandbox();
+    if (!sandbox) {
+      throw new ExecutorError(
+        "command execution needs the Linux sandbox (@domo/native-linuxsandbox), which is not built on this host — " +
+          "install a C++ toolchain, bubblewrap, and `npm rebuild @domo/native-linuxsandbox`",
+      );
+    }
+    if (!sandbox.available()) {
+      throw new ExecutorError(
+        "Linux command execution needs bubblewrap and a systemd user session with TasksMax; " +
+          "refusing an uncaged command",
+      );
+    }
+    const launcher = linuxLauncher();
+    if (!launcher) {
+      throw new ExecutorError("Linux command execution needs the packaged bubblewrap launcher; refusing an uncaged command");
+    }
+    const workspace = LinuxWorkspace.create({ scratch, readPaths: args.readPaths, writePaths: args.writePaths });
+    const argv = args.argv.map((value) => workspace.rewrite(value));
+    if (argv[0] === args.argv[0]) {
+      throw new ExecutorError("Linux command executable is outside the approved staged workspace");
+    }
+    const cwd = args.cwd === undefined ? workspace.root : workspace.rewriteCwd(args.cwd);
+    let config: string | null = null;
+    try {
+      config = writeLinuxLaunchConfig(scratch, {
+        workspace: workspace.root,
+        cwd,
+        argv,
+        network: args.network,
+        env: {
+          ...args.env,
+          HOME: workspace.root,
+          TMPDIR: workspace.root,
+          TMP: workspace.root,
+          TEMP: workspace.root,
+          PATH: ["/usr/bin", "/bin", "/usr/sbin", "/sbin"].join(":"),
+          LANG: "en_US.UTF-8",
+        },
+      });
+      return this.launch(handle, scratch, launcher, ["--config", config], {
+        cwd: scratch,
+        waitMs: args.waitMs,
+        reapable: args.reapable,
+        linuxBwrapHelper: true,
+        onCommandExited: () => workspace.reconcile(),
+      });
+    } catch (error) {
+      if (config !== null) {
+        try { fs.rmSync(config, { force: true }); } catch {}
+      }
+      throw error;
+    }
   }
 
   /**
@@ -513,6 +845,13 @@ export class Executor {
    * app's state, the same reason an `apple_events` command is exempt.
    */
   async runAppleScript(run: { script: string; args: readonly string[]; waitMs: number }): Promise<ExecResult> {
+    // osascript is macOS-only, and so is the unsandboxed-AppleScript tool
+    // built on it (mcp-server registers `plow_run_applescript` on darwin
+    // only). Refusing here as well as there keeps a direct caller from
+    // reaching a binary that does not exist.
+    if (process.platform !== "darwin") {
+      throw new ExecutorError("AppleScript runs on macOS only; this host has no osascript");
+    }
     const handle = crypto.randomUUID().toUpperCase();
     const scratch = path.join(this.scratchRoot, handle);
     fs.mkdirSync(scratch, { recursive: true });
@@ -540,16 +879,71 @@ export class Executor {
     scratch: string,
     command: string,
     argv: string[],
-    opts: { cwd: string; env?: Readonly<Record<string, string>>; waitMs: number; reapable: boolean },
+    opts: {
+      cwd: string;
+      env?: Readonly<Record<string, string>>;
+      waitMs: number;
+      reapable: boolean;
+      /** Helper owns the inner AppContainer Job; do not add a second one. */
+      windowsAppContainerHelper?: boolean;
+      /** Helper owns the bwrap + systemd-run cage; do not add a second one. */
+      linuxBwrapHelper?: boolean;
+      /** Runs only after the helper waited for its caged tree. */
+      onCommandExited?: () => void;
+    },
   ): Promise<ExecResult> {
     const realHome = os.homedir();
     const buffer = new OutputBuffer();
     this.buffers.set(handle, buffer);
 
+    // The Linux helper talks to the user's systemd bus; stripping
+    // DBUS_SESSION_BUS_ADDRESS / XDG_RUNTIME_DIR from its environment makes
+    // every cage launch fail closed for the wrong reason.
+    const linuxHelperEnv = opts.linuxBwrapHelper
+      ? {
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+          HOME: realHome,
+          ...(process.env.DBUS_SESSION_BUS_ADDRESS
+            ? { DBUS_SESSION_BUS_ADDRESS: process.env.DBUS_SESSION_BUS_ADDRESS }
+            : {}),
+          ...(process.env.XDG_RUNTIME_DIR
+            ? { XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR }
+            : {}),
+          ...(process.env.XDG_SESSION_TYPE
+            ? { XDG_SESSION_TYPE: process.env.XDG_SESSION_TYPE }
+            : {}),
+        }
+      : null;
+
     const child = spawn(command, argv, {
       cwd: opts.cwd,
-      env: {
-        ...opts.env,
+      env:
+        process.platform === "win32"
+          ? {
+              ...opts.env,
+              // Curated the same way as the POSIX set below: vendor dirs
+              // first (the provider registry matches on a bare argv[0], so
+              // which binary that name reaches is a security decision), then
+              // the system directories a console tool needs. TEMP/TMP stay
+              // in the disposable scratch dir. No HOME override — Windows
+              // tools read USERPROFILE, which is the owner's real one.
+              // PATHEXT/SYSTEMROOT-shape variables are the world, not secrets:
+              // without PATHEXT even `where` cannot resolve an extension.
+              Path: [
+                ...this.vendorDirs,
+                `${process.env.SystemRoot ?? "C:\\Windows"}\\System32`,
+                process.env.SystemRoot ?? "C:\\Windows",
+                `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0`,
+              ].join(";"),
+              TEMP: scratch,
+              TMP: scratch,
+              SystemRoot: process.env.SystemRoot ?? "C:\\Windows",
+              windir: process.env.SystemRoot ?? "C:\\Windows",
+              OS: "Windows_NT",
+              PATHEXT: ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.CPL",
+            }
+          : linuxHelperEnv ?? {
+              ...opts.env,
         // Real home so tools and their configs resolve; TMPDIR stays in the
         // (writable, disposable) scratch dir; PATH includes the user bin dirs.
         // These come AFTER the caller's env deliberately: a provider supplies
@@ -583,9 +977,34 @@ export class Executor {
       // reaches one. Accepted knowingly: nothing here has ever killed live
       // children at quit (the packaged app has no terminal to signal it), so
       // the sweep that would is its own change, not a side effect of this one.
-      detached: true,
+      //
+      // Windows is the exception: `detached` there means DETACHED_PROCESS
+      // (no console), under which console tools exit at once having done
+      // nothing — measured with powershell, 0.15s and exit 0. The Job Object
+      // is already the run's grouping there, so the child spawns attached
+      // and windowless instead (no console flash under the GUI app either).
+      detached: process.platform !== "win32",
+      windowsHide: process.platform === "win32",
     });
     if (child.pid !== undefined) this.groups.set(handle, child.pid);
+    // On Windows the cage is a Job Object, attached the moment the child
+    // exists: closing it ends the run's whole tree (kill-on-close), which
+    // is what the reaper's guarantee rests on there. `runWindows` already
+    // refused to launch without the addon, so a null here is unreachable —
+    // and still fails closed rather than running uncaged.
+    if (process.platform === "win32" && child.pid !== undefined && !opts.windowsAppContainerHelper) {
+      const cage = winSandbox();
+      if (!cage) throw new ExecutorError("lost the Windows sandbox between check and launch");
+      try {
+        const job = cage.create();
+        cage.assign(job, child.pid);
+        this.jobs.set(handle, job);
+      } catch (error) {
+        throw new ExecutorError(
+          `could not cage the run in a Job Object: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     // A run ends when its COMMAND ends. `close` says something else — every
     // stdio pipe closed too — and a job the command backgrounded inherits
     // those pipes and can hold them open forever. Settling on `exit` is what
@@ -593,6 +1012,7 @@ export class Executor {
     // still around", which is not this Mac's promise to keep and was three
     // rounds of holes in one predicate when the reaper tried to keep it.
     let reaper: ReturnType<typeof setTimeout> | undefined;
+    let abandoned = false;
     // Settling CLOSES the capture, on every path into it. A run that has been
     // answered must stop growing, and the read ends of its pipes must not stay
     // attached for the life of the app because something the command left
@@ -600,6 +1020,11 @@ export class Executor {
     // nothing downstream needs a guard against late output.
     const settle = (code: number) => {
       clearTimeout(reaper);
+      // The cage closes with the capture, on every path: on Windows that
+      // ends the run's whole tree (kill-on-close), including anything the
+      // command backgrounded. That differs from macOS, where a backgrounded
+      // job outlives the run — a Windows run's tree ends with the run, and
+      // long-lived servers belong in a service, not a background job.
       // Answered first, closed second, both in one synchronous breath: nothing
       // can append between the two statements, and everything downstream that
       // asks "is this run still open?" — `abandon`'s kill above all — gets the
@@ -611,11 +1036,21 @@ export class Executor {
       } finally {
         child.stdout?.destroy();
         child.stderr?.destroy();
+        this.closeJob(handle);
       }
     };
     child.on("error", () => settle(-1));
     child.on("exit", (code, signal) => {
-      const outcome = code ?? (signal ? -1 : 0);
+      let outcome = code ?? (signal ? -1 : 0);
+      // The helper does not exit until its own Job has no descendants. This
+      // is the sole point at which staged output may safely meet owner paths.
+      if (!abandoned && opts.onCommandExited) {
+        try {
+          opts.onCommandExited();
+        } catch {
+          outcome = -1;
+        }
+      }
       // Output already written may still be in flight, so the usual `close`
       // remains the settling event — with a deadline, because a straggler
       // holding a pipe must not hold the agent with it. Output not delivered
@@ -643,6 +1078,7 @@ export class Executor {
     // caller that reaches here after a run is answered — so the survivor test
     // in `executorReap.test.ts` pins the promise, not this line.
     const abandon = (code: number) => {
+      abandoned = true;
       if (buffer.exitCode === null && child.pid !== undefined) {
         try {
           process.kill(-child.pid, "SIGKILL");
@@ -772,12 +1208,33 @@ export class Executor {
     const pid = this.groups.get(handle);
     if (pid === undefined) return false;
     try {
+      // Negative pids signal groups, which Windows does not have: a signal
+      // 0 to the pid itself asks the only question that matters there.
+      if (process.platform === "win32") {
+        process.kill(pid, 0);
+        return true;
+      }
       process.kill(-pid, 0);
       return true;
     } catch (error: unknown) {
       // ESRCH: no such group — every member is gone. Anything else (EPERM,
       // a member no longer ours) means something is still there.
       return (error as { code?: unknown })?.code !== "ESRCH";
+    }
+  }
+
+  /** Close one run's Job Object, exactly once. Closing the last handle ends
+   *  the run's whole tree; settling already answered the caller, so nothing
+   *  here can throw it off. */
+  private closeJob(handle: string): void {
+    const job = this.jobs.get(handle);
+    if (job === undefined) return;
+    this.jobs.delete(handle);
+    try {
+      winSandbox()?.close(job);
+    } catch {
+      // The run is answered and its pipes are destroyed; a job that will
+      // not close is the OS's to reap with the process, not the caller's.
     }
   }
 

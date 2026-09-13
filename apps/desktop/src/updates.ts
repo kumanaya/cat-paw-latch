@@ -22,6 +22,18 @@
 
 export type UpdatePhase = "idle" | "checking" | "downloading" | "ready" | "error";
 
+const RELEASE_FEED = "https://s3.us-west-2.amazonaws.com/releases.plow.co/domo";
+
+/** Windows and Linux update metadata must be partitioned by CPU: one
+ * `latest.yml` cannot safely point both x64 and ARM64 installs at their own
+ * installer. macOS stays on electron-builder's universal default. */
+export function platformUpdateFeed(platform: NodeJS.Platform, arch: string): string | null {
+  const slice = arch === "arm64" ? "arm64" : "x64";
+  if (platform === "win32") return `${RELEASE_FEED}/windows/${slice}`;
+  if (platform === "linux") return `${RELEASE_FEED}/linux/${slice}`;
+  return null;
+}
+
 export interface UpdateState {
   phase: UpdatePhase;
   /** The version being downloaded / staged, while downloading or ready. */

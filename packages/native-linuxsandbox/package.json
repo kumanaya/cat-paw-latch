@@ -1,0 +1,14 @@
+{
+  "name": "@domo/native-linuxsandbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Linux bubblewrap + cgroup v2 cage for agent-run commands: staged-workspace binds, die-with-parent, and a process cap. The seatbelt seat on Linux; everything else about execution lives in @domo/device-core.",
+  "main": "./index.cjs",
+  "scripts": {
+    "install": "node scripts/build.cjs"
+  },
+  "devDependencies": {
+    "node-addon-api": "^8.3.0",
+    "node-gyp": "^13.0.0"
+  }
+}

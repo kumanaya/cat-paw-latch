@@ -5,6 +5,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { lockdownSecretFile } from "./fileLockdown.js";
 import {
   AlwaysAllowRule,
   Decision,
@@ -24,6 +25,14 @@ import {
  * are labeled "rule" by the engine itself.
  */
 export type IntentDecision = Decision | { decision: Decision; source?: string };
+
+/** A stored rule which remains visible to its owner but can never answer an
+ * intent.  Windows migrates pre-presence-gate sensitive rules into this state
+ * instead of silently retaining an unsafe standing approval. */
+export type ListedAlwaysAllowRule = AlwaysAllowRule & {
+  disabled?: true;
+  disabledReason?: "windows_sensitive_capability" | "linux_sensitive_capability";
+};
 
 /** Whoever answers approval questions: app UI, headless script… */
 export interface PolicyDelegate {
@@ -54,38 +63,78 @@ export interface PolicyDelegate {
 
 export class PolicyEngine {
   private rules = new Map<string, AlwaysAllowRule>();
+  private disabled = new Map<string, ListedAlwaysAllowRule>();
+  private migrated = new Map<string, ListedAlwaysAllowRule>();
 
-  constructor(private readonly rulesFile: string) {
+  constructor(
+    private readonly rulesFile: string,
+    private readonly platform: NodeJS.Platform = process.platform,
+  ) {
     try {
-      const stored = JSON.parse(fs.readFileSync(rulesFile, "utf8")) as AlwaysAllowRule[];
-      for (const rule of stored) this.rules.set(rule.ruleKey, rule);
+      const stored = JSON.parse(fs.readFileSync(rulesFile, "utf8")) as ListedAlwaysAllowRule[];
+      let changed = false;
+      for (const rule of stored) {
+        if (rule.disabled) {
+          this.disabled.set(rule.ruleKey, rule);
+        } else if (
+          (this.platform === "win32" || this.platform === "linux") &&
+          !ruleEligibleCapabilities(rule.capabilities, this.platform)
+        ) {
+          const disabled: ListedAlwaysAllowRule = {
+            ...rule,
+            disabled: true,
+            disabledReason: this.platform === "linux" ? "linux_sensitive_capability" : "windows_sensitive_capability",
+          };
+          this.disabled.set(rule.ruleKey, disabled);
+          this.migrated.set(rule.ruleKey, disabled);
+          changed = true;
+        } else {
+          this.rules.set(rule.ruleKey, rule);
+        }
+      }
+      // Mark the migration durably before the app can advertise any capability.
+      // A later restart therefore cannot turn a failed audit write into a rule
+      // replay, and the owner sees the disabled rule in the Rules screen.
+      if (changed) this.persist();
     } catch {
       /* no rules yet */
     }
   }
 
-  allRules(): AlwaysAllowRule[] {
-    return [...this.rules.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  allRules(): ListedAlwaysAllowRule[] {
+    return [...this.rules.values(), ...this.disabled.values()]
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /** Rules migrated during this process start.  DeviceAgent records these once
+   * in the audit log; old disabled records are deliberately not re-audited on
+   * every app launch. */
+  migratedDisabledRules(): ListedAlwaysAllowRule[] {
+    return [...this.migrated.values()];
   }
 
   removeRule(key: string): void {
     this.rules.delete(key);
+    this.disabled.delete(key);
     this.persist();
   }
 
   removeAllRules(): void {
     this.rules.clear();
+    this.disabled.clear();
     this.persist();
   }
 
   private persist(): void {
     fs.mkdirSync(path.dirname(this.rulesFile), { recursive: true });
-    fs.writeFileSync(this.rulesFile, JSON.stringify([...this.rules.values()], null, 2) + "\n");
+    fs.writeFileSync(this.rulesFile, JSON.stringify([...this.rules.values(), ...this.disabled.values()], null, 2) + "\n");
+    // Standing grants: owner-only ACL on Windows, like any secret.
+    lockdownSecretFile(this.rulesFile);
   }
 
   async decide(intent: Intent, delegate: PolicyDelegate): Promise<Grant> {
     const key = intentRuleKey(intent);
-    const eligible = ruleEligible(intent);
+    const eligible = ruleEligible(intent, this.platform);
     if (eligible && this.rules.has(key) && (await mayGrantFromStoredRule(intent, delegate))) {
       return makeGrant(intent, "always_allow", "rule");
     }
@@ -111,9 +160,27 @@ export class PolicyEngine {
  * outside the sandbox besides), so the exact same script against the exact
  * same app is decided fresh every time too.
  */
-function ruleEligible(intent: Intent): boolean {
-  return !intent.capabilities.some(
+function ruleEligible(intent: Intent, platform: NodeJS.Platform): boolean {
+  const exceptional = intent.capabilities.some(
     (c) => (c.kind === "apple_events" && c.allowed === true) || c.kind === "applescript",
+  );
+  if (exceptional) return false;
+  // On Windows an Always rule must never bypass the local-presence gate for
+  // work that can change, execute, exfiltrate, or release owner data.
+  return ruleEligibleCapabilities(intent.capabilities, platform);
+}
+
+function ruleEligibleCapabilities(
+  capabilities: AlwaysAllowRule["capabilities"],
+  platform: NodeJS.Platform,
+): boolean {
+  // Windows lacks a presence gate that Always-Allow could safely skip;
+  // Linux has no polkit presence gate yet. On both, sensitive caps must
+  // re-prompt every time.
+  if (platform !== "win32" && platform !== "linux") return true;
+  return !capabilities.some((c) =>
+    c.kind === "process.exec" || c.kind === "fs.write" || c.kind === "network" ||
+    c.kind === "credential" || c.kind === "browser" || c.kind === "fs.read",
   );
 }
 

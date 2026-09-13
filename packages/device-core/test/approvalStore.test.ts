@@ -102,7 +102,9 @@ describe("the record exists before the answer does", () => {
     expect(onDisk.status).toBe("pending");
   });
 
-  it("is owner-only — it carries the goal and the paths asked for", async () => {
+  it.skipIf(process.platform === "win32")("is owner-only — it carries the goal and the paths asked for", async () => {
+    // Unix mode bits do not exist on Windows (ACLs instead); the OS-store
+    // providers are the floor there, as in vaultKeyStore.test.ts.
     const dir = tempDir();
     const store = new ApprovalStore(dir, silent);
     const intent = intentFor();

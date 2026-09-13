@@ -113,12 +113,20 @@ smoke-electron: build
         scripts/smoke-electron.mjs
 
 # Run the real-browser integration tier: the TS browser server (playwright-core)
-# driving the real Camoufox on a local fixture site through the MCP server on the
-# Mac. Needs `just fetch-browser` first (browser + pool), and `build` for the
-# server's dist. No Python.
+# driving the real Camoufox on a local fixture site through the MCP server.
+# Needs `just fetch-browser` first (browser + pool), and `build` for the
+# server's dist. No Python. Linux resolves camoufox-bin under linux/<arch>.
 test-browser: build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$(uname -s)" = Linux ]; then
+      arch=$( [ "$(uname -m)" = aarch64 ] && echo arm64 || echo x64 )
+      camoufox="{{root}}/vendor/camoufox-browser/linux/${arch}"
+    else
+      camoufox="{{root}}/vendor/camoufox-browser/$(uname -m)"
+    fi
     DOMO_BROWSER_RUNTIME="{{root}}/vendor" \
-    DOMO_CAMOUFOX="{{root}}/vendor/camoufox-browser/$(uname -m)" \
+    DOMO_CAMOUFOX="${camoufox}" \
         npx vitest run packages/mcp-server/test/browser.integration.test.ts
 
 # Package the desktop app: signed + notarized "Plow Latch.app" + DMG, in
@@ -150,6 +158,46 @@ package profile="domo-notary": _main-only (_package profile "")
 # Gatekeeper will refuse the DMG once it's downloaded onto any other one.
 # Runs from any checkout; output lands in THIS checkout's apps/desktop/release/.
 package-unnotarized: (_package "domo-notary" "-c.mac.notarize=false")
+
+# Package for Windows: NSIS installer + unpacked tree in
+# apps/desktop/release/, unsigned unless the caller signs. Run on Windows —
+# the wincred/winsandbox addons compile for the packaging host, and
+# afterPack refuses a pack whose addon arch does not match the target.
+# No notarization concept; no browser runtime yet (afterPack warns).
+# A node script (scripts/package-win.mjs) so the recipe shell differs
+# nothing per host.
+package-win: build
+    node scripts/fetch-vendored.mjs --all
+    node scripts/build-browser-runtime.mjs --browser-both
+    node scripts/package-win.mjs
+
+# Early signed installer validation for an x64 test machine. This is not a
+# substitute for `package-win`: the full release still requires ARM64 too.
+package-win-x64: build
+    node scripts/fetch-vendored.mjs --all
+    node scripts/build-browser-runtime.mjs --browser
+    node scripts/package-win.mjs --arch x64
+
+# Must run on a native ARM64 Windows host. It intentionally fails before a
+# package is made until a pinned Camoufox ARM64 runtime exists.
+package-win-arm64: build
+    node scripts/fetch-vendored.mjs --all
+    node scripts/build-browser-runtime.mjs --browser
+    node scripts/package-win.mjs --arch arm64
+
+# Linux AppImage. Must run on Linux — linuxsandbox compiles for the packaging
+# host, and afterPack refuses a pack whose launcher --probe fails or whose
+# Camoufox / vendored-provider ELF is missing. Fetches providers + browser
+# before packing. Default arch is the host; use package-linux-x64 / -arm64
+# to pin it.
+package-linux: build
+    node scripts/package-linux.mjs
+
+package-linux-x64: build
+    node scripts/package-linux.mjs --arch x64
+
+package-linux-arm64: build
+    node scripts/package-linux.mjs --arch arm64
 
 # Every package run — notarized or not — mints its version: major.minor from
 # apps/desktop's package.json + a UTC timestamp patch (0.1.202608121530),
@@ -191,8 +239,7 @@ _package profile flags: build
 # Version and build are read back from the packaged app so there is exactly
 # one clock: the one `package` stamped. s3_profile "" uses ambient AWS
 # credentials (CI's OIDC role).
-release profile="domo-notary" s3_profile="plow": _main-only
-    @just package "{{profile}}"; \
+release profile="domo-notary" s3_profile="plow": _main-only    @just package "{{profile}}"; \
     plist="{{root}}/apps/desktop/release/mac-universal/Plow Latch.app/Contents/Info.plist"; \
     version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"; \
     build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"; \
@@ -205,6 +252,26 @@ release profile="domo-notary" s3_profile="plow": _main-only
 # publishing is the first of two gates rather than the ship moment.
 promote version build s3_profile="plow":
     bash scripts/release-promote.sh --version "{{version}}" --build "{{build}}" --profile "{{s3_profile}}"
+
+# Linux AppImage candidate: package the requested arch (default x64), then
+# upload to s3://…/domo/releases/<version>-<build>/linux/<arch>/. Stable keys
+# stay untouched until `just promote-linux`. Does not depend on `package-linux`
+# — that recipe packages the host arch and would disagree with `arch=`.
+release-linux s3_profile="plow" arch="x64": build
+    #!/usr/bin/env bash
+    set -euo pipefail
+    node scripts/package-linux.mjs --arch "{{arch}}"
+    feed=""
+    for f in "{{root}}/apps/desktop/release/latest-linux.yml" "{{root}}/apps/desktop/release/latest-linux-{{arch}}.yml"; do
+      if [ -f "$f" ]; then feed="$f"; break; fi
+    done
+    [ -n "$feed" ] || { echo "error: no latest-linux.yml after package-linux" >&2; exit 1; }
+    version="$(awk '/^version:/{print $2; exit}' "$feed")"
+    build="${version##*.}"
+    bash scripts/release-upload-linux.sh --version "$version" --build "$build" --arch "{{arch}}" --profile "{{s3_profile}}"
+
+promote-linux version build s3_profile="plow" arch="x64":
+    bash scripts/release-promote-linux.sh --version "{{version}}" --build "{{build}}" --arch "{{arch}}" --profile "{{s3_profile}}"
 
 # Serve THIS checkout's apps/desktop/release/ as a local update feed, for
 # testing the whole update loop with no S3. The loop:

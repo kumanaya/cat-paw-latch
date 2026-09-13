@@ -16,7 +16,7 @@ describe("approvals card", () => {
     // approved". It cannot, and the owner should not be told it can: an owner
     // who writes "Manage my SSH keys" has just widened the job to include them.
     expect(PURPOSE_CAVEATS).toContain(
-      "It describes the errand — it can widen what gets approved as easily as narrow it. Each approval still lists the capabilities this Mac will enforce.",
+      "It describes the errand — it can widen what gets approved as easily as narrow it. Each approval still lists the capabilities this Desktop will enforce.",
     );
     expect(PURPOSE_CAVEATS.join(" ")).not.toContain("only narrow");
     expect(PURPOSE_CAVEATS).toContain("Requests that fit may be approved without asking you.");

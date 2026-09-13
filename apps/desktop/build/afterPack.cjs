@@ -100,6 +100,12 @@ function* walk(root) {
 }
 
 module.exports = async function afterPack(context) {
+  // One hook, one gate per OS it packs for. Test contexts carry no platform
+  // and mean macOS, the historical only caller.
+  const platform = context.electronPlatformName ?? "darwin";
+  if (platform === "win32") return afterPackWin(context);
+  if (platform === "linux") return afterPackLinux(context);
+  if (platform !== "darwin") return;
   // Only the final universal app matters; the per-arch temp packs are deleted
   // right after the merge.
   if (context.appOutDir.includes("-temp")) return;
@@ -331,6 +337,193 @@ module.exports = async function afterPack(context) {
       `verified ${verified} Mach-O (Developer ID + hardened runtime + timestamp)`,
   );
 };
+
+/**
+ * The Windows pack gate. No codesigning here (Authenticode is
+ * electron-builder's `win` config, not this hook): what this refuses is a
+ * release that would silently run degraded — the vault's Credential Manager
+ * provider missing (every new vault falls to the key file) or the Job
+ * Object cage missing (command execution fails closed entirely).
+ *
+ * Arch is checked from the PE header, the same "wrong-arch addon lands
+ * broken" rule the Mach-O gate enforces on macOS: node-gyp builds for the
+ * packaging host, so an arm64 pack from an x64 box must fail here rather
+ * than ship an unloadable cage.
+ *
+ * electron-builder passes its internal numeric `Arch` enum to hooks (x64 is
+ * 1, arm64 is 3), while the staged payload directories use their stable text
+ * names.  Do not let the enum leak into a path: a numeric segment would skip
+ * the architecture gate exactly when a real package is being made.
+ */
+async function afterPackWin(context) {
+  const resources = path.join(context.appOutDir, "resources");
+  const unpacked = (...segs) => path.join(resources, "app.asar.unpacked", "node_modules", "@domo", ...segs);
+  const present = (p) => {
+    try {
+      return fs.statSync(p).size > 0;
+    } catch {
+      return false;
+    }
+  };
+  // The PE machine this pack targets, defaulting to the host (a test context
+  // carries none). See the numeric enum note above.
+  const wantArch = ({ 1: "x64", 3: "arm64", x64: "x64", arm64: "arm64" })[context.arch] ??
+    (process.arch === "arm64" ? "arm64" : "x64");
+  const PE_MACHINE = { x64: 0x8664, arm64: 0xaa64 };
+  const peArch = (file) => {
+    try {
+      const fd = fs.openSync(file, "r");
+      try {
+        const dos = Buffer.alloc(64);
+        if (fs.readSync(fd, dos, 0, 64, 0) < 64) return null;
+        const peOffset = dos.readUInt32LE(0x3c);
+        const machine = Buffer.alloc(6);
+        if (fs.readSync(fd, machine, 0, 6, peOffset) < 6) return null;
+        if (machine.readUInt32LE(0) !== 0x00004550) return null; // "PE\0\0"
+        return machine.readUInt16LE(4);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return null;
+    }
+  };
+  for (const [pkg, file] of [
+    ["native-wincred", "wincred.node"],
+    ["native-hello", "winhello.node"],
+    ["native-winsandbox", "winsandbox.node"],
+    ["native-fs", "winfs.node"],
+  ]) {
+    const addon = unpacked(pkg, "build", "Release", file);
+    if (!present(addon)) {
+      throw new Error(
+        `[afterPack] the packed app has no ${pkg} addon — ` +
+          `its build failed (see \`npm rebuild @domo/${pkg}\` on Windows); a release must carry it`,
+      );
+    }
+    const want = PE_MACHINE[wantArch];
+    if (want !== undefined && peArch(addon) !== want) {
+      throw new Error(
+        `[afterPack] the ${pkg} addon is not ${wantArch} (PE machine mismatch) — ` +
+          `rebuild it on a ${wantArch} host; a wrong-arch cage fails to load`,
+      );
+    }
+  }
+  const launcher = unpacked("native-winsandbox", "build", "Release", "winsandbox_launcher.exe");
+  if (!present(launcher)) {
+    throw new Error("[afterPack] the packed app has no AppContainer launcher â€” Windows command execution must fail closed");
+  }
+  const want = PE_MACHINE[wantArch];
+  if (want !== undefined && peArch(launcher) !== want) {
+    throw new Error("[afterPack] the AppContainer launcher has a PE machine mismatch");
+  }
+  const browserRoot = path.join(resources, "browser-runtime", "camoufox", wantArch);
+  const browser = fs.existsSync(browserRoot)
+    ? [...walk(browserRoot)].find((f) => path.basename(f).toLowerCase() === "camoufox.exe")
+    : undefined;
+  if (!browser || !present(browser)) {
+    throw new Error(`[afterPack] the packed app has no Windows Camoufox for ${wantArch}`);
+  }
+  if (want !== undefined && peArch(browser) !== want) {
+    throw new Error(`[afterPack] Windows Camoufox is not ${wantArch} (PE machine mismatch)`);
+  }
+  const { VENDORED } = await import("../../../scripts/vendored-providers.mjs");
+  for (const { command } of VENDORED) {
+    const provider = path.join(resources, "providers", command, wantArch, `${command}.exe`);
+    if (!present(provider)) {
+      throw new Error(`[afterPack] the packed app has no ${command} provider for ${wantArch}`);
+    }
+    if (want !== undefined && peArch(provider) !== want) {
+      throw new Error(`[afterPack] the ${command} provider is not ${wantArch} (PE machine mismatch)`);
+    }
+  }
+}
+
+/**
+ * The Linux pack gate. What this refuses is a release that would silently
+ * run degraded: the bubblewrap launcher or its probe missing means command
+ * execution must fail closed, and a missing Camoufox means browsing would
+ * advertise as unavailable. Arch is checked from the ELF header the same
+ * way Windows checks PE.
+ */
+async function afterPackLinux(context) {
+  const resources = path.join(context.appOutDir, "resources");
+  const unpacked = (...segs) => path.join(resources, "app.asar.unpacked", "node_modules", "@domo", ...segs);
+  const present = (p) => {
+    try {
+      return fs.statSync(p).size > 0;
+    } catch {
+      return false;
+    }
+  };
+  const wantArch = ({ 1: "x64", 3: "arm64", x64: "x64", arm64: "arm64" })[context.arch] ??
+    (process.arch === "arm64" ? "arm64" : "x64");
+  const ELF_MACHINE = { x64: 62, arm64: 183 }; // EM_X86_64, EM_AARCH64
+  const elfArch = (file) => {
+    try {
+      const fd = fs.openSync(file, "r");
+      try {
+        const head = Buffer.alloc(20);
+        if (fs.readSync(fd, head, 0, 20, 0) < 20) return null;
+        if (head.readUInt32BE(0) !== 0x7f454c46) return null; // "\x7fELF"
+        return head.readUInt16LE(18);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return null;
+    }
+  };
+  const addon = unpacked("native-linuxsandbox", "build", "Release", "linuxsandbox.node");
+  if (!present(addon)) {
+    throw new Error(
+      "[afterPack] the packed app has no native-linuxsandbox addon — " +
+        "its build failed (see `npm rebuild @domo/native-linuxsandbox` on Linux); a release must carry it",
+    );
+  }
+  const want = ELF_MACHINE[wantArch];
+  if (want !== undefined && elfArch(addon) !== want) {
+    throw new Error(
+      `[afterPack] the native-linuxsandbox addon is not ${wantArch} (ELF machine mismatch) — ` +
+        `rebuild it on a ${wantArch} host; a wrong-arch cage fails to load`,
+    );
+  }
+  const launcher = unpacked("native-linuxsandbox", "build", "Release", "linuxsandbox_launcher");
+  if (!present(launcher)) {
+    throw new Error("[afterPack] the packed app has no bubblewrap launcher — Linux command execution must fail closed");
+  }
+  if (want !== undefined && elfArch(launcher) !== want) {
+    throw new Error("[afterPack] the bubblewrap launcher has an ELF machine mismatch");
+  }
+  const browserRoot = path.join(resources, "browser-runtime", "camoufox", wantArch);
+  const browser = fs.existsSync(browserRoot)
+    ? [...walk(browserRoot)].find((f) => path.basename(f) === "camoufox-bin")
+    : undefined;
+  if (!browser || !present(browser)) {
+    throw new Error(`[afterPack] the packed app has no Linux Camoufox for ${wantArch}`);
+  }
+  if (want !== undefined && elfArch(browser) !== want) {
+    throw new Error(`[afterPack] Linux Camoufox is not ${wantArch} (ELF machine mismatch)`);
+  }
+  const { VENDORED } = await import("../../../scripts/vendored-providers.mjs");
+  for (const { command } of VENDORED) {
+    const provider = path.join(resources, "providers", command, wantArch, command);
+    if (!present(provider)) {
+      throw new Error(`[afterPack] the packed app has no ${command} provider for ${wantArch}`);
+    }
+    if (want !== undefined && elfArch(provider) !== want) {
+      throw new Error(`[afterPack] the ${command} provider is not ${wantArch} (ELF machine mismatch)`);
+    }
+  }
+  const probe = spawnSync(launcher, ["--probe"], { encoding: "utf8" });
+  if (probe.status !== 0) {
+    throw new Error(
+      `[afterPack] linuxsandbox_launcher --probe failed (status ${probe.status ?? "null"}): ` +
+        `${(probe.stderr || probe.stdout || "").trim() || "no output"} — ` +
+        "install bubblewrap and ensure a systemd user session is available",
+    );
+  }
+}
 
 /** Every Camoufox.app under a dir (the fused universal tree ships one). */
 function findApps(root) {

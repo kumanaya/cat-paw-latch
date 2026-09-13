@@ -23,5 +23,8 @@ export default defineConfig({
     include: ["packages/*/test/**/*.test.ts", "apps/*/test/**/*.test.ts", "e2e/**/*.test.ts"],
     testTimeout: 30_000,
     hookTimeout: 30_000,
+    // Native addons (winsandbox, linuxsandbox, keychain) are not thread-safe
+    // in vitest's default `threads` pool — hangs and aborted workers on CI.
+    pool: "forks",
   },
 });
