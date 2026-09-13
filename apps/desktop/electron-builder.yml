@@ -292,6 +292,7 @@ nsis:
 # fallback. Camoufox ships per-arch under
 # browser-runtime/camoufox/<arch>/camoufox-bin.
 linux:
+  icon: ../../artwork/domo-desktop-icon.png
   category: Development
   # Scoped name `@domo/desktop` is not a legal AppImage executableName (`@`).
   executableName: PlowLatch
