@@ -10,6 +10,13 @@ export interface WindowsLaunchConfig {
   /** Absolute executable path followed by its arguments; never shell text. */
   readonly argv: readonly string[];
   readonly network: boolean;
+  /**
+   * Trusted executable/runtime trees the AppContainer may read and execute.
+   * These are never capability paths and must be supplied by Latch itself.
+   * The launcher grants them read/execute only; all mutable state stays in
+   * `workspace`.
+   */
+  readonly runtimeRoots?: readonly string[];
   /** Complete child environment, not a merge with the Electron process. */
   readonly env: Readonly<Record<string, string>>;
 }
@@ -50,6 +57,7 @@ export function serializeWindowsLaunchConfig(config: WindowsLaunchConfig): Buffe
     `application ${encode(config.argv[0])}`,
   ];
   for (const arg of config.argv.slice(1)) lines.push(`arg ${encode(arg)}`);
+  for (const root of [...(config.runtimeRoots ?? [])].sort()) lines.push(`runtime ${encode(root)}`);
   for (const [key, value] of Object.entries(config.env).sort(([a], [b]) => a.localeCompare(b))) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new WindowsLaunchConfigError("launcher environment key is invalid");
     lines.push(`env ${encode(key)} ${encode(value)}`);

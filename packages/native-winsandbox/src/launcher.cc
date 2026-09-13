@@ -25,6 +25,9 @@ struct LaunchConfig {
   std::string cwd;
   std::string application;
   std::vector<std::string> args;
+  // Trusted, package-owned binaries/modules which the confined process may
+  // read and execute.  Agent capability paths never enter this list.
+  std::vector<std::string> runtime_roots;
   std::map<std::string, std::string> env;
 };
 
@@ -83,12 +86,16 @@ bool ReadConfig(const wchar_t* filename, LaunchConfig* config) {
       if (network || (rest != "0" && rest != "1")) return false;
       config->network = rest == "1";
       network = true;
-    } else if (label == "workspace" || label == "cwd" || label == "application" || label == "arg") {
+    } else if (label == "workspace" || label == "cwd" || label == "application" || label == "arg" || label == "runtime") {
       if (!DecodeBase64(rest, &value) || !SafeValue(value)) return false;
       if (label == "workspace") { if (workspace) return false; config->workspace = value; workspace = true; }
       else if (label == "cwd") { if (cwd) return false; config->cwd = value; cwd = true; }
       else if (label == "application") { if (application) return false; config->application = value; application = true; }
       else config->args.push_back(value);
+      if (label == "runtime") {
+        if (std::find(config->runtime_roots.begin(), config->runtime_roots.end(), value) != config->runtime_roots.end()) return false;
+        config->runtime_roots.push_back(value);
+      }
     } else if (label == "env") {
       const size_t second = rest.find(' ');
       std::string key;
@@ -101,13 +108,13 @@ bool ReadConfig(const wchar_t* filename, LaunchConfig* config) {
   return network && workspace && cwd && application;
 }
 
-bool AddWorkspaceAce(const std::wstring& workspace, PSID app_container_sid) {
+bool AddAppContainerAce(const std::wstring& target, PSID app_container_sid, DWORD permissions) {
   PACL old_acl = nullptr;
   PSECURITY_DESCRIPTOR descriptor = nullptr;
-  if (GetNamedSecurityInfoW(const_cast<LPWSTR>(workspace.c_str()), SE_FILE_OBJECT,
+  if (GetNamedSecurityInfoW(const_cast<LPWSTR>(target.c_str()), SE_FILE_OBJECT,
                             DACL_SECURITY_INFORMATION, nullptr, nullptr, &old_acl, nullptr, &descriptor) != ERROR_SUCCESS) return false;
   EXPLICIT_ACCESSW grant{};
-  grant.grfAccessPermissions = GENERIC_ALL;
+  grant.grfAccessPermissions = permissions;
   grant.grfAccessMode = GRANT_ACCESS;
   grant.grfInheritance = SUB_CONTAINERS_AND_OBJECTS_INHERIT;
   grant.Trustee.TrusteeForm = TRUSTEE_IS_SID;
@@ -116,12 +123,20 @@ bool AddWorkspaceAce(const std::wstring& workspace, PSID app_container_sid) {
   PACL merged = nullptr;
   const DWORD merged_status = SetEntriesInAclW(1, &grant, old_acl, &merged);
   const DWORD result = merged_status == ERROR_SUCCESS
-      ? SetNamedSecurityInfoW(const_cast<LPWSTR>(workspace.c_str()), SE_FILE_OBJECT,
+      ? SetNamedSecurityInfoW(const_cast<LPWSTR>(target.c_str()), SE_FILE_OBJECT,
                               DACL_SECURITY_INFORMATION, nullptr, nullptr, merged, nullptr)
       : merged_status;
   if (merged != nullptr) LocalFree(merged);
   LocalFree(descriptor);
   return result == ERROR_SUCCESS;
+}
+
+bool AddWorkspaceAce(const std::wstring& workspace, PSID app_container_sid) {
+  return AddAppContainerAce(workspace, app_container_sid, GENERIC_ALL);
+}
+
+bool AddRuntimeAce(const std::wstring& runtime, PSID app_container_sid) {
+  return AddAppContainerAce(runtime, app_container_sid, GENERIC_READ | GENERIC_EXECUTE);
 }
 
 bool CreateThenDeleteProfile() {
@@ -206,7 +221,12 @@ int LaunchAppContainer(const LaunchConfig& config) {
   PSID app_sid = nullptr;
   if (FAILED(CreateAppContainerProfile(profile_name.c_str(), profile_name.c_str(), L"Plow Latch command", nullptr, 0, &app_sid))) return 71;
   PSID network_sid = nullptr;
-  if ((config.network && !InternetCapability(&network_sid)) || !AddWorkspaceAce(workspace, app_sid)) {
+  bool runtime_granted = true;
+  for (const std::string& root : config.runtime_roots) {
+    const std::wstring runtime = Wide(root);
+    if (runtime.empty() || !AddRuntimeAce(runtime, app_sid)) { runtime_granted = false; break; }
+  }
+  if ((config.network && !InternetCapability(&network_sid)) || !AddWorkspaceAce(workspace, app_sid) || !runtime_granted) {
     if (network_sid != nullptr) LocalFree(network_sid);
     FreeSid(app_sid);
     DeleteAppContainerProfile(profile_name.c_str());
