@@ -353,7 +353,7 @@ describe("the Windows pack gate", () => {
     return header;
   };
   const hostMachine = process.arch === "arm64" ? 0xaa64 : 0x8664;
-  const packWinAddons = () => {
+  const packWinAddons = (machine = hostMachine) => {
     for (const [pkg, file] of [
       ["native-wincred", "wincred.node"],
       ["native-hello", "winhello.node"],
@@ -361,22 +361,21 @@ describe("the Windows pack gate", () => {
       ["native-fs", "winfs.node"],
     ] as const) {
       fs.mkdirSync(path.dirname(winAddon(pkg, file)), { recursive: true });
-      fs.writeFileSync(winAddon(pkg, file), winPeHeader(hostMachine));
+      fs.writeFileSync(winAddon(pkg, file), winPeHeader(machine));
     }
-    fs.writeFileSync(winLauncher(), winPeHeader(hostMachine));
+    fs.writeFileSync(winLauncher(), winPeHeader(machine));
   };
-  const packWinBrowserAndProviders = () => {
-    const arch = process.arch === "arm64" ? "arm64" : "x64";
+  const packWinBrowserAndProviders = (arch = process.arch === "arm64" ? "arm64" : "x64", machine = hostMachine) => {
     const browser = path.join(
       winResources(), "browser-runtime", "camoufox", arch,
       "browsers", "official", "fixture", "camoufox.exe",
     );
     fs.mkdirSync(path.dirname(browser), { recursive: true });
-    fs.writeFileSync(browser, winPeHeader(hostMachine));
+    fs.writeFileSync(browser, winPeHeader(machine));
     for (const { command } of PROVIDERS) {
       const provider = path.join(winResources(), "providers", command, arch, `${command}.exe`);
       fs.mkdirSync(path.dirname(provider), { recursive: true });
-      fs.writeFileSync(provider, winPeHeader(hostMachine));
+      fs.writeFileSync(provider, winPeHeader(machine));
     }
   };
 
@@ -409,8 +408,8 @@ describe("the Windows pack gate", () => {
   });
 
   it("accepts electron-builder's numeric x64 architecture enum", async () => {
-    packWinAddons();
-    packWinBrowserAndProviders();
+    packWinAddons(0x8664);
+    packWinBrowserAndProviders("x64", 0x8664);
     await expect(afterPack(winContextFor(winDir, 1))).resolves.toBeUndefined();
   });
 

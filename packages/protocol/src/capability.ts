@@ -246,7 +246,12 @@ export async function canonicalizeAsync(path: string): Promise<string> {
       const candidate = root + prefix.join("\\");
       try {
         const resolved = await fsp.realpath(candidate);
-        return remainder.length === 0 ? resolved : resolved + "\\" + remainder.reverse().join("\\");
+        // Node's async Win32 realpath keeps the long spelling while the sync
+        // implementation returns the physical 8.3 spelling on some volumes.
+        // Canonical paths are signature-critical, so normalize the existing
+        // prefix through the sync primitive before appending lexical leaves.
+        const physical = fs.realpathSync(resolved);
+        return remainder.length === 0 ? physical : physical + "\\" + remainder.reverse().join("\\");
       } catch {
         // Not existing (yet) — walk up.
       }

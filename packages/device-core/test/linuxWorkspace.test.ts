@@ -15,7 +15,7 @@ function root(): string {
   return dir;
 }
 
-describe("LinuxWorkspace", () => {
+describe.skipIf(process.platform !== "linux")("LinuxWorkspace", () => {
   it("stages only approved roots, rewrites paths, and copies regular output back", () => {
     const tmp = root();
     const input = path.join(tmp, "input");

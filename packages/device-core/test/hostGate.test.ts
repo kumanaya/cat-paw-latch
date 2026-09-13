@@ -1065,7 +1065,7 @@ describe("Windows gates — the CFA/ACL/system table and its verdicts", () => {
     expect(results.every((r) => r.outcome === "ENOENT")).toBe(true);
   });
 
-  it("runs the battery on Windows paths without touching the disk it was not given", async () => {
+  it.skipIf(process.platform !== "win32")("runs the battery on Windows paths without touching the disk it was not given", async () => {
     const dir = tempDir();
     const file = path.join(dir, "a.txt");
     fs.writeFileSync(file, "x");

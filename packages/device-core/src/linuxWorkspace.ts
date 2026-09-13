@@ -222,7 +222,10 @@ export class LinuxWorkspace {
   }
 
   static create(args: { scratch: string; readPaths: readonly string[]; writePaths: readonly string[] }): LinuxWorkspace {
-    const root = path.join(args.scratch, "bwrap-workspace");
+    // `/var` is a symlink to `/private/var` on macOS. Resolve the scratch
+    // root before walking it so the anti-symlink guard protects user input,
+    // not an OS-owned compatibility alias.
+    const root = path.join(canonicalize(args.scratch), "bwrap-workspace");
     fs.mkdirSync(root, { recursive: true });
     const interpRoot = path.join(root, ".interp");
     fs.mkdirSync(interpRoot, { recursive: true });

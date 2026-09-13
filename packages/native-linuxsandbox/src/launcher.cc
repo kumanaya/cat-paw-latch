@@ -249,6 +249,14 @@ bool ProbeOnce() {
   push("--");
   push(bwrap);
   push("--die-with-parent");
+  // Create a user namespace before unsharing networking. Hosted Linux runners
+  // otherwise lack CAP_NET_ADMIN for bwrap's loopback setup and reject the
+  // same cage a regular desktop user is permitted to create.
+  push("--unshare-user");
+  push("--uid");
+  push("0");
+  push("--gid");
+  push("0");
   push("--unshare-pid");
   push("--unshare-net");
   // Probe binds ONLY the true binary (not /usr/bin), proving libs resolve
@@ -301,6 +309,11 @@ int LaunchBwrap(const LaunchConfig& config) {
   push("--");
   push(bwrap);
   push("--die-with-parent");
+  push("--unshare-user");
+  push("--uid");
+  push("0");
+  push("--gid");
+  push("0");
   push("--unshare-pid");
   if (!config.network) push("--unshare-net");
   push("--bind");
