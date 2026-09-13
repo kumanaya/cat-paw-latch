@@ -371,7 +371,14 @@ first place to look before calling a relay-leg gap untestable.
 ```
 npm run --workspace @domo/desktop build   # tsc + copy renderer assets
 npm run --workspace @domo/desktop start   # launch Electron
+npm run dev                               # build, launch, and reload on edits
 ```
+
+The development command watches `apps/desktop/src`. Changes to the plain
+HTML/CSS/JS renderer assets reload the open windows; changes to TypeScript or
+the CommonJS preload restart Electron after a successful build. The production
+`build` and `start` commands are unchanged. Stop all three development watchers
+with Ctrl+C.
 
 The Electron main process **is** the device agent (runs `@domo/device-core`
 in-process). The renderer is sandboxed (`contextIsolation` on, `nodeIntegration`
