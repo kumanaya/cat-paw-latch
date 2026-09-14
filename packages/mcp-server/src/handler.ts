@@ -20,7 +20,7 @@ import {
   McpServer,
 } from "@modelcontextprotocol/server";
 import { JSONValue } from "@domo/protocol";
-import { DeviceAgent, LIVE_WEB_ROUTING } from "@domo/device-core";
+import { DeviceAgent, INTERACTIVE_VERIFICATION, LIVE_WEB_ROUTING } from "@domo/device-core";
 import { BlockedError, CALL_BUDGET_MS, DeferredResults, DeniedError, DeviceError, Progress } from "./deferred.js";
 import { JobOwners } from "./jobs.js";
 import {
@@ -60,18 +60,19 @@ export const PROTOCOL_REVISION = "2026-07-28";
  * prose was wrong in exactly the states that matter. An instructions block that
  * overstates its guarantee is worse than one that says less.
  *
-  * `LIVE_WEB_ROUTING` and the host tooling list are interpolated rather than written
-  * here; each has other consumers, and the rules about what may appear in them
-  * (including why `osascript` may not) live on those constants.
-  *
-  * This is guidance to a model, never a capability claim. Nothing here widens
-  * what a tool may do; the enforceable bound is the capability set the human
-  * approves.
-  *
-  * Two full texts, one per OS — the mechanisms genuinely differ (seatbelt vs
-  * Job Object, TCC dialogs vs Controlled Folder Access, osascript vs none),
-  * so the block is written per host rather than interpolated word by word.
-  * `SERVER_INSTRUCTIONS` is this host's.
+ * `LIVE_WEB_ROUTING`, `INTERACTIVE_VERIFICATION`, and the host tooling list are
+ * interpolated rather than written here; each has other consumers, and the
+ * rules about what may appear in them (including why `osascript` may not) live
+ * on those constants.
+ *
+ * This is guidance to a model, never a capability claim. Nothing here widens
+ * what a tool may do; the enforceable bound is the capability set the human
+ * approves.
+ *
+ * Two full texts, one per OS — the mechanisms genuinely differ (seatbelt vs
+ * Job Object, TCC dialogs vs Controlled Folder Access, osascript vs none),
+ * so the block is written per host rather than interpolated word by word.
+ * `SERVER_INSTRUCTIONS` is this host's.
  */
 const MACOS_SERVER_INSTRUCTIONS = `These tools are Latch. They operate the user's own Mac — their real files, their real applications, their real shell, their speakers, and a real browser running there. Your own file, shell and web tools act on your workspace: a different machine, on a different network address, that the user cannot see.
 
@@ -85,7 +86,9 @@ Call plow_list_skills early. This Mac publishes skills — how-to guides for wha
 
 Use your own tools for your own work: code you are writing, scratch files, and anything you do not need their machine for.
 
-The user approves the operations these tools perform on their machine — reading and writing files, running commands, scripting their apps, and browsing. A call may return a pending handle instead of a result; the handle's own 'reason' and 'note' say what it is waiting for. Tell the user, then poll plow_get_result. Do not re-issue the original call; that starts a second request.
+${INTERACTIVE_VERIFICATION}
+
+The user approves the operations these tools perform on their machine — reading and writing files, running commands, scripting their apps, and browsing. A call may return a pending handle instead of a result; the handle's own 'reason' and 'note' say what it is waiting for. Tell the user, then poll plow_get_result. Do not re-issue the original call; that starts a second request. A result with status 'completed' is the opposite: it finished, and whatever approval it needed has already happened — nothing is waiting on the user. Never tell the user a request is pending unless the result's status is 'pending'.
 
 A call can also come back with status 'blocked': the user approved it, and then their Mac itself refused — a macOS privacy permission the app has not been granted, a permission dialog waiting on the Mac's screen with nobody there to click it, or a path outside the bound that was approved. That is not the user saying no, and it is not the operation breaking. Read the 'diagnosis'. When its 'confidence' is 'confirmed', tell the user its 'owner_action' sentence word for word and stop: do not retry, and do not reword the goal to get a different answer. The one exception is a diagnosis whose 'retry' names a tool: that tool is the one move left, and only for what did not already happen. When it is 'likely' or 'unknown', say what this Mac found — 'evidence', 'ruled_out', and the 'probes' facts — and let the user decide. A command that comes back 'running' with a 'diagnosis' is parked on a permission dialog: leave it running, tell the user, and poll plow_get_output; the user answering the dialog lets it finish.`;
 
@@ -320,8 +323,8 @@ export function createDomoMcpServer(
               const result = spec.deferrable
                 ? await deferred.run(agent.agentId, body)
                 : await body({ decided: () => {} });
-              // Most results are one text block; a screenshot expands into an
-              // image + text block via `__mcpContent`.
+              // Most results are one text block; a screenshot or a binary file
+              // expands into its prebuilt blocks via `__mcpContent`.
               return { content: toolBlocks(result) };
             } catch (error: unknown) {
               const message = error instanceof Error ? error.message : String(error);
