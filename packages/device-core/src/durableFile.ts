@@ -13,7 +13,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { lockdownSecretFile } from "../fileLockdown.js";
+import { lockdownSecretFile } from "./fileLockdown.js";
 
 export function writeFileDurable(file: string, data: Buffer | string, mode = 0o600): void {
   const tmp = `${file}.tmp-${process.pid}`;
