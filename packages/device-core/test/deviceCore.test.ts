@@ -163,7 +163,10 @@ describe("PolicyEngine", () => {
     expect(second.source).toBe(process.platform === "win32" || process.platform === "linux" ? "prompt" : "rule");
   });
 
-  it("announces every change to the rule set, and only those", async () => {
+  // Sensitive capabilities never persist an always-allow rule on Windows or
+  // Linux (ruleEligibleCapabilities), so the standing-rule scenarios below are
+  // macOS policy; the platform tests own the no-store behavior there.
+  it.skipIf(process.platform === "win32" || process.platform === "linux")("announces every change to the rule set, and only those", async () => {
     const engine = new PolicyEngine(path.join(tempDir(), "rules.json"));
     const caps: Capability[] = [{ kind: "process.exec", argv: ["ls"], cwd: "/tmp" }];
     let changes = 0;
@@ -186,7 +189,7 @@ describe("PolicyEngine", () => {
     expect(engine.allRules()).toHaveLength(0);
   });
 
-  it("a rule stored early is stored once, and stays revoked if revoked meanwhile", async () => {
+  it.skipIf(process.platform === "win32" || process.platform === "linux")("a rule stored early is stored once, and stays revoked if revoked meanwhile", async () => {
     const engine = new PolicyEngine(path.join(tempDir(), "rules.json"));
     const caps: Capability[] = [{ kind: "process.exec", argv: ["ls"], cwd: "/tmp" }];
     let changes = 0;
@@ -226,7 +229,7 @@ describe("PolicyEngine", () => {
     expect(engine.allRules()).toHaveLength(1);
   });
 
-  it("a rule the log cannot record does not exist: the store is undone and the error surfaces", async () => {
+  it.skipIf(process.platform === "win32" || process.platform === "linux")("a rule the log cannot record does not exist: the store is undone and the error surfaces", async () => {
     const file = path.join(tempDir(), "rules.json");
     const engine = new PolicyEngine(file);
     const caps: Capability[] = [{ kind: "process.exec", argv: ["ls"], cwd: "/tmp" }];
@@ -255,7 +258,7 @@ describe("PolicyEngine", () => {
     expect(changes).toBe(1);
   });
 
-  it("a rule that could not reach disk does not exist in memory either", async () => {
+  it.skipIf(process.platform === "win32" || process.platform === "linux")("a rule that could not reach disk does not exist in memory either", async () => {
     // A rules file whose directory cannot be made: a file is in its way.
     const blocker = path.join(tempDir(), "device");
     fs.writeFileSync(blocker, "");
@@ -281,7 +284,7 @@ describe("PolicyEngine", () => {
     }
   });
 
-  it("the renderer's listener throwing takes nothing with it", async () => {
+  it.skipIf(process.platform === "win32" || process.platform === "linux")("the renderer's listener throwing takes nothing with it", async () => {
     const engine = new PolicyEngine(path.join(tempDir(), "rules.json"));
     const caps: Capability[] = [{ kind: "process.exec", argv: ["ls"], cwd: "/tmp" }];
     // Mid-teardown: it fires after the write and its record, and must fail
@@ -304,7 +307,7 @@ describe("PolicyEngine", () => {
     }
   });
 
-  it("names the rule's making and its revoking as events, with the rule", async () => {
+  it.skipIf(process.platform === "win32" || process.platform === "linux")("names the rule's making and its revoking as events, with the rule", async () => {
     const engine = new PolicyEngine(path.join(tempDir(), "rules.json"));
     const seen: [string, unknown][] = [];
     engine.events.on("stored", (e) => seen.push(["stored", e]));
