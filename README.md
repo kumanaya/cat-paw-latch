@@ -98,7 +98,8 @@ signed installer. A checkout is the whole install.
 - A native toolchain, so the platform addons compile:
   - **macOS** — Xcode Command Line Tools (`xcode-select --install`).
   - **Windows** — Visual Studio Build Tools, with the Desktop C++ workload.
-  - **Linux** — a C++ toolchain, `bubblewrap`, and `python3`.
+  - **Linux / Omarchy** — a C++ toolchain, `bubblewrap`, and `python3`.
+    On Arch/Omarchy: `sudo pacman -S --needed base-devel just git python bubblewrap fuse2`.
 - **Python 3** (the browser runtime is unpacked with it).
 
 ### Build and launch
@@ -106,9 +107,18 @@ signed installer. A checkout is the whole install.
 ```sh
 git clone https://github.com/kumanaya/cat-paw-latch.git
 cd cat-paw-latch
-just install      # install workspace dependencies (first time)
+just install      # npm install, then download Electron if npm skipped it
 just app          # build, then launch the desktop app
 ```
+
+`just install` is the first-run floor: npm 11 can skip Electron's postinstall,
+and without the binary `just app` never opens. On Linux it also rebuilds the
+bubblewrap addon if it is missing, and refuses to proceed without `bwrap` on
+PATH. From-source state lives under Electron's appData — `~/.config/Plow-Latch-<branch>`
+on Linux, `%APPDATA%\Plow-Latch-<branch>` on Windows,
+`~/Library/Application Support/Plow-Latch-<branch>` on macOS. A packaged
+AppImage uses the unsuffixed `~/.config/Plow-Latch` home instead; build one
+with `just package-linux` (needs FUSE 2 to run).
 
 The app opens on its first-run flow. Sign in, keep it running, and connect it to
 an agent — the app dials out to Plow, so nothing needs to listen on your

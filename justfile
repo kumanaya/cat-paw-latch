@@ -13,12 +13,20 @@ root    := justfile_directory()
 # dir. App state is keyed on the branch name below.
 worktree := `sh scripts/worktree-name.sh`
 # The normalized branch name of THIS checkout — main or worktree. Every
-# from-source run keeps its state in ~/Library/Application Support under a
+# from-source run keeps its state under Electron's appData (DESIGN.md §9) in a
 # branch-suffixed folder ("Plow-Latch-<branch>"), so checkouts run side by side
 # and none of them ever touches the packaged install's unsuffixed "Plow-Latch"
-# home. Nothing lands in dotfolders at the top of $HOME.
+# home. `just app` always passes DOMO_HOME, so this path MUST match the OS:
+# a Mac Application Support root on Linux writes next to ~/Library instead of
+# ~/.config, and the first-run looks like it never installed.
 branch := `sh scripts/worktree-name.sh --branch`
-appsupport := env_var('HOME') / "Library" / "Application Support"
+appsupport := if os() == "linux" {
+  env_var("HOME") / ".config"
+} else if os() == "windows" {
+  env_var_or_default("APPDATA", env_var("USERPROFILE") / "AppData" / "Roaming")
+} else {
+  env_var("HOME") / "Library" / "Application Support"
+}
 nethome := appsupport / ("Plow-Latch-" + branch)
 # Where `just app` keeps state when DOMO_API_BASE_URL points somewhere other
 # than production. A credential is only valid against the environment that
@@ -47,9 +55,12 @@ _default:
 # Setup — build & test
 # ---------------------------------------------------------------------------
 
-# Install workspace dependencies.
+# Install workspace dependencies and finish what npm may skip: the Electron
+# binary (npm 11 allowScripts / a partial postinstall) and the host sandbox
+# addon. Without this, `just app` on a fresh Linux checkout has no Electron.
 install:
     npm install
+    node scripts/ensure-runtime.mjs
 
 # Build every package + app (tsc), copy the desktop renderer assets, and
 # compile the native helper (skipped with a warning if there's no Swift
@@ -239,7 +250,8 @@ _package profile flags: build
 # Version and build are read back from the packaged app so there is exactly
 # one clock: the one `package` stamped. s3_profile "" uses ambient AWS
 # credentials (CI's OIDC role).
-release profile="domo-notary" s3_profile="plow": _main-only    @just package "{{profile}}"; \
+release profile="domo-notary" s3_profile="plow": _main-only
+    @just package "{{profile}}"; \
     plist="{{root}}/apps/desktop/release/mac-universal/Plow Latch.app/Contents/Info.plist"; \
     version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"; \
     build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"; \
@@ -322,6 +334,7 @@ serve-updates port="8043":
 # (native/launch-disclaimed.swift says why that matters). Without the Swift
 # toolchain it falls back to a plain launch, attributed to the terminal.
 app: build
+    node scripts/ensure-runtime.mjs
     @if [ -x "{{root}}/apps/desktop/dist/native/launch-disclaimed" ]; then \
       DOMO_HOME="{{apphome}}" DOMO_BRANCH="{{branch}}" "{{root}}/apps/desktop/dist/native/launch-disclaimed" \
         "$(node -p 'require("electron")')" "{{root}}/apps/desktop"; \
