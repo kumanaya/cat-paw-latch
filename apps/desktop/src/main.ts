@@ -34,7 +34,7 @@ import {
   nodeProbes,
   PERMISSION_LABELS,
   PolicyDelegate,
-  probeFullDiskAccess,
+  probeHostFullDiskAccess,
   requestFolderAccess,
   importLogins,
   importPreview,
@@ -62,7 +62,7 @@ import { AuditIndex, AuditQuery } from "./auditIndex.js";
 import { appBundleName, appBundlePath, decodeTileImage } from "./permissionFlow.js";
 import { FdaGrantFlow, GrantTarget } from "./fdaGrantFlow.js";
 import { AUTOMATION_APPS, automationApp, osascriptRunner, reconcile, requestAutomation } from "./automation.js";
-import { capabilitiesView, CapabilitiesView, isGroup, paneFor, PERMISSION_TITLES } from "./capabilitiesModel.js";
+import { capabilitiesView, CapabilitiesView, fdaGrantKind, isGroup, paneFor, PERMISSION_TITLES, WINDOWS_DEFENDER_SETTINGS } from "./capabilitiesModel.js";
 import { launchAtLoginState, setLaunchAtLogin } from "./loginItem.js";
 import { createPlatformLoginItems } from "./loginItemPlatform.js";
 import { windowsRunSeam } from "./windowsRunKey.js";
@@ -799,6 +799,7 @@ const EXTERNAL_URLS: Readonly<Record<string, string>> = Object.freeze({
   discord: "https://watchmepivot.com/discord",
   website: "https://watchmepivot.com/",
   fullDiskSettings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+  windowsDefender: WINDOWS_DEFENDER_SETTINGS,
 });
 
 ipcMain.handle("external:open", async (_e, key: string) => {
@@ -1337,7 +1338,9 @@ ipcMain.handle("capabilities:get", async () => {
   const inventory = device ? await device.hostInventory() : null;
   const view = await capabilitiesNow(inventory);
   return {
-    fullDiskAccess: inventory ? inventory.full_disk_access.granted : await probeFullDiskAccess(),
+    fullDiskAccess: inventory
+      ? inventory.full_disk_access.granted
+      : await probeHostFullDiskAccess(os.homedir()),
     inventory,
     view,
     icons: await capabilityIcons(view),
@@ -1450,6 +1453,7 @@ async function capabilitiesNow(inventory?: HostInventory | null): Promise<Capabi
     folders: settings.folderConsent ?? {},
     foldersAt: settings.folderConsentAt ?? {},
     canRequestInProcess: device?.hostProbes.canRequestInProcess() ?? false,
+    platform: process.platform,
   });
 }
 
@@ -1467,7 +1471,7 @@ function grantTargetFor(key: string): GrantTarget | null {
   const label = app ? `Automation for ${app.name}` : (PERMISSION_TITLES[key] ?? key);
   const probes = device?.hostProbes ?? null;
   const probe = async (): Promise<boolean> => {
-    if (key === "full_disk_access") return probeFullDiskAccess();
+    if (key === "full_disk_access") return probeHostFullDiskAccess(os.homedir());
     if (!probes) return false;
     if (app) return (await probes.automationStatus(app.bundleId)) === "granted";
     if (key === "accessibility" || key === "contacts" || key === "calendars" || key === "screen_recording") {
@@ -1494,6 +1498,14 @@ ipcMain.handle("capabilities:act", async (_e, rawKey: unknown) => {
   switch (row.action) {
     case "grant":
     case "open": {
+      // Apple System Settings URLs and the drag panel are macOS-only. Off
+      // darwin the FDA row either opens Windows Security or just re-probes.
+      if (process.platform !== "darwin") {
+        if (key === "full_disk_access" && fdaGrantKind(process.platform) === "windows-security") {
+          await shell.openExternal(EXTERNAL_URLS.windowsDefender!);
+        }
+        break;
+      }
       const pane = paneFor(key);
       // A pane the panel can do nothing beside (Screen Recording, Automation) is just
       // opened; the owner finds the switch themselves.
@@ -1517,7 +1529,7 @@ ipcMain.handle("capabilities:act", async (_e, rawKey: unknown) => {
         const status = await device.hostProbes.requestPermission(key as RequestablePermission);
         // Refused before, or no usage string in this build: macOS answered
         // without asking, and only the pane can change that now.
-        if (status === "denied") {
+        if (status === "denied" && process.platform === "darwin") {
           const target = grantTargetFor(key);
           if (target) await fdaGrantFlow.start(target);
         }
@@ -1541,7 +1553,7 @@ ipcMain.handle("capabilities:act", async (_e, rawKey: unknown) => {
         }
         // macOS refused without asking — a Don't Allow it remembers — and
         // only the pane can undo that: float the panel beside it.
-        if (result?.status === "denied") {
+        if (result?.status === "denied" && process.platform === "darwin") {
           const target = grantTargetFor(key);
           if (target) await fdaGrantFlow.start(target);
         }
@@ -1780,7 +1792,7 @@ const fdaGrantFlow = new FdaGrantFlow({
     label: "Full Disk Access",
     pane: EXTERNAL_URLS.fullDiskSettings,
     acceptsDrop: true,
-    probe: () => probeFullDiskAccess(),
+    probe: () => probeHostFullDiskAccess(os.homedir()),
   },
   openSettings: (pane) => shell.openExternal(pane),
 });

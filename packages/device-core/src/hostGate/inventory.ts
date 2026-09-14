@@ -15,8 +15,8 @@
  */
 import { isoNow } from "@domo/protocol";
 import { fullDiskProbePaths, probeFullDiskAccessDetail, FullDiskProbeResult } from "./fullDiskAccess.js";
+import { probeHostFullDiskAccessDetail } from "./hostFda.js";
 import { AutomationStatus, HostProbes, PermissionStatus, QueryablePermission } from "./probes.js";
-import { probeWindowsFolderAccessDetail } from "./windows.js";
 
 export interface AutomationApp {
   name: string;
@@ -104,21 +104,24 @@ export interface InventoryDeps {
   automationTargets?: readonly string[];
   /** Override for tests; the real list is `fullDiskProbePaths(ownerHome)`. */
   fullDiskPaths?: string[];
+  /** Override for tests so a Linux/Windows probe can be pinned on any host. */
+  platform?: NodeJS.Platform;
 }
 
 /** Take the snapshot. Every row is independent, so they run together. */
 export async function hostInventory(deps: InventoryDeps): Promise<HostInventory> {
   const targets = deps.automationTargets ?? AUTOMATION_TARGETS;
-  const onWindows = process.platform === "win32";
-  // On Windows there is no Full Disk Access switch; the row answers the
-  // closest honest question — whether the guarded user folders list —
-  // and the diagnosis (not this row) owns write gates like CFA. An
+  const platform = deps.platform ?? process.platform;
+  // On Windows and Linux there is no Full Disk Access switch; the row
+  // answers the closest honest question — whether the guarded user folders
+  // list — and the diagnosis (not this row) owns write gates like CFA. An
   // explicit path override (tests, diagnostics) still runs as given.
-  const useWindowsFolders = onWindows && deps.fullDiskPaths === undefined;
+  const useFolderFda =
+    (platform === "win32" || platform === "linux") && deps.fullDiskPaths === undefined;
   const fdaPaths = deps.fullDiskPaths ?? fullDiskProbePaths(deps.ownerHome);
   const [fda, automation, permissions, sandbox] = await Promise.all([
-    useWindowsFolders
-      ? probeWindowsFolderAccessDetail(deps.ownerHome)
+    useFolderFda
+      ? probeHostFullDiskAccessDetail(deps.ownerHome, platform)
       : probeFullDiskAccessDetail(fdaPaths),
     Promise.all(
       targets.map(async (target) => ({ target, status: await deps.probes.automationStatus(target) })),
@@ -136,8 +139,8 @@ export async function hostInventory(deps: InventoryDeps): Promise<HostInventory>
   // missing, and a missing file proves nothing about attribution. Windows
   // has no responsible-process inheritance to check, so the row stays
   // not_applicable on the folder-probe path.
-  const opened = useWindowsFolders ? null : (fda.results.find((r) => r.outcome === "ok")?.path ?? null);
-  const attribution = await attributionCheck(deps.runSandboxed, fda.granted && !useWindowsFolders ? opened : null);
+  const opened = useFolderFda ? null : (fda.results.find((r) => r.outcome === "ok")?.path ?? null);
+  const attribution = await attributionCheck(deps.runSandboxed, fda.granted && !useFolderFda ? opened : null);
   return {
     checked_at: isoNow(),
     full_disk_access: { granted: fda.granted, probes: fda.results },

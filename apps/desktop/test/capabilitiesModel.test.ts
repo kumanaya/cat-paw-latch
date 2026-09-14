@@ -15,8 +15,13 @@ import {
   CapabilityGroup,
   CapabilityRow,
   isGroup,
+  fdaAction,
+  fdaDetail,
+  fdaGrantKind,
+  LABEL_CHECK_ACCESS,
   LABEL_IN_SETTINGS,
   LABEL_VIA_PROMPT,
+  LABEL_WINDOWS_SECURITY,
   paneFor,
   SETTINGS_PANES,
 } from "../src/capabilitiesModel.js";
@@ -429,6 +434,8 @@ describe("the two button labels", () => {
     expect(actionLabel("grant")).toBe(LABEL_IN_SETTINGS);
     expect(actionLabel("open")).toBe(LABEL_IN_SETTINGS);
     expect(actionLabel("none")).toBeNull();
+    expect(actionLabel("open", { platform: "win32", key: "full_disk_access" })).toBe(LABEL_WINDOWS_SECURITY);
+    expect(actionLabel("request", { platform: "linux", key: "full_disk_access" })).toBe(LABEL_CHECK_ACCESS);
     // Every off row wears one of the two, never a third.
     const labels = new Set(
       capabilitiesView(input({ events: block("i1", "2026-09-02T02:00:00Z", "screen_recording") }))
@@ -483,5 +490,27 @@ describe("dismissing the banner", () => {
     expect(again.banner).toEqual({ switches: 1, count: 1, summary: [{ title: "Full Disk Access", count: 1 }], last: "2026-09-02T06:00:00Z", since: "2026-09-02T05:00:00Z" });
     expect(again.badge).toBe(1);
     expect(again.sections[0]!.rows.find((r) => r.key === "full_disk_access")).toMatchObject({ count: 1, needsAttention: true });
+  });
+});
+
+describe("Windows and Linux capabilities", () => {
+  it("hides Apple-only rows and uses platform FDA copy", () => {
+    for (const platform of ["win32", "linux"] as const) {
+      const view = capabilitiesView(input({ platform }));
+      const keys = view.sections[0]!.rows.map((r) => r.key);
+      expect(keys).toEqual(["full_disk_access", "files_desktop", "files_documents", "files_downloads"]);
+      expect(view.sections[0]!.items.filter((i) => isGroup(i)).map((i) => (i as CapabilityGroup).key)).toEqual(["folders"]);
+      expect(view.sections[0]!.rows.find((r) => r.key === "full_disk_access")).toMatchObject({
+        detail: fdaDetail(platform),
+        action: fdaAction(platform),
+        actionLabel: platform === "win32" ? LABEL_WINDOWS_SECURITY : LABEL_CHECK_ACCESS,
+      });
+    }
+  });
+
+  it("capabilities:act never starts the Apple grant flow off darwin", () => {
+    expect(fdaGrantKind("darwin")).toBe("apple-flow");
+    expect(fdaGrantKind("win32")).toBe("windows-security");
+    expect(fdaGrantKind("linux")).toBe("reprobe");
   });
 });

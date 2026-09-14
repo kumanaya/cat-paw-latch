@@ -37,6 +37,9 @@ import {
   windowsSystemProtected,
   linuxGuardedPrefix,
   linuxSystemProtected,
+  linuxUserFolderPaths,
+  probeLinuxFolderAccess,
+  probeLinuxFolderAccessDetail,
 } from "@domo/device-core";
 
 const cleanups: (() => void)[] = [];
@@ -1138,5 +1141,29 @@ describe("Linux gates — bwrap kind and approval wording", () => {
     expect(d.cause).toBe("sip_protected");
     expect(d.owner_action).toMatch(/Linux system locations/);
     expect(d.owner_action).not.toMatch(/Controlled folder access|System Integrity Protection/);
+  });
+
+  it("Linux folder probe lists XDG dirs and skips ENOENT for granted", async () => {
+    const home = tempDir();
+    fs.mkdirSync(path.join(home, "Desktop"));
+    fs.mkdirSync(path.join(home, "Downloads"));
+    const detail = await probeLinuxFolderAccessDetail(home);
+    expect(detail.results).toHaveLength(3);
+    expect(detail.results.find((r) => r.path.endsWith("Desktop"))?.outcome).toBe("ok");
+    expect(detail.results.find((r) => r.path.endsWith("Documents"))?.outcome).toBe("ENOENT");
+    expect(detail.granted).toBe(true);
+
+    fs.mkdirSync(path.join(home, ".config"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".config/user-dirs.dirs"),
+      'XDG_DESKTOP_DIR="$HOME/Skrivbord"\nXDG_DOCUMENTS_DIR="$HOME/Documents"\nXDG_DOWNLOAD_DIR="$HOME/Downloads"\n',
+    );
+    expect(linuxUserFolderPaths(home)).toEqual([
+      path.join(home, "Skrivbord"),
+      path.join(home, "Documents"),
+      path.join(home, "Downloads"),
+    ]);
+    const redirected = await probeLinuxFolderAccess(home);
+    expect(redirected.find((r) => r.path.endsWith("Skrivbord"))?.outcome).toBe("ENOENT");
   });
 });

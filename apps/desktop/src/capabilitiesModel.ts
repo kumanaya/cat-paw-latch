@@ -177,9 +177,46 @@ export type RowAction = "grant" | "open" | "request" | "ask" | "none";
 // grant itself nothing, which is the whole point of this tab.
 export const LABEL_VIA_PROMPT = "Allow via prompt…";
 export const LABEL_IN_SETTINGS = "Allow in System Settings…";
+export const LABEL_WINDOWS_SECURITY = "Allow in Windows Security…";
+export const LABEL_CHECK_ACCESS = "Check access…";
+
+export const WINDOWS_DEFENDER_SETTINGS = "ms-settings:windowsdefender";
+
+/** What `capabilities:act` does for the FDA row — never an Apple URL off darwin. */
+export type FdaGrantKind = "apple-flow" | "windows-security" | "reprobe";
+
+export function fdaGrantKind(platform: NodeJS.Platform): FdaGrantKind {
+  if (platform === "darwin") return "apple-flow";
+  if (platform === "win32") return "windows-security";
+  return "reprobe";
+}
+
+export function fdaDetail(platform: NodeJS.Platform): string {
+  if (platform === "win32") {
+    return "Needed to list Desktop, Documents, Downloads, and Pictures. Writes may still hit Controlled Folder Access — the diagnosis owns that.";
+  }
+  if (platform === "linux") {
+    return "Needed to list the XDG Desktop, Documents, and Downloads folders. System paths (/etc, /usr, …) stay ungated.";
+  }
+  return "Needed for Messages, Mail, and Safari data. Covers Desktop, Documents, and Downloads if granted.";
+}
+
+export function fdaAction(platform: NodeJS.Platform): RowAction {
+  if (platform === "linux") return "request";
+  if (platform === "win32") return "open";
+  return "grant";
+}
 
 /** The button's words for an action. */
-export function actionLabel(action: RowAction): string | null {
+export function actionLabel(
+  action: RowAction,
+  opts: { platform?: NodeJS.Platform; key?: string } = {},
+): string | null {
+  const platform = opts.platform ?? "darwin";
+  if (opts.key === "full_disk_access") {
+    if (platform === "win32" && (action === "grant" || action === "open")) return LABEL_WINDOWS_SECURITY;
+    if (platform === "linux") return action === "none" ? null : LABEL_CHECK_ACCESS;
+  }
   switch (action) {
     case "request":
     case "ask": return LABEL_VIA_PROMPT;
@@ -286,6 +323,8 @@ export interface CapabilitiesInput {
   /** Whether Contacts and Calendars can be asked for in process (the addon
    *  is loaded). Without it their button is honest and points at the pane. */
   canRequestInProcess?: boolean;
+  /** Host OS. Defaults to darwin so existing tests keep the macOS rows. */
+  platform?: NodeJS.Platform;
 }
 
 const FOLDERS: readonly ("files_desktop" | "files_documents" | "files_downloads")[] = [
@@ -315,6 +354,8 @@ export function capabilitiesView(input: CapabilitiesInput): CapabilitiesView {
   );
   const inv = input.inventory;
   const fda = inv?.full_disk_access.granted ?? null;
+  const platform = input.platform ?? "darwin";
+  const appleOnly = platform === "darwin";
 
   const row = (
     key: string,
@@ -332,7 +373,7 @@ export function capabilitiesView(input: CapabilitiesInput): CapabilitiesView {
       statusText: statusWords(status),
       detail,
       action: off ? action : "none",
-      actionLabel: off ? actionLabel(action) : null,
+      actionLabel: off ? actionLabel(action, { platform, key }) : null,
       count: g?.count ?? 0,
       last: g?.last ?? null,
       since: later(input.bannerSeenAt, input.dismissals[key] ?? null),
@@ -352,8 +393,8 @@ export function capabilitiesView(input: CapabilitiesInput): CapabilitiesView {
       "full_disk_access",
       PERMISSION_TITLES.full_disk_access!,
       fda === null ? "unknown" : fda ? "granted" : "denied",
-      "Needed for Messages, Mail, and Safari data. Covers Desktop, Documents, and Downloads if granted.",
-      "grant",
+      fdaDetail(platform),
+      fdaAction(platform),
     ),
   );
   if (fda !== true) {
@@ -420,7 +461,7 @@ export function capabilitiesView(input: CapabilitiesInput): CapabilitiesView {
     );
   }
   const queryable = new Map(inv?.permissions.map((p) => [p.permission, p.status]) ?? []);
-  for (const permission of QUERYABLE) {
+  for (const permission of appleOnly ? QUERYABLE : []) {
     const status = (queryable.get(permission) ?? "unknown") as RowStatus;
     const detail =
       permission === "contacts"
@@ -446,18 +487,20 @@ export function capabilitiesView(input: CapabilitiesInput): CapabilitiesView {
   // line says what these are, and the dot and the button say where each
   // stands. Collapsed unless an app inside was hit — eight rows the owner
   // rarely needs, until one of them is the reason they came.
-  const apps: CapabilityRow[] = input.automation.map(({ app, status }) =>
-    row(`automation:${app.bundleId}`, app.name, status, "", status === "denied" ? "open" : "request"),
-  );
-  items.push(
-    group(
-      "automation",
-      "Automation",
-      "Which apps agents may drive with Apple events — sending a message, saving a contact.",
-      apps,
-      apps.some((r) => r.count > 0),
-    ),
-  );
+  if (appleOnly) {
+    const apps: CapabilityRow[] = input.automation.map(({ app, status }) =>
+      row(`automation:${app.bundleId}`, app.name, status, "", status === "denied" ? "open" : "request"),
+    );
+    items.push(
+      group(
+        "automation",
+        "Automation",
+        "Which apps agents may drive with Apple events — sending a message, saving a contact.",
+        apps,
+        apps.some((r) => r.count > 0),
+      ),
+    );
+  }
   const macRows = items.flatMap((i) => (isGroup(i) ? i.rows : [i]));
 
   // Switches this app has no button for: anything a block named that is not
@@ -465,8 +508,10 @@ export function capabilitiesView(input: CapabilitiesInput): CapabilitiesView {
   // something asked; the owner flips them in System Settings themselves.
   const known = new Set(macRows.map((r) => r.key));
   const yourself: CapabilityRow[] = [];
+  const appleKeys = new Set(["contacts", "calendars", "accessibility", "automation", "reminders", "photos", "screen_recording"]);
   for (const g of groups.values()) {
     if (known.has(g.key)) continue;
+    if (!appleOnly && (appleKeys.has(g.key) || g.key.startsWith("automation:"))) continue;
     // A folder (or any other switch Full Disk Access covers) that was refused
     // before Full Disk Access was granted is in good shape now: the umbrella
     // answers for it, so there is nothing for the owner to flip.
@@ -485,9 +530,11 @@ export function capabilitiesView(input: CapabilitiesInput): CapabilitiesView {
     {
       key: "mac",
       title: "This Desktop",
-      description:
-        "What this Desktop lets Plow Latch reach on your behalf, and which apps agents may drive. Grant these ahead of " +
-        "time: otherwise an agent's first request waits on a system dialog, which only someone at this Desktop can answer.",
+      description: appleOnly
+        ? "What this Desktop lets Plow Latch reach on your behalf, and which apps agents may drive. Grant these ahead of " +
+          "time: otherwise an agent's first request waits on a system dialog, which only someone at this Desktop can answer."
+        : "What this Desktop lets Plow Latch reach on your behalf. Grant folder access ahead of time: otherwise an agent's " +
+          "first request waits on a system dialog, which only someone at this Desktop can answer.",
       items,
       rows: [...macRows, ...yourself],
     },
