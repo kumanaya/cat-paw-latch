@@ -72,6 +72,7 @@ import { resolveInstancePaths } from "./paths.js";
 import { resolveTrayIconPath, trayIconSize } from "./trayIcon.js";
 import { ImportStaging, passwordsAppCanHandOff } from "./importStaging.js";
 import { loadSettings, saveSettings, useCredentialCodec, credentialStorage, WindowBounds } from "./settings.js";
+import { centeredFrame, fitFrame } from "./windowPlacement.js";
 import { resolveTelemetryConfig, SimulatedError, Telemetry, telemetryMaySend } from "./telemetry.js";
 import { PlowApi, PlowApiError, relaySocketUrl, resolveApiBaseUrl } from "./plowApi.js";
 import { Onboarding } from "./onboarding.js";
@@ -420,9 +421,12 @@ function openApprovalWindow(
 ): Promise<ApprovalDecision> {
   const run = () =>
     new Promise<ApprovalDecision>((resolve) => {
+      // The consent card is sized for a roomy screen; clamp it so a short
+      // panel still shows the whole card (its scroll region handles the rest).
+      const workArea = screen.getPrimaryDisplay().workArea;
       const win = new BrowserWindow({
-        width: 460,
-        height: 560,
+        width: Math.min(460, workArea.width),
+        height: Math.min(560, workArea.height),
         resizable: false,
         fullscreenable: false,
         title: "Plow Latch — Approve",
@@ -509,12 +513,19 @@ function createMainWindow(): void {
     mainWindow.show();
     return;
   }
-  const bounds = restorableBounds(loadSettings(home).windowBounds);
+  const workArea = screen.getPrimaryDisplay().workArea;
+  // With nothing saved the default opens centered, shrunk to the panel when
+  // the panel is smaller than the design size. A saved frame is clamped too
+  // (restorableBounds), so a window remembered on a larger display never
+  // comes back taller than the screen it lands on now.
+  const bounds =
+    restorableBounds(loadSettings(home).windowBounds) ??
+    centeredFrame(Math.min(940, workArea.width), Math.min(620, workArea.height), workArea);
   mainWindow = new BrowserWindow({
-    width: bounds?.width ?? 940,
-    height: bounds?.height ?? 620,
-    x: bounds?.x,
-    y: bounds?.y,
+    ...bounds,
+    minWidth: Math.min(720, workArea.width),
+    minHeight: Math.min(460, workArea.height),
+    resizable: true,
     title: "Plow Latch",
     titleBarStyle: "hiddenInset",
     webPreferences: {
@@ -569,10 +580,12 @@ function createMainWindow(): void {
 }
 
 /** Restore saved bounds only if they still land on a connected display, so a
- * window saved on a now-disconnected monitor doesn't open off-screen. */
+ * window saved on a now-disconnected monitor doesn't open off-screen. The
+ * frame is then clamped to that display's work area, because a window saved on
+ * a large monitor must not open taller or wider than a small panel. */
 function restorableBounds(saved: WindowBounds | undefined): WindowBounds | null {
   if (!saved) return null;
-  const onScreen = screen.getAllDisplays().some((d) => {
+  const display = screen.getAllDisplays().find((d) => {
     const w = d.workArea;
     // Require the window's top-left to sit within a display's work area.
     return (
@@ -582,7 +595,7 @@ function restorableBounds(saved: WindowBounds | undefined): WindowBounds | null 
       saved.y < w.y + w.height
     );
   });
-  return onScreen ? saved : null;
+  return display ? fitFrame(saved, display.workArea) : null;
 }
 
 // MARK: IPC for the main window (audit / rules / settings / status)
@@ -1840,11 +1853,17 @@ function openOnboardingWindow(): void {
     onboardingWindow.focus();
     return;
   }
+  // The wizard is 660x840 by design, but a small panel is shorter than that.
+  // It opens resizable and clamped to the work area so every step — and the
+  // Continue button pinned to its footer — stays reachable, and so a tiling
+  // WM may size it like any other window instead of floating it off-screen.
+  const workArea = screen.getPrimaryDisplay().workArea;
   onboardingWindow = new BrowserWindow({
     show: false,
-    width: 660,
-    height: 840,
-    resizable: false,
+    ...centeredFrame(Math.min(660, workArea.width), Math.min(840, workArea.height), workArea),
+    minWidth: Math.min(520, workArea.width),
+    minHeight: Math.min(480, workArea.height),
+    resizable: true,
     fullscreenable: false,
     title: "Plow Latch — Set Up",
     titleBarStyle: "hiddenInset",

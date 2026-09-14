@@ -17,6 +17,9 @@ import {
 } from "../cloudAgentViewModel.js";
 
 const view = document.getElementById("view");
+// The titlebar's left inset leaves room for macOS traffic lights; no other
+// platform draws them, and the reserved width is wasted in a small window.
+if (window.domo?.platform !== "darwin") document.body.classList.add("platform-nonmac");
 const seg = document.getElementById("seg");
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");

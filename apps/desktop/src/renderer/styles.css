@@ -107,12 +107,17 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
   padding: 0 14px 0 84px; /* leave room for traffic lights (hiddenInset) */
   -webkit-app-region: drag;
   border-bottom: 1px solid var(--border);
   background: var(--card);
   flex: none;
 }
+/* Only macOS insets its traffic lights into this strip (main.js marks the
+   platform on <body>); elsewhere the reserved space is wasted width that a
+   small window needs for the tabs. */
+body.platform-nonmac .titlebar { padding-left: 14px; }
 .wtitle { font-weight: 600; }
 .seg {
   margin-left: auto;
@@ -122,7 +127,15 @@ body {
   border-radius: 8px;
   padding: 2px;
   -webkit-app-region: no-drag;
+  /* A narrow window scrolls the tab strip instead of clipping it: the last
+     tab must stay reachable at every resizable width. The scrollbar itself is
+     hidden — a visible one would sit in the drag strip and shorten it. */
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
 }
+.seg::-webkit-scrollbar { display: none; }
 .seg button {
   border: 0;
   background: transparent;
@@ -597,7 +610,7 @@ textarea.text { min-height: 70px; resize: vertical; }
 }
 
 /* Approval window */
-.approve { padding: 18px; display: flex; flex-direction: column; height: 100vh; }
+.approve { padding: 18px; display: flex; flex-direction: column; height: 100vh; overflow-y: auto; }
 .approve .who { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
 .approve .who .name { font-size: 16px; font-weight: 600; }
 .approve .goal { color: var(--muted); margin: 6px 0 14px; }

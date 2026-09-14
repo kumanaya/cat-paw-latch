@@ -1201,6 +1201,24 @@ body.dev-preview {
   background: #d7dbe2;
 }
 
+/* Small screens. The window is clamped to the work area now, and on a short
+   panel (a 768px laptop) the 360px logo plus its 92px margin would push the
+   headline and the Continue button below the fold — compress the ornament
+   first so the step itself stays in view. */
+@media (max-height: 780px) {
+  .wizard-body { padding-top: 28px; }
+  .welcome-wrap { padding-top: 8px; }
+  .welcome-logo { height: 220px; margin-bottom: 40px; }
+  .welcome-logo svg { height: 220px; }
+  .welcome-glow { top: 150px; width: 380px; height: 380px; }
+}
+
+@media (max-width: 640px) {
+  .wizard-body { padding-left: 28px; padding-right: 28px; }
+  h1 { font-size: 34px; }
+  .wizard-footer { padding: 14px 20px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
