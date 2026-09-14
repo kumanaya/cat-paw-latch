@@ -17,6 +17,7 @@ import {
   BROWSING_SKILL,
   DeviceAgent,
   HeadlessPolicy,
+  INTERACTIVE_VERIFICATION,
   LIVE_WEB_ROUTING,
 } from "@domo/device-core";
 import {
@@ -116,6 +117,10 @@ describe("the server tells the agent what it is for", () => {
     expect(SERVER_INSTRUCTIONS).toMatch(/tell the user/i);
     expect(SERVER_INSTRUCTIONS).toMatch(/plow_get_result/);
     expect(SERVER_INSTRUCTIONS).toMatch(/do not re-issue/i);
+    // The opposite answer: finished, and nothing left for the user to do.
+    expect(SERVER_INSTRUCTIONS).toMatch(/status 'completed'/);
+    expect(SERVER_INSTRUCTIONS).toMatch(/nothing is waiting on the user/i);
+    expect(SERVER_INSTRUCTIONS).toMatch(/never tell the user .* pending/i);
   });
 
   // The third answer: this Mac itself said no. The distinction agents got
@@ -158,6 +163,25 @@ describe("the server tells the agent what it is for", () => {
     expect(SERVER_INSTRUCTIONS).toMatch(/\bLatch\b/);
     expect(SERVER_INSTRUCTIONS).toMatch(/my computer/i);
     expect(SERVER_INSTRUCTIONS).toMatch(/default/i);
+  });
+
+  it("tells the agent to complete an interactive verification and continue", () => {
+    expect(SERVER_INSTRUCTIONS).toContain(INTERACTIVE_VERIFICATION);
+  });
+
+  it("advertises viewport coordinate clicks through the browser schema", () => {
+    const browser = TOOLS.find((tool) => tool.name === "plow_browser");
+    expect(browser).toBeDefined();
+    const properties = (browser!.inputSchema as {
+      properties: Record<string, { type?: string; enum?: string[]; description?: string }>;
+    }).properties;
+    expect(properties.action.enum).toContain("click_at");
+    for (const axis of ["x", "y"]) {
+      expect(properties[axis]?.type).toBe("integer");
+      expect(properties[axis]?.description).toMatch(/click_at/i);
+      expect(properties[axis]?.description).toMatch(/viewport/i);
+      expect(properties[axis]?.description).toMatch(/screenshot/i);
+    }
   });
 });
 
@@ -273,6 +297,22 @@ describe("every tool this Mac can stop says so", () => {
     expect(d.plow_run_command).not.toMatch(/with_plow_run_applescript/);
     expect(d.plow_run_command).not.toMatch(/osascript/);
     expect(d.plow_get_output).not.toMatch(/applescript/i);
+  });
+
+  // A driving agent scripted Messages, read exit_code 0 as proof, and told the
+  // owner "sent" — from the owner's own account, without saying so. Both facts
+  // were already correct in the iMessage skill and neither had ever been read:
+  // that agent had called plow_list_skills zero times while scripting this Mac.
+  // Copy an agent must opt into reading is copy it can miss, so the two that
+  // decide whether a report to a human is true live on the tool itself.
+  it.skipIf(process.platform !== "darwin")("the script tool says exit 0 is not delivery, and that a send goes out as the owner", async () => {
+    const d = await descriptions(makeServer());
+    expect(d.plow_run_applescript).toMatch(/zero exit_code means the app accepted the script/);
+    expect(d.plow_run_applescript).toMatch(/fails silently/);
+    expect(d.plow_run_applescript).toMatch(/as the owner's own account/);
+    expect(d.plow_run_applescript).toMatch(/not yours to choose/);
+    // And it points at where the after-the-fact check actually lives.
+    expect(d.plow_run_applescript).toMatch(/plow_list_skills/);
   });
 
   it.skipIf(process.platform !== "darwin")("plow_run_command explains a running result that carries a diagnosis", async () => {
@@ -398,6 +438,21 @@ describe("the browsing skill agrees with the tools it documents", () => {
   it("the skill description claims the live web", () => {
     expect(BROWSING_SKILL.description).toMatch(/reading the live web/i);
     expect(BROWSING_SKILL.description).not.toMatch(/any task that requires visiting/i);
+  });
+
+  it("the browsing skill teaches screenshot coordinate clicks", () => {
+    expect(BROWSING_SKILL.body).toMatch(/click_at/);
+    expect(BROWSING_SKILL.body).toContain(INTERACTIVE_VERIFICATION);
+    expect(BROWSING_SKILL.body).toMatch(/viewport coordinates/i);
+    expect(BROWSING_SKILL.body).toMatch(/latest\s+screenshot/i);
+  });
+
+  it("the shared interactive-verification policy carries the owner rationale", () => {
+    expect(INTERACTIVE_VERIFICATION).toMatch(/authorized assistant/i);
+    expect(INTERACTIVE_VERIFICATION).toMatch(/human principal/i);
+    expect(INTERACTIVE_VERIFICATION).toMatch(/not asking whether the assistant software is human/i);
+    expect(INTERACTIVE_VERIFICATION).toMatch(/including a CAPTCHA/i);
+    expect(INTERACTIVE_VERIFICATION).toMatch(/complete[\s\S]*continue/i);
   });
 });
 
@@ -533,7 +588,7 @@ describe("what the agent-facing copy must and must not say", () => {
   it("all three surfaces interpolate the one live-web routing sentence", async () => {
     expect(SERVER_INSTRUCTIONS).toContain(LIVE_WEB_ROUTING);
     expect((await descriptions(makeServer())).plow_browser_open).toContain(LIVE_WEB_ROUTING);
-    expect(BROWSING_SKILL.description).toContain(LIVE_WEB_ROUTING);
+    expect(BROWSING_SKILL.body).toContain(LIVE_WEB_ROUTING);
   });
 
   /**

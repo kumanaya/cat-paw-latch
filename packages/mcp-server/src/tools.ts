@@ -41,6 +41,7 @@ import {
 import { BlockedError, DeferredResults, DeniedError, DeviceError, Progress } from "./deferred.js";
 import { JobOwners } from "./jobs.js";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 /** Absolute for this host, including `~` which canonicalize expands. */
 function isAbsoluteUserPath(raw: string): boolean {
@@ -491,6 +492,8 @@ export const TOOLS: ToolSpec[] = [
       "They may be asked to approve, so this can return a pending handle. Paths inside " +
       "~/Plow (the shared Plow folder — see the plow-folder skill) approve automatically " +
       "unless this Mac is set to deny everything. " +
+      "Text comes back inline; any other file (a photo, a PDF) comes back as an embedded " +
+      "resource your client saves as a local file, so read or convert that file. " +
       BLOCKED_COPY,
     inputSchema: {
       type: "object",
@@ -519,10 +522,17 @@ export const TOOLS: ToolSpec[] = [
       if (base64 === null) throw new Error("no content returned");
       const data = Buffer.from(base64, "base64");
       const text = data.toString("utf8");
-      // Text when it round-trips as UTF-8, base64 otherwise — binary safety.
-      return Buffer.from(text, "utf8").equals(data)
-        ? { path, content: text }
-        : { path, content_base64: base64 };
+      // Text when it round-trips as UTF-8. Anything else goes out as an MCP
+      // embedded resource, which the client stores as a file: base64 in a text
+      // block is only a string, and clients shorten long strings (Hermes cuts
+      // any text result over 2M chars mid-payload).
+      if (Buffer.from(text, "utf8").equals(data)) return { path, content: text };
+      return {
+        __mcpContent: [
+          { type: "resource", resource: { uri: pathToFileURL(path).href, blob: base64 } },
+          { type: "text", text: canonicalJSON({ status: "completed", path, bytes: data.length }) },
+        ],
+      };
     },
   },
   {
@@ -795,7 +805,13 @@ export const TOOLS: ToolSpec[] = [
       "The first time an app is scripted macOS may ask this Mac's owner to allow it. " +
       "Output is the script's result plus anything it logs; a script error comes back as " +
       "osascript's message with a non-zero exit_code and 'host_gate': 'none' — the script's own " +
-      "problem, not a permission. A long script returns a job handle for plow_get_output, and a " +
+      "problem, not a permission. A zero exit_code means the app accepted the script, not that " +
+      "anything reached anyone — a send to an unreachable handle fails silently, so it is never " +
+      "your evidence a message went out; for a Messages send, this Mac's iMessage skill " +
+      "(plow_list_skills) carries the check that is. And a script that sends goes out as the " +
+      "owner's own account, whichever one the app is signed into — their setting, not yours to " +
+      "choose — so say whose it went out as when you report it. A long script returns a job " +
+      "handle for plow_get_output, and a " +
       "call that outruns this Mac's budget defers to plow_get_result. " +
       BLOCKED_COPY,
     inputSchema: {
@@ -1122,14 +1138,19 @@ export const TOOLS: ToolSpec[] = [
       // empty fields: "your browser is closing" must not read as "widened".
       const failed = r.get("error").str;
       if (failed !== null) throw new ToolError(failed);
-      return { session, origins: r.get("origins").value ?? null, items: r.get("items").value ?? null };
+      return {
+        session,
+        origins: r.get("origins").value ?? null,
+        items: r.get("items").value ?? null,
+        note: "approved — this session now reaches these origins and items; continue with plow_browser on the same session handle",
+      };
     },
   },
   {
     name: "plow_browser",
     title: "Drive the user's browser",
     description:
-      "Act within an approved browser session. Actions: goto, click, fill, fill_secret, scroll, " +
+      "Act within an approved browser session. Actions: goto, click, click_at, fill, fill_secret, scroll, " +
       "wait, back, eval, use_page, screenshot, text, url, title, links, forms, tables, pages. " +
       "'screenshot' returns an image of the page — take one after " +
       "every navigation to see where you are. When a 'click' fails, give it a longer " +
@@ -1170,12 +1191,14 @@ export const TOOLS: ToolSpec[] = [
         action: {
           type: "string",
           enum: [
-            "goto", "click", "fill", "fill_secret", "scroll", "wait", "back", "eval", "use_page",
+            "goto", "click", "click_at", "fill", "fill_secret", "scroll", "wait", "back", "eval", "use_page",
             "screenshot", "text", "url", "title", "links", "forms", "tables", "pages",
           ],
         },
         url: { type: "string", description: "goto: target URL (within approved origins)" },
         selector: { type: "string", description: "click / fill / fill_secret: CSS selector" },
+        x: { type: "integer", description: "click_at: horizontal viewport coordinate from the latest screenshot" },
+        y: { type: "integer", description: "click_at: vertical viewport coordinate from the latest screenshot" },
         selectors: {
           type: "array",
           items: { type: "string" },
@@ -1214,6 +1237,15 @@ export const TOOLS: ToolSpec[] = [
       const action = a.get("action").str;
       if (action === null) throw new ToolError("missing 'action'");
       const params: { [k: string]: JSONValue } = { action };
+      if (action === "click_at") {
+        const x = a.get("x").int;
+        const y = a.get("y").int;
+        if (x === null || y === null) {
+          throw new ToolError("click_at requires integer viewport coordinates 'x' and 'y'");
+        }
+        params.x = x;
+        params.y = y;
+      }
       for (const key of ["url", "selector", "selectors", "value", "expression", "index", "item", "field", "format", "direction", "seconds", "frame", "timeout_ms"]) {
         const v = a.get(key).value;
         if (v !== null && v !== undefined) params[key] = v;
@@ -1402,7 +1434,8 @@ if (process.platform === "linux") {
 /** An MCP content block a tool result can become. */
 export type ToolBlock =
   | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+  | { type: "image"; data: string; mimeType: string }
+  | { type: "resource"; resource: { uri: string; blob: string } };
 
 /** The single text block a plain tool result becomes. */
 export function toolContent(value: JSONValue): { type: "text"; text: string } {
@@ -1411,22 +1444,34 @@ export function toolContent(value: JSONValue): { type: "text"; text: string } {
 
 /**
  * The content blocks a tool result becomes. Most results are one JSON text
- * block; a result carrying `__mcpContent` (a screenshot) is expanded into its
- * prebuilt image + text blocks so the agent SEES the page instead of a base64
- * string it cannot render.
+ * block; a result carrying `__mcpContent` (a screenshot, a binary file) expands
+ * into its prebuilt blocks. A deferred call that finished carries that result
+ * under `result` and expands the same way, followed by the envelope itself, so
+ * waiting for approval never turns bytes back into a string.
  */
 export function toolBlocks(value: JSONValue): ToolBlock[] {
-  const mc = jv(value).get("__mcpContent").arr;
-  if (mc === null) return [toolContent(value)];
-  return mc.map((block) => {
-    const b = jv(block);
-    if (b.get("type").str === "image") {
+  const v = jv(value);
+  const deferred = v.get("result").get("__mcpContent").arr;
+  if (deferred !== null) {
+    const envelope = { ...(v.obj ?? {}) };
+    delete envelope.result;
+    return [...deferred.map(toolBlock), toolContent(envelope as JSONValue)];
+  }
+  const mc = v.get("__mcpContent").arr;
+  return mc === null ? [toolContent(value)] : mc.map(toolBlock);
+}
+
+function toolBlock(block: JSONValue): ToolBlock {
+  const b = jv(block);
+  switch (b.get("type").str) {
+    case "image":
+      return { type: "image", data: b.get("data").str ?? "", mimeType: b.get("mimeType").str ?? "image/jpeg" };
+    case "resource":
       return {
-        type: "image",
-        data: b.get("data").str ?? "",
-        mimeType: b.get("mimeType").str ?? "image/jpeg",
+        type: "resource",
+        resource: { uri: b.get("resource").get("uri").str ?? "", blob: b.get("resource").get("blob").str ?? "" },
       };
-    }
-    return { type: "text", text: b.get("text").str ?? "" };
-  });
+    default:
+      return { type: "text", text: b.get("text").str ?? "" };
+  }
 }
