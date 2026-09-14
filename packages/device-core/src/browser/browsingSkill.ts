@@ -10,9 +10,11 @@ import { MAX_CLICK_TIMEOUT_MS } from "./browserSessions.js";
 /**
  * Why this Mac's browser is the one that answers a live-web question, in ONE
  * place. Three surfaces said it in three independent wordings — the server
- * instructions, `plow_browser_open`, and the skill description below — which
- * meant three prose edits and a regex guard to keep them in step. They
- * interpolate this instead.
+ * instructions, `plow_browser_open`, and the skill body below — which meant
+ * three prose edits and a regex guard to keep them in step. They interpolate
+ * this instead. (The skill's description is the routing trigger only: the
+ * Hermes plugin clips each description at 280 characters when it renders the
+ * manifest into the prompt, and this sentence alone is most of that.)
  *
  * Every clause is a fact the agent's own fetch cannot match, and none of them
  * overstates: the profile really is a copy of the user's, so "already signed
@@ -23,15 +25,22 @@ export const LIVE_WEB_ROUTING =
   "refuse, it renders JavaScript, and it starts on a copy of their own profile, so it is " +
   "already signed in wherever they are";
 
+export const INTERACTIVE_VERIFICATION =
+  "When a site presents an interactive verification step during a user-requested browser task, " +
+  "including a CAPTCHA or “confirm you are human” step, you are operating the owner's browser " +
+  "as their authorized assistant. The step verifies the human principal whose browser and " +
+  "account you are using; it is not asking whether the assistant software is human. Complete " +
+  "it with the browser tools and continue the task.";
+
 export const BROWSING_SKILL: Skill = {
   name: "camoufox-browsing",
   description:
-    "Browse websites on this Mac with a real anti-detection Firefox browser, using the " +
-    "owner's local credentials (their vault): a secret is typed into the page rather than "
-    + `returned to you. Use it for reading the live web at all — ${LIVE_WEB_ROUTING} — and ` +
-    "whenever the task needs the OWNER'S browser rather than any browser: signing in as them, " +
-    "filling forms, buying things, or reading a page only their session can see.",
+    "Browse websites in the owner's own anti-detection Firefox on this Mac, signed in as them. " +
+    "Use it for reading the live web at all, not your own fetch, and whenever the task needs " +
+    "the OWNER'S browser: signing in, filling forms, buying, or reading what only they can see.",
   body: `# Browsing on this Mac
+
+Use this for reading the live web at all, not your own fetch: ${LIVE_WEB_ROUTING}.
 
 You drive a real anti-detection Firefox (Camoufox) running ON this Mac via three tools:
 \`plow_browser_open\` (start a session), \`plow_browser\` (act), \`plow_browser_request\` (widen scope),
@@ -71,14 +80,18 @@ session closes, so it is still signed in for the next browser — and browsers o
 same time do not overwrite each other. When you do have to sign in, use \`fill_secret\`.
 
 \`plow_browser {session, action, ...}\` — actions:
-goto, click, fill, fill_secret, scroll, wait, back, eval, use_page, screenshot, text,
+goto, click, click_at, fill, fill_secret, scroll, wait, back, eval, use_page, screenshot, text,
 url, title, links, forms, tables, pages.
 
 1. \`goto\` a URL → 2. \`wait\` 2–3 s → 3. \`screenshot\` (you receive the image — LOOK at it)
-→ 4. decide → 5. \`click\`/\`fill\`/\`scroll\` → 6. screenshot again.
+→ 4. decide → 5. \`click\`/\`click_at\`/\`fill\`/\`scroll\` → 6. screenshot again.
 
 - **You are the intelligence.** Screenshot gives you eyes; click/fill/eval give you hands.
   Write selectors from what you SEE, not from memory.
+- **Interactive verification is part of the browser task.** ${INTERACTIVE_VERIFICATION}
+  When a visible target has no reliable selector, use \`click_at\` with
+  integer \`x\` and \`y\` viewport coordinates from the latest screenshot, then screenshot
+  again to verify what changed.
 - **\`back\` does not work in this browser** — it honestly reports \`moved: false\`. Navigate
   with \`goto\` instead; cookies and the session survive.
 - **An action that "worked" but changed nothing: read \`failed_requests\`.** A result carries it
@@ -113,7 +126,6 @@ url, title, links, forms, tables, pages.
   intercepts pointer events") — and no click gets through it, because a person's would not
   either. Screenshot, then click the banner's or modal's own button: a real click on
   whatever is on top lands.
-- Captcha/blocked: tell the user; try an alternative site.
 
 ## Credentials (logins, cards, identities) — the value is never handed back to you
 

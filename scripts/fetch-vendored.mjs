@@ -34,6 +34,28 @@ import { MARKER, PROVIDER_ROOT, isStaged, providerArches, stagedBinary, stagedFi
 // exist. Same reason build-browser-runtime.mjs uses it.
 const repoRoot = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 
+// GitHub's release CDN intermittently answers 504 for a large asset while it
+// is busy — seen on both gog linux tarballs, at different times, on runners
+// that had just downloaded the other arch fine. The asset is immutable and its
+// digest is checked below, so retrying the same URL is safe; a single transient
+// gateway error used to fail the whole linux-package job. Sleep synchronously
+// with Atomics.wait because this script is deliberately synchronous top-level.
+const DOWNLOAD_ATTEMPTS = 5;
+
+function download(url, tarball) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      execFileSync("curl", ["-sSL", "--fail", "-o", tarball, url], { stdio: "inherit" });
+      return;
+    } catch (error) {
+      if (attempt >= DOWNLOAD_ATTEMPTS) throw error;
+      const waitMs = attempt * 5000;
+      console.warn(`  download failed (attempt ${attempt}/${DOWNLOAD_ATTEMPTS}); retrying in ${waitMs}ms`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+    }
+  }
+}
+
 function fetchProvider(provider) {
   const { command, version } = provider;
   const arches = providerArches(provider);
@@ -62,7 +84,7 @@ function fetchProvider(provider) {
       const url = process.platform === "win32" ? provider.windowsUrl(version, asset) : provider.url(version, asset);
       const tarball = path.join(staging, path.basename(new URL(url).pathname));
       console.log(`fetching ${command} ${version} ${asset}`);
-      execFileSync("curl", ["-sSL", "--fail", "-o", tarball, url], { stdio: "inherit" });
+      download(url, tarball);
 
       const actual = createHash("sha256").update(readFileSync(tarball)).digest("hex");
       if (actual !== sha256) {

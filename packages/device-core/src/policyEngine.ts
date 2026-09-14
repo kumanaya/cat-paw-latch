@@ -3,8 +3,10 @@
  * always-allow rules before ever consulting the delegate. Rules match on
  * (agent, device, exact normalized capability set) — never on goal text.
  */
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
+import { writeFileDurable } from "./durableFile.js";
 import { lockdownSecretFile } from "./fileLockdown.js";
 import {
   AlwaysAllowRule,
@@ -24,7 +26,20 @@ import {
  * "adversarial" (adversarial-agent review), "policy" (auto-deny). Rule matches
  * are labeled "rule" by the engine itself.
  */
-export type IntentDecision = Decision | { decision: Decision; source?: string };
+export type IntentDecision =
+  | Decision
+  | {
+      decision: Decision;
+      source?: string;
+      /**
+       * This intent's always-allow rule is already in place — the delegate
+       * stored it (`storeRule`), or answered from it — so the engine must not
+       * store it again: the rule may have been revoked on the answer's way
+       * back, and a second store would put it back. Travels with the
+       * decision, so it cannot outlive it.
+       */
+      ruleStored?: true;
+    };
 
 /** A stored rule which remains visible to its owner but can never answer an
  * intent.  Windows migrates pre-presence-gate sensitive rules into this state
@@ -65,6 +80,24 @@ export class PolicyEngine {
   private rules = new Map<string, AlwaysAllowRule>();
   private disabled = new Map<string, ListedAlwaysAllowRule>();
   private migrated = new Map<string, ListedAlwaysAllowRule>();
+  /**
+   * Emits `changed` once per write to the rule set — a rule stored by an
+   * always-allow answer, or one removed. The main window's Rules pane draws
+   * from `allRules()` and has no other way to learn that an approval dialog
+   * just added one while it was on screen.
+   *
+   * Alongside it, the write itself: `stored` with `{ rule, intentId }` (the
+   * intent whose answer made the rule) and `revoked` with `{ rule }`. The
+   * device agent turns these into audit lines, so the log accounts for every
+   * rule that exists — including one made by an answer the request itself
+   * did not get (see `storeRule`). These two are the write's RECORD, and a
+   * listener that throws fails the write: the rule set goes back to what it
+   * was and the error is rethrown, because an authorization the log cannot
+   * account for must not exist. A write that then fails to reach disk is
+   * announced as `write_failed` with `{ op, rule, intentId? }`, so the log
+   * can say the recorded change did not stand. Only `changed` is best-effort.
+   */
+  readonly events = new EventEmitter();
 
   constructor(
     private readonly rulesFile: string,
@@ -114,37 +147,159 @@ export class PolicyEngine {
   }
 
   removeRule(key: string): void {
-    this.rules.delete(key);
-    this.disabled.delete(key);
-    this.persist();
+    // A rule may sit in either map — a disabled rule is still the owner's to
+    // remove — and the undo puts it back where it came from.
+    const rule = this.rules.get(key) ?? this.disabled.get(key);
+    if (!rule) return;
+    const fromDisabled = this.disabled.has(key);
+    this.write(
+      () => {
+        this.rules.delete(key);
+        this.disabled.delete(key);
+      },
+      () => {
+        (fromDisabled ? this.disabled : this.rules).set(key, rule);
+      },
+      () => this.events.emit("revoked", { rule }),
+      () => this.events.emit("write_failed", { op: "revoked", rule }),
+    );
   }
 
   removeAllRules(): void {
-    this.rules.clear();
-    this.disabled.clear();
-    this.persist();
+    const before: ListedAlwaysAllowRule[] = [...this.rules.values(), ...this.disabled.values()];
+    this.write(
+      () => {
+        this.rules.clear();
+        this.disabled.clear();
+      },
+      () => {
+        for (const rule of before) (rule.disabled ? this.disabled : this.rules).set(rule.ruleKey, rule);
+      },
+      () => { for (const rule of before) this.events.emit("revoked", { rule }); },
+      () => { for (const rule of before) this.events.emit("write_failed", { op: "revoked", rule }); },
+    );
   }
 
+  /**
+   * One change to the rule set: apply it, record it, put it on disk, tell
+   * the renderer — in that order, and the order is the guarantee.
+   *
+   * The record (`stored`/`revoked`) comes BEFORE the disk write. Either can
+   * fail, and each failure is fail-closed: the change is undone in memory
+   * (memory is what answers the next request, so it is undone first and
+   * without fail) and the error rethrown. What differs is what disk and the
+   * log are left saying, and this order makes the only possible
+   * disagreement the safe one:
+   *
+   * - The record fails: nothing has touched disk, so nothing is there to
+   *   undo, and no second write can fail. A rule the log cannot account for
+   *   never exists on disk — not even for a moment, not even if the process
+   *   dies right here.
+   * - The write fails (or the process dies between the record and the
+   *   write): the log says a rule was saved that the file does not hold —
+   *   over-reporting, never a silent authorization — and the log is told so
+   *   with `write_failed`, best-effort, since the disk may be the problem.
+   *
+   * The other order — write, then record — could leave a rule on disk with
+   * no line to account for it, if the record failed and the undo-write
+   * failed after it (disk full does both), and the next launch would load
+   * it and grant on it. In the dialog path a failure here turns the owner's
+   * click into an error the request is denied on, which is the same answer
+   * any other un-auditable operation gets.
+   *
+   * The notification (`changed`) is best-effort, and only sent for a change
+   * that stood: the renderer's listener can throw while a window is being
+   * torn down, and that must take nothing down with it.
+   */
+  private write(apply: () => void, undo: () => void, record: () => void, recordFailure: () => void): void {
+    apply();
+    try {
+      record();
+    } catch (error) {
+      undo();
+      throw error;
+    }
+    try {
+      this.persist();
+    } catch (error) {
+      undo();
+      try {
+        recordFailure();
+      } catch (also) {
+        console.error("[rules] could not record a failed rules.json write:", also);
+      }
+      throw error;
+    }
+    try {
+      this.events.emit("changed");
+    } catch (error) {
+      console.error("[rules] changed listener failed after a recorded change:", error);
+    }
+  }
+
+  /**
+   * Whole or not at all, and on disk before it counts: a write that dies
+   * part-way must not leave a truncated file the next launch reads as "no
+   * rules", and a revoke the owner saw complete must not come back after a
+   * power cut because the rename reached the platter and the data did not.
+   */
   private persist(): void {
     fs.mkdirSync(path.dirname(this.rulesFile), { recursive: true });
-    fs.writeFileSync(this.rulesFile, JSON.stringify([...this.rules.values(), ...this.disabled.values()], null, 2) + "\n");
+    writeFileDurable(this.rulesFile, JSON.stringify([...this.rules.values(), ...this.disabled.values()], null, 2) + "\n");
     // Standing grants: owner-only ACL on Windows, like any secret.
     lockdownSecretFile(this.rulesFile);
   }
 
-  async decide(intent: Intent, delegate: PolicyDelegate): Promise<Grant> {
+  /**
+   * Would a stored rule answer this intent right now?
+   *
+   * `decide` asks this first. A delegate that queues the human's dialogs may
+   * ask it again when an intent's turn comes: an "always allow" answered
+   * ahead of it in the queue stores a rule that this intent may match, and
+   * the human should not be shown a request they have already decided.
+   */
+  async ruleAnswers(intent: Intent, delegate: PolicyDelegate): Promise<boolean> {
+    return (
+      ruleEligible(intent, this.platform) &&
+      this.rules.has(intentRuleKey(intent)) &&
+      (await mayGrantFromStoredRule(intent, delegate))
+    );
+  }
+
+  /**
+   * Store the always-allow rule for this intent now, ahead of its decision
+   * completing. `decide` stores on an `always_allow` answer; a delegate that
+   * queues dialogs calls this the moment the human answers, BEFORE the answer
+   * travels back — the dialogs waiting behind it ask `ruleAnswers` right
+   * then, and a store that waited for `decide` comes too late for them. The
+   * delegate then says so on its decision (`ruleStored`), and `decide` does
+   * not store again: the answer's way back can cross disk I/O (the approval
+   * store's write), the owner may revoke the rule in that interval — it is
+   * already on screen — and a second store would put it back. An existing
+   * rule is left alone either way, so its creation time and the events stay
+   * honest.
+   */
+  storeRule(intent: Intent): void {
     const key = intentRuleKey(intent);
-    const eligible = ruleEligible(intent, this.platform);
-    if (eligible && this.rules.has(key) && (await mayGrantFromStoredRule(intent, delegate))) {
+    if (!ruleEligible(intent, this.platform) || this.rules.has(key)) return;
+    const rule = makeAlwaysAllowRule(intent);
+    this.write(
+      () => this.rules.set(key, rule),
+      () => this.rules.delete(key),
+      () => this.events.emit("stored", { rule, intentId: intent.intentId }),
+      () => this.events.emit("write_failed", { op: "stored", rule, intentId: intent.intentId }),
+    );
+  }
+
+  async decide(intent: Intent, delegate: PolicyDelegate): Promise<Grant> {
+    if (await this.ruleAnswers(intent, delegate)) {
       return makeGrant(intent, "always_allow", "rule");
     }
     const result = await delegate.decideIntent(intent);
     const decision = typeof result === "string" ? result : result.decision;
     const source = typeof result === "string" ? "prompt" : (result.source ?? "prompt");
-    if (decision === "always_allow" && eligible) {
-      this.rules.set(key, makeAlwaysAllowRule(intent));
-      this.persist();
-    }
+    const ruleStored = typeof result !== "string" && result.ruleStored === true;
+    if (decision === "always_allow" && !ruleStored) this.storeRule(intent);
     return makeGrant(intent, decision, source);
   }
 }
