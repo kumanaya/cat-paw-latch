@@ -17,6 +17,10 @@ type ConnectorsState = {
 };
 
 contextBridge.exposeInMainWorld("domo", {
+  // The host platform ("darwin" | "win32" | "linux"), display-only: the
+  // renderer uses it to drop the macOS-only traffic-light inset from its
+  // titlebar where no traffic lights are drawn. It gates nothing enforceable.
+  platform: process.platform,
   // Main window data.
   // The Audit tab reads a page of rows (auditIndex.ts AuditQuery / AuditPage)
   // and the selected row's timeline by id — never the whole log.
