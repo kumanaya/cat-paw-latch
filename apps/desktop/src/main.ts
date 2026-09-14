@@ -73,6 +73,7 @@ import { migrateLegacyHome } from "./migrateHome.js";
 import { buildMinter, vendorDirs } from "./providerWiring.js";
 import { resolveInstancePaths } from "./paths.js";
 import { resolveTrayIconPath, trayIconSize } from "./trayIcon.js";
+import { resolveForkBannerPath } from "./forkBanner.js";
 import { ImportStaging, passwordsAppCanHandOff } from "./importStaging.js";
 import { loadSettings, saveSettings, useCredentialCodec, credentialStorage, WindowBounds } from "./settings.js";
 import { centeredFrame, fitFrame } from "./windowPlacement.js";
@@ -800,6 +801,8 @@ const EXTERNAL_URLS: Readonly<Record<string, string>> = Object.freeze({
   website: "https://watchmepivot.com/",
   fullDiskSettings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
   windowsDefender: WINDOWS_DEFENDER_SETTINGS,
+  contribute: "https://github.com/kumanaya/cat-paw-latch",
+  upstream: "https://github.com/plow-pbc/latch",
 });
 
 ipcMain.handle("external:open", async (_e, key: string) => {
@@ -807,6 +810,19 @@ ipcMain.handle("external:open", async (_e, key: string) => {
   if (!url) return false;
   await shell.openExternal(url);
   return true;
+});
+ipcMain.handle("fork:banner", async () => {
+  const file = resolveForkBannerPath({
+    isPackaged: app.isPackaged,
+    dirname,
+    resourcesPath: process.resourcesPath,
+  });
+  try {
+    const buf = await fs.readFile(file);
+    return `data:image/png;base64,${buf.toString("base64")}`;
+  } catch {
+    return null;
+  }
 });
 
 // One shape for the whole Agents tab: connect-a-client and the cloud-agent

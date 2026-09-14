@@ -2743,6 +2743,11 @@ async function renderSettings() {
   });
   applyStats();
 
+  const bannerUrl = await window.domo.forkBanner();
+  const forkIcon = bannerUrl
+    ? el("img", { class: "fork-banner", src: bannerUrl, alt: "" })
+    : globeIcon();
+
   // One Support destination: icon, title + blurb, and a button that asks main
   // to open the URL behind `key` — the renderer never holds the URL itself.
   const supportRow = (iconNode, title, desc, buttonLabel, key) => {
@@ -2841,6 +2846,15 @@ async function renderSettings() {
         "Watch the livestream to watch us build the Plow Latch app in public.",
         "Watch Livestream",
         "website",
+      ),
+    ]),
+    group("About this build", null, [
+      supportRow(
+        forkIcon,
+        "This build is a fork of Plow Latch",
+        "Contributions are welcome on the Cat Paw Latch repository.",
+        "Contribute on GitHub",
+        "contribute",
       ),
     ]),
   ]));

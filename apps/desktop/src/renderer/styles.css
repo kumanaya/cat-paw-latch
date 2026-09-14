@@ -453,6 +453,9 @@ textarea.text { min-height: 70px; resize: vertical; }
 .support-row + .support-row { margin-top: 14px; }
 .support-row .discord-ico { width: 28px; height: 22px; fill: currentColor; color: var(--muted); flex: none; }
 .support-row .support-globe { width: 26px; height: 26px; stroke-width: 1.5; color: var(--muted); flex: none; }
+.support-row .fork-banner {
+  width: 48px; height: 48px; object-fit: cover; border-radius: 8px; flex: none;
+}
 .support-row .btn { white-space: nowrap; }
 .support-copy { min-width: 0; }
 .support-title { font-weight: 600; margin-bottom: 2px; }

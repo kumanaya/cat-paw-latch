@@ -156,6 +156,9 @@ extraResources:
   # so setupTray can load it at runtime on every platform.
   - from: ../../artwork/domo-desktop-icon.png
     to: tray-icon.png
+  # Settings' last-section fork notice (forkBanner.ts). Bundled, never fetched.
+  - from: ../../artwork/banner.png
+    to: fork-banner.png
   # Every vendored provider CLI, per-arch, in ONE entry — the payloads live
   # under vendor/providers/<command>/<arch>/, so adding a provider edits nothing
   # here. resolveVendoredBinary looks the arch up by process.arch, so those

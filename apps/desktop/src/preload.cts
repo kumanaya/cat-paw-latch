@@ -218,6 +218,8 @@ contextBridge.exposeInMainWorld("domo", {
   // Any external destination the app links to. A key, never a URL: main
   // decides what may be opened.
   openExternal: (key: string) => ipcRenderer.invoke("external:open", key),
+  // Settings' fork-notice artwork as a data URL. Bundled; never a network fetch.
+  forkBanner: () => ipcRenderer.invoke("fork:banner"),
 
   // Live browser thumbnail (audit detail pane). One whole-state shape per
   // poll; no push channel — the renderer's own interval is the clock.
