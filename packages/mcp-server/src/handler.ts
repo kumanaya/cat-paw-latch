@@ -110,7 +110,9 @@ Call plow_list_skills early. This PC publishes skills — how-to guides for what
 
 Use your own tools for your own work: code you are writing, scratch files, and anything you do not need their machine for.
 
-The user approves the operations these tools perform on their machine — reading and writing files, running commands, and browsing. A call may return a pending handle instead of a result; the handle's own 'reason' and 'note' say what it is waiting for. Tell the user, then poll plow_get_result. Do not re-issue the original call; that starts a second request.
+${INTERACTIVE_VERIFICATION}
+
+The user approves the operations these tools perform on their machine — reading and writing files, running commands, and browsing. A call may return a pending handle instead of a result; the handle's own 'reason' and 'note' say what it is waiting for. Tell the user, then poll plow_get_result. Do not re-issue the original call; that starts a second request. A result with status 'completed' is the opposite: it finished, and whatever approval it needed has already happened — nothing is waiting on the user. Never tell the user a request is pending unless the result's status is 'pending'.
 
 A call can also come back with status 'blocked': the user approved it, and then their PC itself refused — a Windows gate it was not allowed through, or a path outside the bound that was approved. That is not the user saying no, and it is not the operation breaking. Read the 'diagnosis'. When its 'confidence' is 'confirmed', tell the user its 'owner_action' sentence word for word and stop: do not retry, and do not reword the goal to get a different answer. The one exception is a diagnosis whose 'retry' names a tool: that tool is the one move left, and only for what did not already happen. When it is 'likely' or 'unknown', say what this PC found — 'evidence', 'ruled_out', and the 'probes' facts — and let the user decide.`;
 
