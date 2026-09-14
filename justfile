@@ -200,9 +200,16 @@ package-win-arm64: build
 # host, and afterPack refuses a pack whose launcher --probe fails or whose
 # Camoufox / vendored-provider ELF is missing. Fetches providers + browser
 # before packing. Default arch is the host; use package-linux-x64 / -arm64
-# to pin it.
+# to pin it. After the pack, install-desktop copies it into ~/Applications and
+# the user Apps list (Omarchy's Apps tab).
 package-linux: build
     node scripts/package-linux.mjs
+    sh "{{root}}/scripts/install-linux-desktop.sh"
+
+# Register the newest AppImage in the user app launcher. On Omarchy that is
+# the Apps tab. Re-run after a pack if you skipped the automatic install.
+install-desktop:
+    sh "{{root}}/scripts/install-linux-desktop.sh"
 
 package-linux-x64: build
     node scripts/package-linux.mjs --arch x64

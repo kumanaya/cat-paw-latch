@@ -118,7 +118,10 @@ PATH. From-source state lives under Electron's appData — `~/.config/Plow-Latch
 on Linux, `%APPDATA%\Plow-Latch-<branch>` on Windows,
 `~/Library/Application Support/Plow-Latch-<branch>` on macOS. A packaged
 AppImage uses the unsuffixed `~/.config/Plow-Latch` home instead; build one
-with `just package-linux` (needs FUSE 2 to run).
+with `just package-linux` (needs FUSE 2 to run). That recipe then copies the
+AppImage to `~/Applications/Plow-Latch.AppImage` and writes a desktop entry;
+on Omarchy, Cat Paw Latch shows up in the **Apps** tab. Re-run the install
+alone with `just install-desktop`. If the Apps tab is stale: `omarchy restart shell`.
 
 The app opens on its first-run flow. Sign in, keep it running, and connect it to
 an agent — the app dials out to Plow, so nothing needs to listen on your
