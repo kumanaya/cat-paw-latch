@@ -63,7 +63,9 @@ import { appBundleName, appBundlePath, decodeTileImage } from "./permissionFlow.
 import { FdaGrantFlow, GrantTarget } from "./fdaGrantFlow.js";
 import { AUTOMATION_APPS, automationApp, osascriptRunner, reconcile, requestAutomation } from "./automation.js";
 import { capabilitiesView, CapabilitiesView, isGroup, paneFor, PERMISSION_TITLES } from "./capabilitiesModel.js";
-import { launchAtLoginState, LoginItemApi, setLaunchAtLogin } from "./loginItem.js";
+import { launchAtLoginState, setLaunchAtLogin } from "./loginItem.js";
+import { createPlatformLoginItems } from "./loginItemPlatform.js";
+import { windowsRunSeam } from "./windowsRunKey.js";
 import { KeepAwake } from "./keepAwake.js";
 import { devIconScript } from "./devIcon.js";
 import { migrateLegacyHome } from "./migrateHome.js";
@@ -1787,13 +1789,21 @@ ipcMain.handle("fullDisk:grantFlow", async () => fdaGrantFlow.start());
 ipcMain.on("fullDisk:dismiss", () => fdaGrantFlow.stop());
 app.on("before-quit", () => fdaGrantFlow.stop());
 
-// Launch at Login. macOS owns the bit and loginItem.ts owns the rules (fresh
-// OS read per get, packaged-only writes); this is only the seam that hands it
-// the real Electron API.
-const loginItems: LoginItemApi = {
-  get: () => app.getLoginItemSettings(),
-  set: (settings) => app.setLoginItemSettings(settings),
-};
+// Launch at Login. loginItem.ts owns the packaged-only rules; the platform
+// seam writes Electron login items on macOS, the same API with this exe's
+// path on Windows, and an XDG autostart file on Linux (APPIMAGE, never the
+// squashfs mount).
+const loginItems = createPlatformLoginItems({
+  platform: process.platform,
+  execPath: process.execPath,
+  env: process.env,
+  home,
+  electron: {
+    get: () => app.getLoginItemSettings(),
+    set: (settings) => app.setLoginItemSettings(settings),
+  },
+  windowsRun: process.platform === "win32" ? windowsRunSeam() : undefined,
+});
 ipcMain.handle("launch:get", async () => launchAtLoginState(app.isPackaged, loginItems));
 ipcMain.handle("launch:set", async (_e, on: boolean) =>
   setLaunchAtLogin(app.isPackaged, loginItems, on),
