@@ -120,7 +120,7 @@ on Linux, `%APPDATA%\Plow-Latch-<branch>` on Windows,
 AppImage uses the unsuffixed `~/.config/Plow-Latch` home instead; build one
 with `just package-linux` (needs FUSE 2 to run). That recipe then copies the
 AppImage to `~/Applications/Plow-Latch.AppImage` and writes a desktop entry;
-on Omarchy, Cat Paw Latch shows up in the **Apps** tab. Re-run the install
+on Omarchy, **Plow Latch** shows up in the **Apps** tab. Re-run the install
 alone with `just install-desktop`. If the Apps tab is stale: `omarchy restart shell`.
 
 The app opens on its first-run flow. Sign in, keep it running, and connect it to
@@ -144,7 +144,7 @@ recipe.
 
 | App / package | Role |
 | --- | --- |
-| `apps/desktop` (Cat Paw Latch) | Electron app: runs the device core, approval windows, rules, audit, and settings. |
+| `apps/desktop` (Plow Latch) | Electron app: runs the device core, approval windows, rules, audit, and settings. |
 | `packages/protocol` | Canonical JSON, Ed25519 identity, capabilities, intents, grants, rule keys. |
 | `packages/transport` | The connection seam and the outbound WebSocket client. |
 | `packages/device-core` | The decision and execution path: policy engine, sandboxed executor, file ops, browsing, audit log. |
@@ -153,8 +153,9 @@ recipe.
 | `packages/browser-server` | The Camoufox browser server (TypeScript over playwright-core). |
 | `packages/native-*` | Platform addons: Keychain, Credential Manager, Job Object, Bubblewrap, secret-file ACLs. |
 
-The app ships and brands itself as Cat Paw Latch; the codebase and package
-scope remain `domo` (`@domo/*`, `DOMO_HOME`), which a rename must not touch.
+The app ships and brands itself as Plow Latch; the git repository is Cat Paw
+Latch. The codebase and package scope remain `domo` (`@domo/*`, `DOMO_HOME`),
+which a rename must not touch.
 Deeper documentation lives in [DESIGN.md](DESIGN.md) for the architecture and
 [README-ts.md](README-ts.md) for the full layout, build, and testing.
 

@@ -47,7 +47,7 @@ cat > "$DESKTOP" <<EOF
 [Desktop Entry]
 Version=1.0
 Type=Application
-Name=Cat Paw Latch
+Name=Plow Latch
 Comment=Approve what a remote AI agent does on this computer
 Exec=$DEST %U
 Icon=cat-paw-latch
@@ -68,6 +68,6 @@ echo "  menu: $DESKTOP"
 
 if command -v omarchy >/dev/null 2>&1 || [[ -d /usr/share/omarchy ]]; then
   echo
-  echo "Omarchy: open the Apps tab and look for Cat Paw Latch."
+  echo "Omarchy: open the Apps tab and look for Plow Latch."
   echo "If it is missing, run: omarchy restart shell"
 fi
