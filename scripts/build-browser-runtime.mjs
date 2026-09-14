@@ -60,6 +60,10 @@ const wantBoth = args.includes("--browser-both");
 // downloaded, unverified xpi, so it must rebuild clean.
 const PRUNE_VERSION = "3";
 
+// Same transient-CDN guard as fetch-vendored.mjs: GitHub returns 504 while a
+// large asset is being served, and a single gateway error used to fail the run.
+const DOWNLOAD_ATTEMPTS = 5;
+
 function log(msg) {
   process.stdout.write(`[browser-runtime] ${msg}\n`);
 }
@@ -108,7 +112,21 @@ function download(url, expectedSha, dest) {
   }
   log(`downloading ${url}`);
   fs.mkdirSync(path.dirname(dest), { recursive: true });
-  run("curl", ["-fsSL", "-o", dest + ".part", url]);
+  // GitHub's release CDN intermittently answers 504 for a large asset while it
+  // is busy (fetched these browser archives from the same host). The asset is
+  // immutable and its digest is checked below, so retrying the URL is safe;
+  // the same retry guards fetch-vendored.mjs for the gog tarballs.
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      run("curl", ["-fsSL", "-o", dest + ".part", url]);
+      break;
+    } catch (error) {
+      if (attempt >= DOWNLOAD_ATTEMPTS) throw error;
+      const waitMs = attempt * 5000;
+      log(`  download failed (attempt ${attempt}/${DOWNLOAD_ATTEMPTS}); retrying in ${waitMs}ms`);
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+    }
+  }
   const got = sha256(dest + ".part");
   if (got !== expectedSha) {
     fs.rmSync(dest + ".part", { force: true });

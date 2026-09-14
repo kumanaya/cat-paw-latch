@@ -413,8 +413,18 @@ describe("the deferred-result contract (§4.3)", () => {
   /** A budget short enough that a slow approval always outruns it. */
   const SHORT = 40;
 
-  async function deferredRead(delegate: PolicyDelegate, auth: RelayAuth = AGENT) {
-    const { server, device } = makeServer(delegate, SHORT);
+  async function deferredRead(
+    delegate: PolicyDelegate,
+    auth: RelayAuth = AGENT,
+    /**
+     * The slow case wants a budget short enough that a 200ms approval always
+     * outruns it. The fast case wants the real budget: its point is the
+     * "completed" status, not that a loaded machine reads a small file in
+     * 40ms — that tight budget made the suite flaky under load.
+     */
+    budgetMs: number = SHORT,
+  ) {
+    const { server, device } = makeServer(delegate, budgetMs);
     const dir = tempDir();
     const file = path.join(dir, "slow.txt");
     fs.writeFileSync(file, "slow content");
@@ -444,7 +454,7 @@ describe("the deferred-result contract (§4.3)", () => {
     // Byte-for-byte what the original call would have returned.
     expect(poll.result).toEqual({ status: "completed", path: canonicalize(file), content: "slow content" });
     // A call that finishes inside the budget says so in its own payload.
-    const { first: fast } = await deferredRead(new ScriptedPolicy("allow_once"));
+    const { first: fast } = await deferredRead(new ScriptedPolicy("allow_once"), AGENT, CALL_BUDGET_MS);
     expect(fast.payload.status).toBe("completed");
   });
 
