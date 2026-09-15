@@ -26,7 +26,9 @@ export function linuxLaunchExec(env: NodeJS.ProcessEnv, execPath: string): strin
 }
 
 export function linuxAutostartPath(home: string): string {
-  return path.join(home, ".config", "autostart", LINUX_AUTOSTART_BASENAME);
+  // POSIX on purpose: this is an XDG path, so it must not pick up the host's
+  // separator when the seam is exercised off Linux (the tests run everywhere).
+  return path.posix.join(home, ".config", "autostart", LINUX_AUTOSTART_BASENAME);
 }
 
 /** Get = the file exists and is not Hidden=true. A missing file is off. */
@@ -149,7 +151,7 @@ export function linuxLoginItems(deps: {
         io.unlink(file);
         return;
       }
-      io.mkdirp(path.dirname(file));
+      io.mkdirp(path.posix.dirname(file));
       io.writeFile(file, linuxAutostartDesktop(linuxLaunchExec(deps.env, deps.execPath)));
     },
   };

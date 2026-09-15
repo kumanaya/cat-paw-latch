@@ -1159,9 +1159,11 @@ describe("Linux gates — bwrap kind and approval wording", () => {
       'XDG_DESKTOP_DIR="$HOME/Skrivbord"\nXDG_DOCUMENTS_DIR="$HOME/Documents"\nXDG_DOWNLOAD_DIR="$HOME/Downloads"\n',
     );
     expect(linuxUserFolderPaths(home)).toEqual([
-      path.join(home, "Skrivbord"),
-      path.join(home, "Documents"),
-      path.join(home, "Downloads"),
+      // POSIX joins: the XDG override is parsed as a Linux path, and the
+      // expectation must not pick up the host's separator on Windows.
+      path.posix.join(home, "Skrivbord"),
+      path.posix.join(home, "Documents"),
+      path.posix.join(home, "Downloads"),
     ]);
     const redirected = await probeLinuxFolderAccess(home);
     expect(redirected.find((r) => r.path.endsWith("Skrivbord"))?.outcome).toBe("ENOENT");

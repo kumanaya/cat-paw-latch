@@ -41,6 +41,13 @@ ipcMain.handle("status:get", async () => ({ deviceId: "probe", name: "Probe", co
 ipcMain.handle("rules:list", async () => []);
 ipcMain.handle("ui:getTab", async () => "audit");
 ipcMain.handle("ui:setTab", async () => {});
+// Settings' fork notice. A 1px image stands in for the bundled banner: the
+// probe proves the row renders through the bridge, not the artwork's bytes.
+ipcMain.handle("fork:banner", async () =>
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
+// No credential exchange is pending in the probe; boot asks so a hand-off
+// that arrived before the window existed can land on the Vault tab.
+ipcMain.handle("vault:exchangePending", async () => null);
 // A signed-in Mac: the credential itself is deliberately absent from this
 // shape, because the main process never hands it to the renderer.
 ipcMain.handle("settings:getRelay", async () => {
@@ -565,17 +572,25 @@ app.whenReady().then(async () => {
       fdaNoInlineDragTile: !document.querySelector(".fda-drag-tile"),
       // The marks split by meaning: the macOS "…" on the one hand-off the user
       // must finish over there (System Settings), the external-link ↗ on the
-      // buttons whose click just happens in the browser (Discord, Livestream)
-      // — and never both on one button.
-      // Both remaining Support buttons (Discord, Livestream) just open a
-      // browser, so both carry the arrow; the one hand-off into System
-      // Settings moved to the Capabilities tab with its "…" (checked there).
+      // buttons whose click just happens in the browser (Discord, Livestream,
+      // Contribute) — and never both on one button.
+      // All three Support/About buttons just open a browser, so all carry the
+      // arrow; the one hand-off into System Settings moved to the Capabilities
+      // tab with its "…" (checked there).
       supportMarks: (() => {
         const btns = [...document.querySelectorAll(".support-row .btn")];
         const arrowed = btns.filter((b) => b.querySelector(".ext-arrow"));
         const handoffs = btns.filter((b) => b.textContent.trim().endsWith("…"));
-        return btns.length === 2 && arrowed.length === 2 && handoffs.length === 0;
+        return btns.length === 3 && arrowed.length === 3 && handoffs.length === 0;
       })(),
+      // The fork notice is the pane's own last section, and its artwork came
+      // through the bridge as a data URL — never a network fetch. The src is
+      // asserted, not only the node: an img with no src renders nothing.
+      forkNoticeRenders: document.body.innerText.includes("This build is a fork of Plow Latch") &&
+        (() => {
+          const img = document.querySelector(".panel.settings img.fork-banner");
+          return !!img && img.getAttribute("src")?.startsWith("data:image/png") === true;
+        })(),
       // Launch at Login, in Availability: on this packaged-looking probe the
       // toggle is live and unchecked, and the from-source note is hidden
       // (innerText omits hidden nodes).
@@ -2311,6 +2326,7 @@ app.whenReady().then(async () => {
     capabilities.noBanner &&
     capabilities.fdaNoInlineDragTile &&
     settings.supportMarks &&
+    settings.forkNoticeRenders &&
     settings.launchTitle &&
     settings.launchToggleLive &&
     settings.launchNoteHidden &&
