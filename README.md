@@ -35,6 +35,19 @@ ready-to-run setup that connects your AI to the computer you own.
 
 **[Try Hermes Cat Paw →](https://github.com/kumanaya/hermes-cat-paw)**
 
+### If you are an agent installing this for someone
+
+Use the complete [Hermes Cat Paw installation guide](https://github.com/kumanaya/hermes-cat-paw/blob/main/docs/INSTALL.md).
+It installs this device app first, then the Hermes agent and its persistent
+Agent Index reporter. This repository currently builds from source; it does not
+publish a Windows installer or Linux AppImage. Never ask the owner to paste a
+Plow token, password, cookie, or `plow-credentials` file into chat.
+
+The safe first check is read-only: confirm that Latch is connected and inspect
+the capabilities it advertises. For any action, choose the least-powerful
+matching tool, wait for the owner's approval, and verify the visible result.
+Treat denial, timeout, disconnect, MFA, or host-block responses as a stop.
+
 ---
 
 ## Autonomy needs a brake.
@@ -98,7 +111,8 @@ signed installer. A checkout is the whole install.
 - A native toolchain, so the platform addons compile:
   - **macOS** — Xcode Command Line Tools (`xcode-select --install`).
   - **Windows** — Visual Studio Build Tools, with the Desktop C++ workload.
-  - **Linux** — a C++ toolchain, `bubblewrap`, and `python3`.
+  - **Linux / Omarchy** — a C++ toolchain, `bubblewrap`, and `python3`.
+    On Arch/Omarchy: `sudo pacman -S --needed base-devel just git python bubblewrap fuse2`.
 - **Python 3** (the browser runtime is unpacked with it).
 
 ### Build and launch
@@ -106,9 +120,21 @@ signed installer. A checkout is the whole install.
 ```sh
 git clone https://github.com/kumanaya/cat-paw-latch.git
 cd cat-paw-latch
-just install      # install workspace dependencies (first time)
+just install      # npm install, then download Electron if npm skipped it
 just app          # build, then launch the desktop app
 ```
+
+`just install` is the first-run floor: npm 11 can skip Electron's postinstall,
+and without the binary `just app` never opens. On Linux it also rebuilds the
+bubblewrap addon if it is missing, and refuses to proceed without `bwrap` on
+PATH. From-source state lives under Electron's appData — `~/.config/Plow-Latch-<branch>`
+on Linux, `%APPDATA%\Plow-Latch-<branch>` on Windows,
+`~/Library/Application Support/Plow-Latch-<branch>` on macOS. A packaged
+AppImage uses the unsuffixed `~/.config/Plow-Latch` home instead; build one
+with `just package-linux` (needs FUSE 2 to run). That recipe then copies the
+AppImage to `~/Applications/Plow-Latch.AppImage` and writes a desktop entry;
+on Omarchy, **Plow Latch** shows up in the **Apps** tab. Re-run the install
+alone with `just install-desktop`. If the Apps tab is stale: `omarchy restart shell`.
 
 The app opens on its first-run flow. Sign in, keep it running, and connect it to
 an agent — the app dials out to Plow, so nothing needs to listen on your
@@ -131,7 +157,7 @@ recipe.
 
 | App / package | Role |
 | --- | --- |
-| `apps/desktop` (Cat Paw Latch) | Electron app: runs the device core, approval windows, rules, audit, and settings. |
+| `apps/desktop` (Plow Latch) | Electron app: runs the device core, approval windows, rules, audit, and settings. |
 | `packages/protocol` | Canonical JSON, Ed25519 identity, capabilities, intents, grants, rule keys. |
 | `packages/transport` | The connection seam and the outbound WebSocket client. |
 | `packages/device-core` | The decision and execution path: policy engine, sandboxed executor, file ops, browsing, audit log. |
@@ -140,8 +166,9 @@ recipe.
 | `packages/browser-server` | The Camoufox browser server (TypeScript over playwright-core). |
 | `packages/native-*` | Platform addons: Keychain, Credential Manager, Job Object, Bubblewrap, secret-file ACLs. |
 
-The app ships and brands itself as Cat Paw Latch; the codebase and package
-scope remain `domo` (`@domo/*`, `DOMO_HOME`), which a rename must not touch.
+The app ships and brands itself as Plow Latch; the git repository is Cat Paw
+Latch. The codebase and package scope remain `domo` (`@domo/*`, `DOMO_HOME`),
+which a rename must not touch.
 Deeper documentation lives in [DESIGN.md](DESIGN.md) for the architecture and
 [README-ts.md](README-ts.md) for the full layout, build, and testing.
 

@@ -12,9 +12,9 @@
  *     HTML, and the enforceable bound shown is the capability set the sandbox
  *     is derived from — not the goal text.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, safeStorage as electronSafeStorage, screen, shell, systemPreferences, Tray } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, powerSaveBlocker, safeStorage as electronSafeStorage, screen, shell, systemPreferences, Tray } from "electron";
 import electronUpdater from "electron-updater";
-import { ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
@@ -34,7 +34,7 @@ import {
   nodeProbes,
   PERMISSION_LABELS,
   PolicyDelegate,
-  probeFullDiskAccess,
+  probeHostFullDiskAccess,
   requestFolderAccess,
   importLogins,
   importPreview,
@@ -62,14 +62,18 @@ import { AuditIndex, AuditQuery } from "./auditIndex.js";
 import { appBundleName, appBundlePath, decodeTileImage } from "./permissionFlow.js";
 import { FdaGrantFlow, GrantTarget } from "./fdaGrantFlow.js";
 import { AUTOMATION_APPS, automationApp, osascriptRunner, reconcile, requestAutomation } from "./automation.js";
-import { capabilitiesView, CapabilitiesView, isGroup, paneFor, PERMISSION_TITLES } from "./capabilitiesModel.js";
-import { launchAtLoginState, LoginItemApi, setLaunchAtLogin } from "./loginItem.js";
+import { capabilitiesView, CapabilitiesView, fdaGrantKind, isGroup, paneFor, PERMISSION_TITLES, WINDOWS_DEFENDER_SETTINGS } from "./capabilitiesModel.js";
+import { launchAtLoginState, setLaunchAtLogin } from "./loginItem.js";
+import { createPlatformLoginItems } from "./loginItemPlatform.js";
+import { windowsRunSeam } from "./windowsRunKey.js";
 import { KeepAwake } from "./keepAwake.js";
+import { createSleepBlocker } from "./sleepBlocker.js";
 import { devIconScript } from "./devIcon.js";
 import { migrateLegacyHome } from "./migrateHome.js";
 import { buildMinter, vendorDirs } from "./providerWiring.js";
 import { resolveInstancePaths } from "./paths.js";
 import { resolveTrayIconPath, trayIconSize } from "./trayIcon.js";
+import { resolveForkBannerPath } from "./forkBanner.js";
 import { ImportStaging, passwordsAppCanHandOff } from "./importStaging.js";
 import { loadSettings, saveSettings, useCredentialCodec, credentialStorage, WindowBounds } from "./settings.js";
 import { centeredFrame, fitFrame } from "./windowPlacement.js";
@@ -796,6 +800,9 @@ const EXTERNAL_URLS: Readonly<Record<string, string>> = Object.freeze({
   discord: "https://watchmepivot.com/discord",
   website: "https://watchmepivot.com/",
   fullDiskSettings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+  windowsDefender: WINDOWS_DEFENDER_SETTINGS,
+  contribute: "https://github.com/kumanaya/cat-paw-latch",
+  upstream: "https://github.com/plow-pbc/latch",
 });
 
 ipcMain.handle("external:open", async (_e, key: string) => {
@@ -803,6 +810,19 @@ ipcMain.handle("external:open", async (_e, key: string) => {
   if (!url) return false;
   await shell.openExternal(url);
   return true;
+});
+ipcMain.handle("fork:banner", async () => {
+  const file = resolveForkBannerPath({
+    isPackaged: app.isPackaged,
+    dirname,
+    resourcesPath: process.resourcesPath,
+  });
+  try {
+    const buf = await fs.readFile(file);
+    return `data:image/png;base64,${buf.toString("base64")}`;
+  } catch {
+    return null;
+  }
 });
 
 // One shape for the whole Agents tab: connect-a-client and the cloud-agent
@@ -1334,7 +1354,9 @@ ipcMain.handle("capabilities:get", async () => {
   const inventory = device ? await device.hostInventory() : null;
   const view = await capabilitiesNow(inventory);
   return {
-    fullDiskAccess: inventory ? inventory.full_disk_access.granted : await probeFullDiskAccess(),
+    fullDiskAccess: inventory
+      ? inventory.full_disk_access.granted
+      : await probeHostFullDiskAccess(os.homedir()),
     inventory,
     view,
     icons: await capabilityIcons(view),
@@ -1447,6 +1469,7 @@ async function capabilitiesNow(inventory?: HostInventory | null): Promise<Capabi
     folders: settings.folderConsent ?? {},
     foldersAt: settings.folderConsentAt ?? {},
     canRequestInProcess: device?.hostProbes.canRequestInProcess() ?? false,
+    platform: process.platform,
   });
 }
 
@@ -1464,7 +1487,7 @@ function grantTargetFor(key: string): GrantTarget | null {
   const label = app ? `Automation for ${app.name}` : (PERMISSION_TITLES[key] ?? key);
   const probes = device?.hostProbes ?? null;
   const probe = async (): Promise<boolean> => {
-    if (key === "full_disk_access") return probeFullDiskAccess();
+    if (key === "full_disk_access") return probeHostFullDiskAccess(os.homedir());
     if (!probes) return false;
     if (app) return (await probes.automationStatus(app.bundleId)) === "granted";
     if (key === "accessibility" || key === "contacts" || key === "calendars" || key === "screen_recording") {
@@ -1491,6 +1514,14 @@ ipcMain.handle("capabilities:act", async (_e, rawKey: unknown) => {
   switch (row.action) {
     case "grant":
     case "open": {
+      // Apple System Settings URLs and the drag panel are macOS-only. Off
+      // darwin the FDA row either opens Windows Security or just re-probes.
+      if (process.platform !== "darwin") {
+        if (key === "full_disk_access" && fdaGrantKind(process.platform) === "windows-security") {
+          await shell.openExternal(EXTERNAL_URLS.windowsDefender!);
+        }
+        break;
+      }
       const pane = paneFor(key);
       // A pane the panel can do nothing beside (Screen Recording, Automation) is just
       // opened; the owner finds the switch themselves.
@@ -1514,7 +1545,7 @@ ipcMain.handle("capabilities:act", async (_e, rawKey: unknown) => {
         const status = await device.hostProbes.requestPermission(key as RequestablePermission);
         // Refused before, or no usage string in this build: macOS answered
         // without asking, and only the pane can change that now.
-        if (status === "denied") {
+        if (status === "denied" && process.platform === "darwin") {
           const target = grantTargetFor(key);
           if (target) await fdaGrantFlow.start(target);
         }
@@ -1538,7 +1569,7 @@ ipcMain.handle("capabilities:act", async (_e, rawKey: unknown) => {
         }
         // macOS refused without asking — a Don't Allow it remembers — and
         // only the pane can undo that: float the panel beside it.
-        if (result?.status === "denied") {
+        if (result?.status === "denied" && process.platform === "darwin") {
           const target = grantTargetFor(key);
           if (target) await fdaGrantFlow.start(target);
         }
@@ -1777,7 +1808,7 @@ const fdaGrantFlow = new FdaGrantFlow({
     label: "Full Disk Access",
     pane: EXTERNAL_URLS.fullDiskSettings,
     acceptsDrop: true,
-    probe: () => probeFullDiskAccess(),
+    probe: () => probeHostFullDiskAccess(os.homedir()),
   },
   openSettings: (pane) => shell.openExternal(pane),
 });
@@ -1787,13 +1818,21 @@ ipcMain.handle("fullDisk:grantFlow", async () => fdaGrantFlow.start());
 ipcMain.on("fullDisk:dismiss", () => fdaGrantFlow.stop());
 app.on("before-quit", () => fdaGrantFlow.stop());
 
-// Launch at Login. macOS owns the bit and loginItem.ts owns the rules (fresh
-// OS read per get, packaged-only writes); this is only the seam that hands it
-// the real Electron API.
-const loginItems: LoginItemApi = {
-  get: () => app.getLoginItemSettings(),
-  set: (settings) => app.setLoginItemSettings(settings),
-};
+// Launch at Login. loginItem.ts owns the packaged-only rules; the platform
+// seam writes Electron login items on macOS, the same API with this exe's
+// path on Windows, and an XDG autostart file on Linux (APPIMAGE, never the
+// squashfs mount).
+const loginItems = createPlatformLoginItems({
+  platform: process.platform,
+  execPath: process.execPath,
+  env: process.env,
+  home,
+  electron: {
+    get: () => app.getLoginItemSettings(),
+    set: (settings) => app.setLoginItemSettings(settings),
+  },
+  windowsRun: process.platform === "win32" ? windowsRunSeam() : undefined,
+});
 ipcMain.handle("launch:get", async () => launchAtLoginState(app.isPackaged, loginItems));
 ipcMain.handle("launch:set", async (_e, on: boolean) =>
   setLaunchAtLogin(app.isPackaged, loginItems, on),
@@ -2401,50 +2440,21 @@ app.whenReady().then(async () => {
       (err) => console.log(`[dev-icon] badge failed, keeping plain icon: ${err}`),
     );
   }
-  // Keep Mac Awake: honor a stored opt-in from launch, not from the first
-  // Settings visit. The hold is a `caffeinate -dims` child — the tool that
-  // holds exactly the four IOKit assertions the Phoenix app held. Electron's
-  // own powerSaveBlocker exposes only two of the four (display + idle-system
-  // sleep), so the child process is what feature parity costs. Unlike an
-  // in-process assertion, a child can die out from under us; the exit
-  // handler reports the loss so the hold is re-acquired, not silently gone.
-  let caffeinated: { child: ChildProcess; stopped: boolean } | null = null;
-  const awake = new KeepAwake({
-    blocker: {
-      start: () => {
-        // -w binds the hold to this process: caffeinate exits on its own the
-        // moment Latch is gone, HOWEVER it goes — a crash or Force Quit skips
-        // before-quit, and an orphaned caffeinate would otherwise hold "never
-        // sleep" on this Mac until someone found it. Phoenix never had this
-        // exposure (in-process assertions die with the process), so parity of
-        // robustness requires it. The explicit kill below still handles
-        // toggle-off and clean teardown.
-        const child = spawn("/usr/bin/caffeinate", ["-dims", "-w", String(process.pid)], {
-          stdio: "ignore",
-        });
-        // A spawn that failed outright (no such binary, fork refused) has no
-        // pid, and its 'error' event must have a listener or it takes the
-        // process down. Nothing to read from it beyond that — the null pid
-        // already answered.
-        child.on("error", () => {});
-        if (child.pid === undefined) return null;
-        const entry = { child, stopped: false };
-        caffeinated = entry;
-        child.on("exit", () => {
-          if (entry.stopped || caffeinated !== entry) return;
-          caffeinated = null;
-          console.log("[keep-awake] caffeinate exited unexpectedly");
-          keepAwake?.blockerLost(entry.child.pid!);
-        });
-        return child.pid;
-      },
-      stop: (id) => {
-        if (caffeinated?.child.pid !== id) return;
-        caffeinated.stopped = true;
-        caffeinated.child.kill();
-        caffeinated = null;
-      },
+  // Keep Desktop awake: honor a stored opt-in from launch, not from the first
+  // Settings visit. The hold is platform-specific (caffeinate / Electron
+  // powerSaveBlocker / systemd-inhibit); KeepAwake owns AC-only + revert.
+  const blocker = createSleepBlocker({
+    platform: process.platform,
+    pid: process.pid,
+    spawn: (command, args, options) => spawn(command, [...args], options ?? { stdio: "ignore" }),
+    powerSaveBlocker,
+    onLost: (id) => {
+      console.log("[keep-awake] sleep blocker exited unexpectedly");
+      keepAwake?.blockerLost(id);
     },
+  });
+  const awake = new KeepAwake({
+    blocker,
     power: {
       current: () => (powerMonitor.isOnBatteryPower() ? "battery" : "ac"),
       subscribe: (callback) => {

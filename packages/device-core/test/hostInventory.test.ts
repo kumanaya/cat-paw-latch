@@ -161,6 +161,25 @@ describe("hostInventory", () => {
     expect(inv.vault_key).toEqual({ status: "unknown", reason: "keychain unavailable" });
   });
 
+  it("on Linux without a path override, uses the folder probe and leaves attribution not_applicable", async () => {
+    const dir = tempDir();
+    fs.mkdirSync(path.join(dir, "Desktop"));
+    fs.mkdirSync(path.join(dir, "Documents"));
+    fs.mkdirSync(path.join(dir, "Downloads"));
+    const { run, ran } = runner({ "/usr/bin/true": { exitCode: 0 } });
+    const inv = await hostInventory({
+      probes: scriptedProbes(),
+      ownerHome: dir,
+      runSandboxed: run,
+      vaultKey: null,
+      platform: "linux",
+    });
+    expect(inv.full_disk_access.granted).toBe(true);
+    expect(inv.full_disk_access.probes.every((p) => p.outcome === "ok")).toBe(true);
+    expect(inv.child_attribution.status).toBe("not_applicable");
+    expect(ran.map((a) => a[0])).toEqual(["/usr/bin/true"]);
+  });
+
   it("on a host with no sandboxed executor, the sandbox rows say so", async () => {
     const dir = tempDir();
     const inv = await hostInventory({

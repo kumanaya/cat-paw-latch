@@ -63,4 +63,19 @@ describe("resolveInstancePaths", () => {
     expect(p.home).toBe(path.join(appData, "Plow-Latch"));
     expect(p.appName).toBe("Plow Latch");
   });
+
+  it("Linux and Windows appData stay on their OS roots, not macOS Application Support", () => {
+    // Host joins, like every expectation above: appData is whatever Electron
+    // reports on this host, so on Windows a Linux-shaped root still composes
+    // with backslashes. The root is what is asserted, not its spelling.
+    expect(resolveInstancePaths({ env: {}, appData: "/home/x/.config" }).home).toBe(
+      path.join("/home/x/.config", "Plow-Latch"),
+    );
+    expect(
+      resolveInstancePaths({ env: { DOMO_BRANCH: "main" }, appData: "/home/x/.config" }).home,
+    ).toBe(path.join("/home/x/.config", "Plow-Latch-main"));
+    expect(
+      resolveInstancePaths({ env: {}, appData: "C:\\Users\\x\\AppData\\Roaming" }).home,
+    ).toBe(path.join("C:\\Users\\x\\AppData\\Roaming", "Plow-Latch"));
+  });
 });
