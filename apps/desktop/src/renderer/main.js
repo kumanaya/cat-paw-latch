@@ -2745,7 +2745,7 @@ async function renderSettings() {
 
   const bannerUrl = await window.domo.forkBanner();
   const forkIcon = bannerUrl
-    ? el("img", { class: "fork-banner", src: bannerUrl, alt: "" })
+    ? el("img", { class: "fork-banner", attrs: { src: bannerUrl, alt: "" } })
     : globeIcon();
 
   // One Support destination: icon, title + blurb, and a button that asks main
