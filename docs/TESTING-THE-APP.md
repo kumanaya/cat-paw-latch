@@ -180,7 +180,7 @@ production** (`https://api.plow.co`), including a run from source, so targeting 
 deliberate act:
 
 ```bash
-just app                                          # production, ~/Library/Application Support/Plow-Latch-<branch>
+just app                                          # production, Electron appData / Plow-Latch-<branch>
 DOMO_API_BASE_URL=http://localhost:4242 just app  # that relay, …/Plow-Latch-<branch>-local
 DOMO_HOME=/tmp/plow-latch-x just app                    # an explicit home always wins
 ```

@@ -63,4 +63,16 @@ describe("resolveInstancePaths", () => {
     expect(p.home).toBe(path.join(appData, "Plow-Latch"));
     expect(p.appName).toBe("Plow Latch");
   });
+
+  it("Linux and Windows appData stay on their OS roots, not macOS Application Support", () => {
+    expect(resolveInstancePaths({ env: {}, appData: "/home/x/.config" }).home).toBe(
+      "/home/x/.config/Plow-Latch",
+    );
+    expect(
+      resolveInstancePaths({ env: { DOMO_BRANCH: "main" }, appData: "/home/x/.config" }).home,
+    ).toBe("/home/x/.config/Plow-Latch-main");
+    expect(
+      resolveInstancePaths({ env: {}, appData: "C:\\Users\\x\\AppData\\Roaming" }).home,
+    ).toBe(path.join("C:\\Users\\x\\AppData\\Roaming", "Plow-Latch"));
+  });
 });
