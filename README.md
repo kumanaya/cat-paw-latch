@@ -35,6 +35,19 @@ ready-to-run setup that connects your AI to the computer you own.
 
 **[Try Hermes Cat Paw →](https://github.com/kumanaya/hermes-cat-paw)**
 
+### If you are an agent installing this for someone
+
+Use the complete [Hermes Cat Paw installation guide](https://github.com/kumanaya/hermes-cat-paw/blob/main/docs/INSTALL.md).
+It installs this device app first, then the Hermes agent and its persistent
+Agent Index reporter. This repository currently builds from source; it does not
+publish a Windows installer or Linux AppImage. Never ask the owner to paste a
+Plow token, password, cookie, or `plow-credentials` file into chat.
+
+The safe first check is read-only: confirm that Latch is connected and inspect
+the capabilities it advertises. For any action, choose the least-powerful
+matching tool, wait for the owner's approval, and verify the visible result.
+Treat denial, timeout, disconnect, MFA, or host-block responses as a stop.
+
 ---
 
 ## Autonomy needs a brake.
