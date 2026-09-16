@@ -243,6 +243,13 @@ export interface McpServerOptions {
    * hardcoded `0.1.0` hid for as long as it existed.
    */
   version?: string;
+  /**
+   * Where an in-flight deferred handle is noted on disk, so a call whose app
+   * closes under it answers `abandoned` on the next start instead of reading
+   * as a handle that never existed. The app passes
+   * `<home>/device/deferred`; a test leaves it out and stays in memory.
+   */
+  deferredStateDir?: string;
 }
 
 export interface DomoMcpServer {
@@ -264,7 +271,12 @@ export function createDomoMcpServer(
 ): DomoMcpServer {
   const budgetMs = options.budgetMs ?? CALL_BUDGET_MS;
   const version = options.version ?? "0.0.0-dev";
-  const deferred = new DeferredResults(budgetMs);
+  const deferred = new DeferredResults(
+    budgetMs,
+    undefined,
+    undefined,
+    options.deferredStateDir ?? null,
+  );
   const jobs = new JobOwners();
   const sessionId = crypto.randomUUID().toUpperCase();
 

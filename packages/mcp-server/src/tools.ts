@@ -1437,9 +1437,11 @@ export const TOOLS: ToolSpec[] = [
     title: "Poll a pending result",
     description:
       "Retrieve the result of any call that returned a pending handle — whichever tool created it. " +
-      "Answers pending / ready / denied / blocked / failed / expired / unknown. " +
+      "Answers pending / ready / denied / blocked / failed / expired / abandoned / unknown. " +
       "A ready result is exactly what the original call would have returned had it been fast enough; " +
-      "a blocked one is this Mac's own refusal, with the 'diagnosis' the original call would have carried.",
+      "a blocked one is this Mac's own refusal, with the 'diagnosis' the original call would have carried; " +
+      "an abandoned one means Latch closed while the call was in flight, so it may or may not have run — " +
+      "check the result on this Mac, or call again.",
     inputSchema: {
       type: "object",
       required: ["handle"],

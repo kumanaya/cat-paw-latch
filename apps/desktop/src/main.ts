@@ -2331,7 +2331,13 @@ app.whenReady().then(async () => {
   // leaves the Mac.
   device.audit.events.on("recorded", (entry) => telemetry?.auditEntryRecorded(entry));
   // The version rides the MCP handshake, so it has to be the app's real one.
-  mcp = createDomoMcpServer(device, { version: app.getVersion() });
+  // `deferredStateDir`: in-flight handles are noted here, so a call whose app
+  // closes under it answers `abandoned` on the next start rather than
+  // `unknown` (packages/mcp-server/src/deferred.ts).
+  mcp = createDomoMcpServer(device, {
+    version: app.getVersion(),
+    deferredStateDir: path.join(device.home, "device", "deferred"),
+  });
   await startRelay();
 
   onboarding = new Onboarding({

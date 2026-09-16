@@ -1176,3 +1176,27 @@ describe("three agents, three browsers, at once", () => {
     }
   });
 });
+
+/**
+ * A handle that is not live any more says WHY. The old answer was one generic
+ * sentence for every case — a handle the agent invented, a session the idle
+ * clock closed, and a browser that crashed all read the same — and the agent
+ * cannot pick a next move from "unknown session".
+ */
+describe("a handle whose session already ended", () => {
+  it("says an idle close, on both a command and a second close", async () => {
+    // makeCtx builds the store with a one-minute idle window.
+    const handle = await openSession(["pizza.example"]);
+    await ctx.sessions.close(handle, "idle");
+    const r = jv(await ctx.sessions.command(handle, { action: "url" }));
+    expect(r.get("status").str).toBe("error");
+    expect(r.get("error").str).toContain("closed after 1 minute without a command");
+    const c = jv(await ctx.sessions.close(handle, "test"));
+    expect(c.get("error").str).toContain("closed after 1 minute");
+  });
+
+  it("still answers the bare sentence for a handle this Mac never minted", async () => {
+    const r = jv(await ctx.sessions.command("no-such-handle-at-all", { action: "url" }));
+    expect(r.get("error").str).toBe("unknown session (open one with plow_browser_open)");
+  });
+});

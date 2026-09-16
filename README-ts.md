@@ -174,9 +174,12 @@ record, and in the adversarial reviewer's prompt — and for nothing else.
 a *job* handle for `plow_get_output` when a command outlives its wait. Any tool that
 outlives the **call budget** — a human who has not answered yet, or slow work —
 returns a *deferred* handle for `plow_get_result`, which answers `pending` / `ready` /
-`denied` / `blocked` / `failed` / `expired` / `unknown`. A deferred handle belongs to the
-agent that created it; another agent presenting it gets `unknown`, which is
-indistinguishable from a handle that never existed.
+`denied` / `blocked` / `failed` / `expired` / `abandoned` / `unknown`. A deferred handle
+belongs to the agent that created it; another agent presenting it gets `unknown`, which is
+indistinguishable from a handle that never existed. A handle whose app closed while the
+call was in flight is noted on disk while it is pending (`device/deferred/`) and answered
+`abandoned` once on the next start — the outcome is genuinely unknown (the work may have
+run), so the agent is told to check or retry rather than left with `unknown`.
 
 **An approval outlives the call that needed it.** A tunnelled call cannot wait
 for a human, so the call returns a handle and the human answers whenever they
