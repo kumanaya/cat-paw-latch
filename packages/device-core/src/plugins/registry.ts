@@ -13,6 +13,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { canonicalize } from "@domo/protocol";
 import { parseManifest, PluginError, type PluginManifest, type PluginPlatform } from "./manifest.js";
 import { binDir, stagedName, type Arch } from "./stage.js";
 
@@ -66,8 +67,13 @@ export function loadPlugins(roots: readonly string[]): StagedPlugin[] {
       const manifest = parseManifest(fs.readFileSync(file, "utf8"));
       if (manifest.name !== name) throw new PluginError("plugin directory must be named after its manifest");
       // Canonicalized once, here, at load — staging is startup work, not
-      // call-path work, so this realpathSync never blocks a call budget.
-      const canonicalDir = fs.realpathSync(dir);
+      // call-path work, so this never blocks a call budget. `canonicalize`,
+      // not `fs.realpathSync`: on Windows the protocol one expands 8.3 short
+      // names (`RUNNER~1` → `runneradmin`), which is the spelling the
+      // approval card, the capability and the sandbox all speak — a plugin.dir
+      // left in the short form would show the owner a path no other layer
+      // matches.
+      const canonicalDir = canonicalize(dir);
       const bin = binDir(canonicalDir, arch);
       // A manifest that pins nothing for THIS platform is not staged here —
       // another OS's bytes (or nothing staged at all) never count as present.
