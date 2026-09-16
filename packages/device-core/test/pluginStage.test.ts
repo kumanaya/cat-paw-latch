@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { parseManifest, PluginError } from "../src/plugins/manifest.js";
-import { binDir, runPostinstall, stageBinaries, type Arch } from "../src/plugins/stage.js";
+import { binDir, runPostinstall, stageBinaries, stagedName, type Arch } from "../src/plugins/stage.js";
 import { DECOY, MINIMAL, tarball, tempDirs } from "./pluginFixtures.js";
 
 const ARCH = process.arch as Arch;
@@ -33,9 +33,14 @@ describe("stageBinaries", () => {
     const pluginDir = tmp();
     let fetched = 0;
     await stageBinaries(manifestWith(sha256), pluginDir, ARCH, tmp(), async () => { fetched++; return fs.readFileSync(file); }, DARWIN);
-    const staged = path.join(binDir(pluginDir, ARCH), "tool");
+    const staged = path.join(binDir(pluginDir, ARCH), stagedName("tool", DARWIN));
     expect(fetched).toBe(1);
-    expect(execFileSync(staged, ["a"], { encoding: "utf8" })).toBe("ARGV=a\n");
+    expect(fs.existsSync(staged)).toBe(true);
+    // Running the staged bytes is a POSIX-only assertion: the fixture is a
+    // shell script, and Windows will not execute one however it is named.
+    if (process.platform !== "win32") {
+      expect(execFileSync(staged, ["a"], { encoding: "utf8" })).toBe("ARGV=a\n");
+    }
     // Only the member the manifest names is extracted, so the rest of a
     // digest-matching archive never lands under runtime/.
     expect(fs.existsSync(path.join(pluginDir, "runtime", ARCH, "tool", DECOY))).toBe(false);
@@ -60,10 +65,18 @@ describe("stageBinaries", () => {
     const fetch = async () => { fetched++; return fs.readFileSync(file); };
     await stageBinaries(m, pluginDir, ARCH, downloads, fetch, DARWIN);
     // Something modified the staged copy. The next stage must replace it from the verified archive.
-    fs.writeFileSync(path.join(binDir(pluginDir, ARCH), "tool"), "#!/bin/sh\necho tampered\n");
+    const staged = path.join(binDir(pluginDir, ARCH), stagedName("tool", DARWIN));
+    fs.writeFileSync(staged, "#!/bin/sh\necho tampered\n");
     await stageBinaries(m, pluginDir, ARCH, downloads, fetch, DARWIN);
     expect(fetched).toBe(1);
-    expect(execFileSync(path.join(binDir(pluginDir, ARCH), "tool"), ["x"], { encoding: "utf8" })).toBe("ARGV=x\n");
+    // Read, not executed: the assertion holds on Windows too, where the
+    // staged shell script is not a runnable program.
+    const replaced = fs.readFileSync(staged, "utf8");
+    expect(replaced).toContain("ARGV=$*");
+    expect(replaced).not.toContain("tampered");
+    if (process.platform !== "win32") {
+      expect(execFileSync(staged, ["x"], { encoding: "utf8" })).toBe("ARGV=x\n");
+    }
   });
 
   it("stages two binaries whose executables share a basename without one overwriting the other", async () => {
@@ -151,13 +164,28 @@ describe("stageBinaries", () => {
 });
 
 describe("runPostinstall", () => {
-  it("runs the hook with the staged bin first on PATH, and returns what it printed", async () => {
-    const { file, sha256 } = tarball(tmp);
+  // POSIX-only: this exercises the direct-exec branch, where the hook's own
+  // shebang picks the interpreter. Windows has no shebang execution — a
+  // `.sh` hook is EFTYPE there — and its branch is covered by the test below.
+  it.skipIf(process.platform === "win32")(
+    "runs the hook with the staged bin first on PATH, and returns what it printed",
+    async () => {
+      const { file, sha256 } = tarball(tmp);
+      const pluginDir = tmp();
+      fs.writeFileSync(path.join(pluginDir, "check.sh"), '#!/bin/sh\ntool probe\n', { mode: 0o755 });
+      const m = manifestWith(sha256, { hooks: { postinstall: "check.sh" } });
+      await stageBinaries(m, pluginDir, ARCH, tmp(), async () => fs.readFileSync(file), DARWIN);
+      expect(runPostinstall(m, pluginDir, ARCH, DARWIN)).toBe("ARGV=probe");
+    },
+  );
+
+  it("hands a Windows hook to Node explicitly — the real .mjs shape", () => {
+    // Host-independent on purpose: the assertion is about the win32 BRANCH,
+    // which runs `process.execPath` — the one interpreter every host has.
     const pluginDir = tmp();
-    fs.writeFileSync(path.join(pluginDir, "check.sh"), '#!/bin/sh\ntool probe\n', { mode: 0o755 });
-    const m = manifestWith(sha256, { hooks: { postinstall: "check.sh" } });
-    await stageBinaries(m, pluginDir, ARCH, tmp(), async () => fs.readFileSync(file), DARWIN);
-    expect(runPostinstall(m, pluginDir, ARCH, DARWIN)).toBe("ARGV=probe");
+    fs.writeFileSync(path.join(pluginDir, "check.mjs"), 'console.log("WIN-HOOK");\n');
+    const m = manifestWith("0".repeat(64), { hooks: { postinstall: "check.mjs" } });
+    expect(runPostinstall(m, pluginDir, ARCH, "win32")).toBe("WIN-HOOK");
   });
 
   it("is null when the manifest declares no hook", () => {

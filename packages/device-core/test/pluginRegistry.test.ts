@@ -148,8 +148,10 @@ describe("pluginRoots", () => {
   it("orders override, Resources, then the vendor tree", () => {
     const o = tmp();
     process.env.DOMO_PLUGINS = o;
+    // `path.join`, not a literal: the joiner is the host's, and Windows'
+    // backslashes made the forward-slash spelling a red suite on that leg.
     expect(pluginRoots({ resourcesDir: "/r", repoRoot: "/c" })).toEqual([
-      o, "/r/plugins", "/c/vendor/plugins",
+      o, path.join("/r", "plugins"), path.join("/c", "vendor", "plugins"),
     ]);
     // Resolved, so no root — and so no binDir — can depend on the cwd.
     const rel = path.relative(process.cwd(), tmp());
