@@ -12,9 +12,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadSettings, saveSettings, Settings } from "../src/settings.js";
-import { KeyInfo, PlowApiError } from "../src/plowApi.js";
 import {
-  holdsOldDeviceKey,
   isSignedIn,
   readAgentPurpose,
   readInference,
@@ -298,41 +296,4 @@ describe("the purpose statement is owner-authored data", () => {
       expect(stored(home).approvalMode).toBe("adversarial");
     });
   }
-});
-
-describe("holdsOldDeviceKey (#419)", () => {
-  // Plow's public key_prefix is token[5:13].
-  const credential = "plow_OWNKEY01_rest_of_secret";
-  const row = (key_prefix: string, scopes: string[], is_active = true) =>
-    ({ key_prefix, scopes, is_active }) as KeyInfo;
-  const listing = (rows: KeyInfo[]) => ({ listApiKeys: async () => rows });
-  const refusing = (error: Error) => ({
-    listApiKeys: async (): Promise<KeyInfo[]> => {
-      throw error;
-    },
-  });
-
-  it("a login session is not old", async () => {
-    const api = listing([row("SOMEONE1", ["relay:device"]), row("OWNKEY01", ["*:*"])]);
-    expect(await holdsOldDeviceKey(api, credential)).toBe(false);
-  });
-
-  it("a device key with frozen scopes is old", async () => {
-    const api = listing([row("OWNKEY01", ["relay:device", "keys:manage", "gmail:access-token"])]);
-    expect(await holdsOldDeviceKey(api, credential)).toBe(true);
-  });
-
-  it("a device key minted before keys:manage is refused the list, and is old", async () => {
-    const api = refusing(new PlowApiError("forbidden", "Not permitted.", 403));
-    expect(await holdsOldDeviceKey(api, credential)).toBe(true);
-  });
-
-  it("says nothing when Plow cannot answer or does not list this key", async () => {
-    expect(await holdsOldDeviceKey(refusing(new Error("offline")), credential)).toBeNull();
-    expect(
-      await holdsOldDeviceKey(refusing(new PlowApiError("unauthorized", "Not authorized.", 401)), credential),
-    ).toBeNull();
-    expect(await holdsOldDeviceKey(listing([row("SOMEONE1", ["*:*"])]), credential)).toBeNull();
-    expect(await holdsOldDeviceKey(listing([row("OWNKEY01", ["relay:device"], false)]), credential)).toBeNull();
-  });
 });

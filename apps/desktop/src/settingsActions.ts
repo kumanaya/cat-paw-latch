@@ -11,8 +11,6 @@
  */
 import { loadSettings, saveSettings, Settings } from "./settings.js";
 import { InferenceStatus, inferenceStatus } from "./reviewPolicy.js";
-import { KeyInfo, PlowApiError } from "./plowApi.js";
-import { isDeviceCredential } from "./rosterSections.js";
 
 /** Read-modify-write. What the user chose is what stays on disk. */
 function update(home: string, mutate: (settings: Settings) => void): Settings {
@@ -131,28 +129,4 @@ export function setApprovalMode(home: string, mode: unknown): Settings["approval
   const allowed: Settings["approvalMode"][] = ["approve", "adversarial", "ask", "deny"];
   const requested = allowed.find((m) => m === mode) ?? "ask";
   return update(home, (s) => (s.approvalMode = requested)).approvalMode;
-}
-
-/**
- * Does this Mac still hold a pre-session device key? `true`, `false`, or
- * `null` when Plow could not say (offline, a 5xx, its own row not listed).
- *
- * Macs paired before Latch kept the login session hold a device key whose
- * scopes froze at mint, so every surface added since — Google connect, Plow
- * numbers — answers "Not permitted." and no retry widens it. A login session
- * carries `*:*`; a device key never does. The oldest device keys predate
- * `keys:manage` and are refused the list outright, which a session never is.
- */
-export async function holdsOldDeviceKey(
-  api: { listApiKeys(token: string): Promise<KeyInfo[]> },
-  credential: string,
-): Promise<boolean | null> {
-  let keys: KeyInfo[];
-  try {
-    keys = await api.listApiKeys(credential);
-  } catch (error) {
-    return error instanceof PlowApiError && error.kind === "forbidden" ? true : null;
-  }
-  const own = keys.find((key) => key.is_active && isDeviceCredential(key.key_prefix, credential));
-  return own ? !own.scopes.includes("*:*") : null;
 }

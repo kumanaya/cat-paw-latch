@@ -90,7 +90,6 @@ import {
   storedRuleMayGrant,
 } from "./reviewPolicy.js";
 import {
-  holdsOldDeviceKey,
   isSignedIn,
   readAgentPurpose,
   readInference,
@@ -734,7 +733,7 @@ async function signInAgainIfOldKey(): Promise<void> {
   checkingKey = true;
   try {
     const api = new PlowApi(apiBaseUrl);
-    const old = await holdsOldDeviceKey(api, credential);
+    const old = await api.holdsOldDeviceKey(credential);
     if (old === false) fullAccessCredential = credential;
     if (old !== true || loadSettings(home).relayCredential.trim() !== credential) return;
     try {
