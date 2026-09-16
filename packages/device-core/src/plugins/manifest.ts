@@ -1,12 +1,11 @@
 /**
  * `latch-plugin.json`, parsed and refused.
  *
- * Every refusal is a fixed sentence naming a FIELD, never quoting a value:
- * the message reaches the Settings card and the audit log, and a manifest is
- * third-party text. The one exception is the argv-overlap sentence below,
- * which quotes a prefix from the manifest itself — acceptable there because
- * that sentence only ever reaches the installer's caller (the owner) at
- * install time, never the audit log.
+ * Every refusal is a fixed sentence naming a FIELD, never quoting a value — a
+ * manifest is third-party text. The one exception is the argv-overlap sentence
+ * below, which quotes a prefix from the manifest itself. Both are acceptable
+ * because a PluginError reaches the owner directly — the installer's caller,
+ * or launch-time stderr — never the audit log or an agent.
  */
 export class PluginError extends Error {
   constructor(message: string) {
@@ -24,31 +23,35 @@ export interface PluginManifest {
   runtime: {
     binaries: {
       name: string;
-      version: string;
       url: Record<"arm64" | "x64", string>;
       sha256: Record<"arm64" | "x64", string>;
       executable?: string;
     }[];
     sources: { name: string; git: string; commit: string; install?: string[] }[];
   };
-  exec: { cwd: string; argv: string[] }; // cwd is a runtime/ entry ("gbrain", "plugin"); argv[0] resolves in runtime/bin first
+  exec: { cwd: string; argv: string[] }; // cwd is a runtime/ entry ("gbrain", "plugin"); each binary is staged as runtime/<arch>/bin/<binary name>, which leads a child's PATH — argv[0] names one of those or anything else on PATH
   daemon: { argv: string[]; health: string } | null;
   env: Record<string, EnvSource>;
   argv: { read: string[][]; write: string[][] };
   hooks: { postinstall?: string };
-  skill: string; // path in repo/
+  skill: string | null; // path in repo/, or null when a code layer publishes the skill
 }
 
 const SLUG = /^[a-z][a-z0-9-]{0,31}$/;
 const SHA = /^[0-9a-f]{64}$/;
 const ARCHES = ["arm64", "x64"] as const;
 /**
- * A path INSIDE the plugin's own tree: relative, no `..`, no leading `/`.
- * Every path-shaped field (exec.cwd, skill, hooks, a binary's executable) is
- * joined under `$DOMO_HOME/plugins/<name>/` by the installer, so a traversal
- * here would be a write or an exec outside the plugin's directory.
+ * Forbids a `..` path segment: joined under a directory, `..` climbs back
+ * out of it, whether that's a write (INSIDE, below) or an exec (argv[0]).
  */
-const INSIDE = /^(?!\/)(?!.*(^|\/)\.\.(\/|$))[^\0]+$/;
+const NO_DOTDOT = /^(?!.*(^|\/)\.\.(\/|$))[^\0]+$/;
+/**
+ * NO_DOTDOT plus no leading `/`: a path INSIDE the plugin's own tree,
+ * relative only. Every path-shaped field (exec.cwd, skill, hooks, a binary's
+ * executable) is joined under `$DOMO_HOME/plugins/<name>/` by the installer,
+ * so a traversal here would be a write outside the plugin's directory.
+ */
+const INSIDE = new RegExp(`^(?!/)${NO_DOTDOT.source.slice(1)}`);
 
 function fail(message: string): never {
   throw new PluginError(message);
@@ -114,7 +117,6 @@ export function parseManifest(raw: string): PluginManifest {
     }
     return {
       name: bname,
-      version: typedString(bin.version, `binary ${bname} version`) ?? "",
       url: { arm64: url.arm64 as string, x64: url.x64 as string },
       sha256: { arm64: sha256.arm64 as string, x64: sha256.x64 as string },
       ...(bin.executable === undefined ? {} : { executable: insideOrFail(bin.executable, `binary ${bname} executable`) }),
@@ -140,6 +142,14 @@ export function parseManifest(raw: string): PluginManifest {
   if (typeof exec.cwd !== "string" || !isStrings(exec.argv) || exec.argv.length === 0) {
     fail("manifest needs exec.cwd and exec.argv");
   }
+  // A ".." here would let a manifest name an arbitrary host file as the
+  // thing to exec. An absolute argv[0] (e.g. /bin/sh) is legitimate for a
+  // plugin run BY NAME: nothing joins it under bin/, so it falls through to
+  // PATH or the filesystem at exec time. A plugin driven by a provider row
+  // (plow-gog) is the other case — the exec path joins its argv[0] under the
+  // staged bin/ — so that one must be relative and name a staged binary, or
+  // the join nests an absolute path and resolves nothing.
+  if (!NO_DOTDOT.test(exec.argv[0])) fail("exec.argv[0] must not contain a .. segment");
   // cwd names a runtime/ entry the installer creates: a source, or `plugin`
   // (the repo itself). Anything else is a directory outside the staged tree.
   if (exec.cwd !== "plugin" && !sources.some((s) => s.name === exec.cwd)) fail("exec.cwd must be plugin or a source name");
@@ -178,7 +188,7 @@ export function parseManifest(raw: string): PluginManifest {
 
   const hooks = obj(m.hooks);
   const postinstall = hooks.postinstall === undefined ? null : insideOrFail(hooks.postinstall, "hooks.postinstall");
-  const skill = insideOrFail(m.skill, "skill");
+  const skill = m.skill === undefined ? null : insideOrFail(m.skill, "skill");
 
   return {
     name,
