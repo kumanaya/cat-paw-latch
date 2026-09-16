@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { canonicalize } from "@domo/protocol";
 import { parseManifest, PluginError } from "../src/plugins/manifest.js";
 import { loadPlugins, pluginRoots } from "../src/plugins/registry.js";
 import { stageBinaries, type Arch } from "../src/plugins/stage.js";
@@ -16,7 +17,7 @@ describe("loadPlugins", () => {
     const dir = fakePlugin(root, MINIMAL, SCRIPT);
     const [p] = loadPlugins([root]);
     expect(p.manifest.name).toBe("fix");
-    expect(p.binDir).toBe(path.join(fs.realpathSync(dir), "runtime", process.arch, "bin"));
+    expect(p.binDir).toBe(path.join(canonicalize(dir), "runtime", process.arch, "bin"));
   });
 
   it("omits a plugin whose declared binary is not staged, and a directory with no manifest", () => {
@@ -60,7 +61,7 @@ describe("loadPlugins", () => {
     await stageBinaries(manifest, dir, process.arch as Arch, tmp(), async () => fs.readFileSync(file), host);
     const [p] = loadPlugins([root]);
     expect(p.manifest.name).toBe(manifest.name);
-    expect(p.binDir).toBe(path.join(fs.realpathSync(dir), "runtime", process.arch, "bin"));
+    expect(p.binDir).toBe(path.join(canonicalize(dir), "runtime", process.arch, "bin"));
   });
 
   it("takes the first root that has a name, and a missing root is not an error", () => {
