@@ -141,9 +141,11 @@ Only success exits 0.
 
 ## Smoke-testing the gog provider specifically
 
-gog is vendored on darwin, Windows, and Linux (pins in
-`scripts/vendored-providers.mjs`). A build has it on the agent's PATH; a
-from-source checkout needs `just fetch-vendored gog` first. The mint also needs
+gog is a bundled plugin on macOS, Windows, and Linux (plow-pbc/latch#183; pins
+in `apps/desktop/plugins/gog/latch-plugin.json`), driven through `plow-gog` — a
+bare `gog` argv is refused with a sentence naming it. A build
+has the plugin staged; a from-source checkout needs `just stage-plugins gog`
+first. The mint also needs
 `gmail:access-token` in the device's scopes, which is plow-pbc/plow#1416 and is
 not landed — until it is, this section's commands reach gog and fail at the
 mint, not at the binary.
@@ -152,9 +154,9 @@ Same command, its own argv:
 
 ```bash
 scripts/latch-smoke --config ~/.latch/<client>.json --server plow-mbp \
-  --home "~/Library/Application Support/Plow-Latch" -- gog gmail search newer_than:1d --json
+  --home "~/Library/Application Support/Plow-Latch" -- plow-gog gmail search newer_than:1d --json
 # packaged Linux:
-# --home "~/.config/Plow-Latch" -- gog gmail search newer_than:1d --json
+# --home "~/.config/Plow-Latch" -- plow-gog gmail search newer_than:1d --json
 ```
 
 Three things distinguish a working provider path from a broken one, all visible
@@ -162,7 +164,7 @@ without touching Google:
 
 | Output | Means |
 |---|---|
-| `FAILED — the executor threw` … `not installed` | no vendored binary — run `just fetch-vendored gog` and repackage |
+| `FAILED — the executor threw` … `not installed` | the gog plugin is not staged — run `just stage-plugins gog` and repackage |
 | `FAILED — the executor threw` … `could not reach Plow` / `returned 4xx` | the mint failed; the stored credential is the owner's Plow login session, so check that it is still live rather than its scopes — a session carries them all |
 | `OK` | the whole path works |
 

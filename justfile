@@ -86,16 +86,16 @@ test-vectors:
     npx vitest run packages/protocol packages/transport
 
 # ---------------------------------------------------------------------------
-# Vendored provider CLIs — see packages/device-core/src/providers/
+# Bundled plugins — see packages/device-core/src/plugins/
 # ---------------------------------------------------------------------------
 
-# Fetch a pinned provider CLI for both macOS arches into
-# vendor/providers/<name>/<arch>/.
-# The sha256 is verified before extraction. Needed for a from-source run of that
-# provider's tools, and by `just package`. Defaults to every provider.
-# What is pinned, and how to bump it: scripts/vendored-providers.mjs
-fetch-vendored name="--all":
-    node scripts/fetch-vendored.mjs {{name}}
+# Stage every bundled plugin (apps/desktop/plugins/<name>) into
+# vendor/plugins/<name>/runtime/<arch>/bin, both arches of THIS host platform,
+# sha256-verified, then run its postinstall hook. What is pinned and for which
+# OSes: each latch-plugin.json (darwin is the top-level block, every other OS
+# a `platforms` block).
+stage-plugins name="--all": build
+    node scripts/stage-plugins.mjs {{name}}
 
 
 # ---------------------------------------------------------------------------
@@ -178,27 +178,27 @@ package-unnotarized: (_package "domo-notary" "-c.mac.notarize=false")
 # A node script (scripts/package-win.mjs) so the recipe shell differs
 # nothing per host.
 package-win: build
-    node scripts/fetch-vendored.mjs --all
+    node scripts/stage-plugins.mjs --all
     node scripts/build-browser-runtime.mjs --browser-both
     node scripts/package-win.mjs
 
 # Early signed installer validation for an x64 test machine. This is not a
 # substitute for `package-win`: the full release still requires ARM64 too.
 package-win-x64: build
-    node scripts/fetch-vendored.mjs --all
+    node scripts/stage-plugins.mjs --all
     node scripts/build-browser-runtime.mjs --browser
     node scripts/package-win.mjs --arch x64
 
 # Must run on a native ARM64 Windows host. It intentionally fails before a
 # package is made until a pinned Camoufox ARM64 runtime exists.
 package-win-arm64: build
-    node scripts/fetch-vendored.mjs --all
+    node scripts/stage-plugins.mjs --all
     node scripts/build-browser-runtime.mjs --browser
     node scripts/package-win.mjs --arch arm64
 
 # Linux AppImage. Must run on Linux — linuxsandbox compiles for the packaging
 # host, and afterPack refuses a pack whose launcher --probe fails or whose
-# Camoufox / vendored-provider ELF is missing. Fetches providers + browser
+# Camoufox / plugin ELF is missing. Fetches plugins + browser
 # before packing. Default arch is the host; use package-linux-x64 / -arm64
 # to pin it. After the pack, install-desktop copies it into ~/Applications and
 # the user Apps list (Omarchy's Apps tab).
@@ -232,11 +232,12 @@ package-linux-arm64: build
 # have no tag. --publish never: the generic provider is download-only; uploads
 # belong to the release scripts, never electron-builder.
 _package profile flags: build
-    # Providers first: small downloads that succeed or fail in seconds, where a
-    # checkout that has not fetched them would otherwise pay the whole browser
+    # Plugins first: small downloads that succeed or fail in seconds, where a
+    # checkout that has not staged them would otherwise pay the whole browser
     # fetch, build and universal merge before failing on a missing
-    # extraResources source. Idempotent — exits early on a tree already at the pin.
-    node scripts/fetch-vendored.mjs --all
+    # extraResources source. stage-plugins re-extracts every time (its archive
+    # cache is what's cheap, not the runtime tree).
+    node scripts/stage-plugins.mjs --all
     node scripts/build-browser-runtime.mjs --browser-both
     @build="$(date -u +%Y%m%d%H%M)"; \
     base="$(node -p "require('{{root}}/apps/desktop/package.json').version.split('.').slice(0,2).join('.')")"; \

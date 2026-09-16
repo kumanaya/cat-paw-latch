@@ -117,7 +117,7 @@ jobs:
           key: windows-x64-browser-${{ hashFiles('vendor/browser-server/runtime.lock.json', 'scripts/build-browser-runtime.mjs') }}
       - run: npm ci
       - run: npx tsc -b
-      - run: node scripts/fetch-vendored.mjs --all
+      - run: node scripts/stage-plugins.mjs --all
       - run: node scripts/build-browser-runtime.mjs --browser
       - name: Pack and verify the x64 app layout
         working-directory: apps/desktop
@@ -126,7 +126,7 @@ jobs:
   # Same layout proof for Linux: unsigned --dir so PRs never receive
   # release credentials. Needs bubblewrap + a systemd user session for the
   # afterPack launcher --probe, the pinned Linux Camoufox payload, and
-  # vendored gog (afterPack refuses a missing or wrong-arch provider ELF).
+  # staged gog plugin (afterPack refuses a missing or wrong-arch plugin ELF).
   # arm64 packs on ubuntu-24.04-arm so the cage addon and Camoufox ELF are
   # native — afterPack refuses a host/target machine mismatch.
   linux-package:
@@ -173,7 +173,7 @@ jobs:
           systemd-run --user --quiet --scope -p TasksMax=256 -- /bin/true
       - run: npm ci
       - run: npx tsc -b
-      - run: node scripts/fetch-vendored.mjs --all
+      - run: node scripts/stage-plugins.mjs --all
       - run: node scripts/build-browser-runtime.mjs --browser
       - name: Pack and verify the ${{ matrix.arch }} app layout
         working-directory: apps/desktop

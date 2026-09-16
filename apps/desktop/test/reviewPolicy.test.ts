@@ -410,10 +410,10 @@ describe("Linux migrates old sensitive standing rules", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-linux-rule-migration-"));
     try {
       const file = path.join(dir, "rules.json");
-      const original = new PolicyEngine(file, "darwin");
+      const original = new PolicyEngine(file, undefined, "darwin");
       await original.decide(intent(), { decideIntent: async () => "always_allow" as const });
 
-      const migrated = new PolicyEngine(file, "linux");
+      const migrated = new PolicyEngine(file, undefined, "linux");
       expect(migrated.allRules()).toMatchObject([{ disabled: true, disabledReason: "linux_sensitive_capability" }]);
       expect(migrated.migratedDisabledRules()).toHaveLength(1);
     } finally {
@@ -427,10 +427,10 @@ describe("Windows migrates old sensitive standing rules", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "domo-windows-rule-migration-"));
     try {
       const file = path.join(dir, "rules.json");
-      const original = new PolicyEngine(file, "darwin");
+      const original = new PolicyEngine(file, undefined, "darwin");
       await original.decide(intent(), { decideIntent: async () => "always_allow" as const });
 
-      const migrated = new PolicyEngine(file, "win32");
+      const migrated = new PolicyEngine(file, undefined, "win32");
       expect(migrated.allRules()).toMatchObject([{ disabled: true, disabledReason: "windows_sensitive_capability" }]);
       expect(migrated.migratedDisabledRules()).toHaveLength(1);
       expect(JSON.parse(fs.readFileSync(file, "utf8"))).toMatchObject([{ disabled: true }]);
@@ -443,7 +443,7 @@ describe("Windows migrates old sensitive standing rules", () => {
       expect(grant.source).not.toBe("rule");
       expect(delegate.calls).toBe(1);
 
-      const restarted = new PolicyEngine(file, "win32");
+      const restarted = new PolicyEngine(file, undefined, "win32");
       expect(restarted.migratedDisabledRules()).toEqual([]);
       expect(restarted.allRules()).toMatchObject([{ disabled: true }]);
     } finally {

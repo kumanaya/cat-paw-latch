@@ -1,0 +1,48 @@
+{
+  "name": "gog",
+  "version": "0.36.0",
+  "command": "plow-gog",
+  "runtime": {
+    "binaries": [
+      {
+        "name": "gog",
+        "url": {
+          "arm64": "https://github.com/openclaw/gogcli/releases/download/v0.36.0/gogcli_0.36.0_darwin_arm64.tar.gz",
+          "x64": "https://github.com/openclaw/gogcli/releases/download/v0.36.0/gogcli_0.36.0_darwin_amd64.tar.gz"
+        },
+        "sha256": {
+          "arm64": "5cb5b5210879769bc6a02bd9cf39ed1b0de3f0713b397ecbddefe95dd2be618b",
+          "x64": "7252cfc0a63d239912d0d57ca5f51e31ca58472b506834237e148704387902df"
+        },
+        "platforms": {
+          "win32": {
+            "url": {
+              "arm64": "https://github.com/openclaw/gogcli/releases/download/v0.36.0/gogcli_0.36.0_windows_arm64.zip",
+              "x64": "https://github.com/openclaw/gogcli/releases/download/v0.36.0/gogcli_0.36.0_windows_amd64.zip"
+            },
+            "sha256": {
+              "arm64": "a8e205c7f532e97f6b83e5c6241387ac5c01db0227e22e3d940c76b390c0e9ce",
+              "x64": "070b5675621dc5f90d8d9bc3ab959e77e5c76ba196dbc979d395471687b94f03"
+            },
+            "executable": "gog.exe"
+          },
+          "linux": {
+            "url": {
+              "arm64": "https://github.com/openclaw/gogcli/releases/download/v0.36.0/gogcli_0.36.0_linux_arm64.tar.gz",
+              "x64": "https://github.com/openclaw/gogcli/releases/download/v0.36.0/gogcli_0.36.0_linux_amd64.tar.gz"
+            },
+            "sha256": {
+              "arm64": "f68e3c35c9364dea5a4e515d13a23ab30ded46401c90d89e2953dca395d7fe42",
+              "x64": "b290fcfe907789a1efb685a9336e2a6c7f9598c3c00aada8d6c437eebc86c891"
+            }
+          }
+        }
+      }
+    ],
+    "sources": []
+  },
+  "exec": { "cwd": "plugin", "argv": ["gog", "--no-input", "--wrap-untrusted", "--enable-commands=gmail,calendar"] },
+  "env": {},
+  "argv": { "read": [], "write": [] },
+  "hooks": { "postinstall": "postinstall.mjs" }
+}

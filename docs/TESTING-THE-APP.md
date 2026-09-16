@@ -37,7 +37,7 @@ it needs an install and a client registration, so it does not make the walk abov
 
 The same script is the Linux proof. Package on a Linux host
 (`just package-linux` — needs bubblewrap, a systemd user session, the pinned
-Camoufox payload, and vendored `gog`). The AppImage needs FUSE 2
+Camoufox payload, and the staged `gog` plugin). The AppImage needs FUSE 2
 (`libfuse.so.2`) on the *target* host: `fuse2` on Arch, `libfuse2` on Debian
 / Ubuntu. Without it the file prints `dlopen(): error loading libfuse.so.2`
 and does not start — then either install that package or run

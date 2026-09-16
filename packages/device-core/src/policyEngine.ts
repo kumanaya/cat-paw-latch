@@ -101,6 +101,20 @@ export class PolicyEngine {
 
   constructor(
     private readonly rulesFile: string,
+    /**
+     * The intent a RULE is keyed on and stored as — by default the intent
+     * itself. A plugin read (`plugins/argvRules.ts`) is viewed with its argv cut
+     * to `<command> <prefix>`, so the query TEXT may vary freely under one
+     * "always allow" — but the rest of the normalized capability set (paths,
+     * network, …) still participates in the key, so a call carrying different
+     * ones is a different request and prompts again. Only the rule sees the
+     * view: the approval card, the sandbox profile and the audit log all get
+     * the real argv. The view MUST
+     * return a new Intent and must never mutate the intent it is handed — the
+     * same object is reused afterwards for the grant, the approval card, the
+     * sandbox profile and the audit log.
+     */
+    private readonly ruleView: (intent: Intent) => Intent = (i) => i,
     private readonly platform: NodeJS.Platform = process.platform,
   ) {
     try {
@@ -261,7 +275,7 @@ export class PolicyEngine {
   async ruleAnswers(intent: Intent, delegate: PolicyDelegate): Promise<boolean> {
     return (
       ruleEligible(intent, this.platform) &&
-      this.rules.has(intentRuleKey(intent)) &&
+      this.rules.has(intentRuleKey(this.ruleView(intent))) &&
       (await mayGrantFromStoredRule(intent, delegate))
     );
   }
@@ -280,9 +294,10 @@ export class PolicyEngine {
    * honest.
    */
   storeRule(intent: Intent): void {
-    const key = intentRuleKey(intent);
+    const viewed = this.ruleView(intent);
+    const key = intentRuleKey(viewed);
     if (!ruleEligible(intent, this.platform) || this.rules.has(key)) return;
-    const rule = makeAlwaysAllowRule(intent);
+    const rule = makeAlwaysAllowRule(viewed);
     this.write(
       () => this.rules.set(key, rule),
       () => this.rules.delete(key),

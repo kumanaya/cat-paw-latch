@@ -96,15 +96,15 @@ export function contactsSkillFor(home: string): Skill {
   return {
     name: "contacts",
     description:
-      "Read and update the owner's macOS Contacts — the address book this Mac keeps in " +
-      "AddressBook-v22.abcddb and edits through Contacts.app. Use it when they ask for " +
-      "someone's number, email or address, or want a contact updated, rather than answering " +
-      "that you cannot see their contacts.",
+      "Read and update the owner's macOS Contacts. Use it whenever they name someone — for a " +
+      "number, email or address, or to find that person's texts, which are filed under a " +
+      "phone or email, not a name — rather than answering that you cannot see their contacts.",
     body: `# The owner's contacts are on this Mac
 
-Contacts.app keeps the owner's address book in Core Data SQLite stores. When the owner asks
-for someone's number, email or address, or wants a contact corrected, **do it** — read the
-store, or write through Contacts.app. Do not answer that you cannot see their contacts.
+Contacts.app keeps the owner's address book in Core Data SQLite stores. When the owner names
+someone — for their number, email or address, to find their texts (filed under a phone or
+email, never a name), or to correct their card — **do it**: read the stores, or write
+through Contacts.app. Do not answer that you cannot see their contacts.
 
 There is more than one store. The root one:
 
@@ -112,7 +112,8 @@ There is more than one store. The root one:
 
 plus one per sync source under \`Sources/<UUID>/\` — and the iCloud source is usually the
 populated one, so a root store with few rows means you are looking at the wrong file, not
-at an empty address book. Sweep them all first:
+at an empty address book, and a name missing from one store is not missing. Sweep them all
+first:
 
     plow_run_command {
       argv: ["/usr/bin/find", "${dir}",
@@ -121,7 +122,7 @@ at an empty address book. Sweep them all first:
       goal: "<the question the owner actually asked, in one line>"
     }
 
-then query whichever store answers, by the absolute path \`find\` printed.
+then run each search against every store \`find\` printed, by its absolute path.
 
 ## Two rules that come before any query
 
@@ -173,7 +174,13 @@ hold the values.
 
 **Find a record** — start here when the owner names someone. Substitute their spelling for
 \`${CONTACTS_NAME_PLACEHOLDER}\`, and double every apostrophe in it — searching for
-O'Brien is \`o''brien\`, or the query is a syntax error that reads as "no such contact":
+O'Brien is \`o''brien\`, or the query is a syntax error that reads as "no such contact".
+Search one word of the name at a time — the first name alone, then the last. The owner's
+spelling is not always the card's: asked for Anna "Kowalksi", an agent searched the surname,
+matched nothing and told the owner she was not in Contacts, when "Anna" alone would have
+found the card for Anna Kowalski (2026-09-14). When no card matches their spelling, show the
+owner the close ones and ask; say someone is not in Contacts only when every word of the
+name comes back empty:
 
 ${indented(CONTACTS_QUERIES.searchByName)}
 

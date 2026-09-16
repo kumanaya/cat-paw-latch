@@ -21,11 +21,18 @@ const afterPack = createRequire(import.meta.url)("../build/afterPack.cjs") as (
  * and the vault ships no payload (TypeScript in dist/ plus a Keychain item). */
 const PAYLOADS = ["camoufox"];
 
-// @ts-expect-error — a build-time .mjs with no type declarations.
-import { VENDORED } from "../../../scripts/vendored-providers.mjs";
-
-/** Every vendored CLI the packed app must carry, and the arches it stages. */
-const PROVIDERS: { command: string; arches: Record<string, unknown> }[] = VENDORED;
+/** Every bundled plugin (apps/desktop/plugins/<name>), read the same way the
+ * hook does: from disk, not a fixture list, so a new plugin's manifest is
+ * covered here without a matching edit to this file. */
+const PLUGINS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "plugins");
+const PLUGINS: { name: string; binaries: { name: string }[] }[] = fs
+  .readdirSync(PLUGINS_DIR)
+  .filter((name) => fs.existsSync(path.join(PLUGINS_DIR, name, "latch-plugin.json")))
+  .map((name) => ({
+    name,
+    binaries: JSON.parse(fs.readFileSync(path.join(PLUGINS_DIR, name, "latch-plugin.json"), "utf8")).runtime
+      .binaries,
+  }));
 
 const IDENTITY = "Developer ID Application: Nobody (TEAMID)";
 
@@ -47,12 +54,16 @@ describe("the packaging hook refuses before it signs", () => {
   const resourcesDir = () => path.join(dir, "Plow Latch.app", "Contents", "Resources");
   const runtimeDir = () => path.join(resourcesDir(), "browser-runtime");
 
-  /** Every provider as production ships it: one thin binary per arch. */
-  const packProviders = () => {
-    for (const { command, arches } of PROVIDERS) {
-      for (const arch of Object.keys(arches)) {
-        fs.mkdirSync(path.join(resourcesDir(), "providers", command, arch), { recursive: true });
-        fs.writeFileSync(path.join(resourcesDir(), "providers", command, arch, command), "#!/bin/sh\n");
+  /** Every bundled plugin as production stages it: one executable per binary,
+   * per arch, at runtime/<arch>/bin/<binary name> — what stageBinaries writes. */
+  const packPlugins = () => {
+    for (const { name, binaries } of PLUGINS) {
+      for (const { name: binary } of binaries) {
+        for (const arch of ["arm64", "x64"]) {
+          const bin = path.join(resourcesDir(), "plugins", name, "runtime", arch, "bin", binary);
+          fs.mkdirSync(path.dirname(bin), { recursive: true });
+          fs.writeFileSync(bin, "#!/bin/sh\n");
+        }
       }
     }
   };
@@ -90,7 +101,7 @@ describe("the packaging hook refuses before it signs", () => {
   /** A packed app whose payloads all carry something, minus `omit`. */
   const pack = (omit?: string) => {
     const runtime = runtimeDir();
-    packProviders();
+    packPlugins();
     if (omit !== "keychain-addon") packKeychainAddon();
     for (const payload of PAYLOADS) {
       if (payload === omit) continue;
@@ -263,53 +274,50 @@ describe("the packaging hook refuses before it signs", () => {
     });
   });
 
-  // One expectation over every way an arch can be unusable, for every arch of
-  // every row: absent, empty and stray-file-only are the same failure to the
-  // gate — the binary is not there.
+  // One expectation over every way a staged binary can be unusable, for every
+  // binary of every bundled plugin. The silent half-install is the hazard: a
+  // tree carrying only the packaging Mac's arch clears every other gate and
+  // reaches the other arch's users with nothing. Checked against the binary's
+  // own name (what stageBinaries writes to bin/), not argv[0] — and on the
+  // BINARY with a size, so a zero-byte file left by a half-written extract
+  // does not pass. `arches` is what the refusal must name: the both-missing
+  // row is why it is the joined list rather than the first one found.
+  //
+  // The `absent` rows are also the stray-file case the hook's own comment
+  // names: they take the binary out and leave the directory standing, which
+  // is exactly what a `bare` check on the directory would wave through.
   it.each(
-    PROVIDERS.flatMap(({ command, arches }) =>
-      Object.keys(arches).flatMap((arch) =>
-        [
-          { how: "absent", damage: (d: string) => fs.rmSync(d, { recursive: true, force: true }) },
-          { how: "a zero-byte binary", damage: (d: string) => fs.writeFileSync(path.join(d, command), "") },
+    PLUGINS.flatMap(({ name, binaries }) =>
+      binaries.flatMap((binary) => {
+        const bin = (root: string, arch: string) =>
+          path.join(root, "runtime", arch, "bin", binary.name);
+        return [
+          ...["arm64", "x64"].map((arch) => ({
+            name, binary: binary.name, how: `absent for ${arch}`, arches: arch,
+            damage: (root: string) => fs.rmSync(bin(root, arch)),
+          })),
           {
-            how: "an arch folder carrying only a stray file",
-            damage: (d: string) => {
-              fs.rmSync(path.join(d, command));
-              fs.writeFileSync(path.join(d, ".DS_Store"), "junk");
+            name, binary: binary.name, how: "a zero-byte binary for arm64", arches: "arm64",
+            damage: (root: string) => fs.writeFileSync(bin(root, "arm64"), ""),
+          },
+          {
+            name, binary: binary.name, how: "absent for both arches", arches: "arm64, x64",
+            damage: (root: string) => {
+              for (const arch of ["arm64", "x64"]) fs.rmSync(bin(root, arch));
             },
           },
-        ].map((c) => ({ ...c, command, arch })),
-      ),
+        ];
+      }),
     ),
-  )("refuses $command/$arch when it is $how", async ({ command, arch, damage }) => {
-    // Silent half-install: a tree carrying only the packaging Mac's arch clears
-    // every other gate and reaches the other arch's users with nothing.
+  )("refuses $name/$binary when it is $how", async ({ name, binary, arches, damage }) => {
     pack();
-    damage(path.join(resourcesDir(), "providers", command, arch));
-    await expect(afterPack(contextFor(dir))).rejects.toThrow(
-      new RegExp(`no ${command} for ${arch}`),
-    );
-  });
-
-  it.each(PROVIDERS)("names every arch $command is missing, not just the first", async (p) => {
-    // One run of `just fetch-vendored` fixes them all; being told about one
-    // arch at a time means one package run per arch to learn that.
-    //
-    // MEMBERSHIP, not a joined string. The claim is that every missing arch is
-    // named — a hook that sorted them, or listed them one per line, would still
-    // satisfy it. Asserting the join would pin the row's declaration order and
-    // the separator, and fail a correct hook.
-    pack();
-    fs.rmSync(path.join(resourcesDir(), "providers", p.command), { recursive: true, force: true });
+    damage(path.join(resourcesDir(), "plugins", name));
     const failure = await afterPack(contextFor(dir)).catch((e: Error) => e);
     expect(failure).toBeInstanceOf(Error);
-    const message = (failure as Error).message;
-    // Anchored to the arch gate, then membership within it. Without the anchor
-    // any error naming both arches passes — a refusal enumerating missing
-    // binary PATHS would, without the gate ever emitting its summary.
-    expect(message).toContain(`no ${p.command} for`);
-    for (const arch of Object.keys(p.arches)) expect(message).toContain(arch);
+    // Anchored to the arch gate: without it, any error naming both arches
+    // passes — a refusal enumerating missing binary PATHS would, without the
+    // gate ever emitting its summary.
+    expect((failure as Error).message).toContain(`no ${name} plugin's ${binary} for ${arches}`);
   });
 
   it("refuses a camoufox tree a fuse left without a bundle", async () => {
@@ -365,17 +373,21 @@ describe("the Windows pack gate", () => {
     }
     fs.writeFileSync(winLauncher(), winPeHeader(machine));
   };
-  const packWinBrowserAndProviders = (arch = process.arch === "arm64" ? "arm64" : "x64", machine = hostMachine) => {
+  const packWinBrowserAndPlugins = (arch = process.arch === "arm64" ? "arm64" : "x64", machine = hostMachine) => {
     const browser = path.join(
       winResources(), "browser-runtime", "camoufox", arch,
       "browsers", "official", "fixture", "camoufox.exe",
     );
     fs.mkdirSync(path.dirname(browser), { recursive: true });
     fs.writeFileSync(browser, winPeHeader(machine));
-    for (const { command } of PROVIDERS) {
-      const provider = path.join(winResources(), "providers", command, arch, `${command}.exe`);
-      fs.mkdirSync(path.dirname(provider), { recursive: true });
-      fs.writeFileSync(provider, winPeHeader(machine));
+    // Plugins as production stages them on Windows: `<binary>.exe` under
+    // runtime/<arch>/bin — the name stageBinaries writes there.
+    for (const { name, binaries } of PLUGINS) {
+      for (const { name: binary } of binaries) {
+        const file = path.join(winResources(), "plugins", name, "runtime", arch, "bin", `${binary}.exe`);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, winPeHeader(machine));
+      }
     }
   };
 
@@ -401,22 +413,22 @@ describe("the Windows pack gate", () => {
     await expect(afterPack(winContextFor(winDir))).rejects.toThrow(new RegExp(`no ${pkg} addon`));
   });
 
-  it("passes only with native addons, AppContainer, browser and providers for the target architecture", async () => {
+  it("passes only with native addons, AppContainer, browser and plugins for the target architecture", async () => {
     packWinAddons();
-    packWinBrowserAndProviders();
+    packWinBrowserAndPlugins();
     await expect(afterPack(winContextFor(winDir))).resolves.toBeUndefined();
   });
 
   it("accepts electron-builder's numeric x64 architecture enum", async () => {
     packWinAddons(0x8664);
-    packWinBrowserAndProviders("x64", 0x8664);
+    packWinBrowserAndPlugins("x64", 0x8664);
     await expect(afterPack(winContextFor(winDir, 1))).resolves.toBeUndefined();
   });
 
   it("refuses a missing or wrong-arch Windows Camoufox payload", async () => {
     packWinAddons();
     await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/no Windows Camoufox/);
-    packWinBrowserAndProviders();
+    packWinBrowserAndPlugins();
     const arch = process.arch === "arm64" ? "arm64" : "x64";
     const browser = path.join(winResources(), "browser-runtime", "camoufox", arch,
       "browsers", "official", "fixture", "camoufox.exe");
@@ -424,20 +436,24 @@ describe("the Windows pack gate", () => {
     await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/Camoufox is not/);
   });
 
-  it("refuses a missing or wrong-arch Windows provider", async () => {
+  it("refuses a missing or wrong-arch Windows plugin", async () => {
     packWinAddons();
-    packWinBrowserAndProviders();
+    packWinBrowserAndPlugins();
     const arch = process.arch === "arm64" ? "arm64" : "x64";
-    const provider = path.join(winResources(), "providers", PROVIDERS[0]!.command, arch, `${PROVIDERS[0]!.command}.exe`);
-    fs.rmSync(provider);
-    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/provider for/);
-    fs.writeFileSync(provider, winPeHeader(process.arch === "arm64" ? 0x8664 : 0xaa64));
-    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/provider is not/);
+    const plugin = PLUGINS[0]!;
+    const binary = plugin.binaries[0]!.name;
+    const file = path.join(winResources(), "plugins", plugin.name, "runtime", arch, "bin", `${binary}.exe`);
+    fs.rmSync(file);
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(
+      new RegExp(`no ${plugin.name} plugin's ${binary}\\.exe for ${arch}`),
+    );
+    fs.writeFileSync(file, winPeHeader(process.arch === "arm64" ? 0x8664 : 0xaa64));
+    await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/is not .* \(PE machine mismatch\)/);
   });
 
   it("refuses a pack whose AppContainer launcher is absent or wrong-arch", async () => {
     packWinAddons();
-    packWinBrowserAndProviders();
+    packWinBrowserAndPlugins();
     fs.rmSync(winLauncher());
     await expect(afterPack(winContextFor(winDir))).rejects.toThrow(/no AppContainer launcher/);
     fs.writeFileSync(winLauncher(), winPeHeader(process.arch === "x64" ? 0xaa64 : 0x8664));
@@ -447,7 +463,7 @@ describe("the Windows pack gate", () => {
   it("refuses an addon built for the wrong arch", async () => {
     // Same crafted header, stamped with the machine this host is not.
     packWinAddons();
-    packWinBrowserAndProviders();
+    packWinBrowserAndPlugins();
     fs.writeFileSync(
       winAddon("native-winsandbox", "winsandbox.node"),
       winPeHeader(process.arch === "x64" ? 0xaa64 : 0x8664),
@@ -515,12 +531,16 @@ describe("the Linux pack gate", () => {
     fs.mkdirSync(path.dirname(browser), { recursive: true });
     fs.writeFileSync(browser, elfHeader(machine));
   };
-  const packLinuxProviders = (machine = hostElf) => {
+  const packLinuxPlugins = (machine = hostElf) => {
     const arch = process.arch === "arm64" ? "arm64" : "x64";
-    for (const { command } of PROVIDERS) {
-      const provider = path.join(linuxResources(), "providers", command, arch, command);
-      fs.mkdirSync(path.dirname(provider), { recursive: true });
-      fs.writeFileSync(provider, elfHeader(machine));
+    // Plugins as production stages them on Linux: the manifest's declared
+    // binary name, extension-free, under runtime/<arch>/bin.
+    for (const { name, binaries } of PLUGINS) {
+      for (const { name: binary } of binaries) {
+        const file = path.join(linuxResources(), "plugins", name, "runtime", arch, "bin", binary);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, elfHeader(machine));
+      }
     }
   };
 
@@ -531,12 +551,20 @@ describe("the Linux pack gate", () => {
     await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/Linux Camoufox is not/);
   });
 
-  it("refuses a missing or wrong-arch Linux provider", async () => {
+  it("refuses a missing or wrong-arch Linux plugin", async () => {
     packLinuxCage();
     packLinuxBrowser();
-    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/provider for/);
-    packLinuxProviders(otherElf);
-    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/provider is not/);
+    packLinuxPlugins();
+    const arch = process.arch === "arm64" ? "arm64" : "x64";
+    const plugin = PLUGINS[0]!;
+    const binary = plugin.binaries[0]!.name;
+    const file = path.join(linuxResources(), "plugins", plugin.name, "runtime", arch, "bin", binary);
+    fs.rmSync(file);
+    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(
+      new RegExp(`no ${plugin.name} plugin's ${binary} for ${arch}`),
+    );
+    fs.writeFileSync(file, elfHeader(otherElf));
+    await expect(afterPack(linuxContextFor(linuxDir))).rejects.toThrow(/is not .* \(ELF machine mismatch\)/);
   });
 
   it.skipIf(process.platform !== "linux")(
@@ -555,7 +583,7 @@ describe("the Linux pack gate", () => {
       fs.copyFileSync(launcherSrc, linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox_launcher"));
       fs.chmodSync(linuxAddon("native-linuxsandbox", "build", "Release", "linuxsandbox_launcher"), 0o755);
       packLinuxBrowser();
-      packLinuxProviders();
+      packLinuxPlugins();
       await expect(afterPack(linuxContextFor(linuxDir))).resolves.toBeUndefined();
     },
   );
