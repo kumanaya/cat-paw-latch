@@ -153,24 +153,14 @@ module.exports = async function afterPack(context) {
         "package with `just package` or `just package-unnotarized`",
     );
   }
-  // Vendored provider CLIs are signed by electron-builder's own signer — they
-  // are outside signIgnore's browser-runtime scope and have no nested plists for
-  // the universal merge to rewrite. What they need from here is proof each is in
-  // the packed app for BOTH arches: a tree carrying only the packaging Mac's
-  // arch clears every other gate and reaches the other arch's users with no
-  // provider tools at all.
-  //
-  // The BINARY, with a size — not `bare` on the directory, which passes for a
-  // folder carrying only a stray .DS_Store the copy picked up.
-  //
   // The vault's Keychain root: the native-keychain addon MUST be in the packed
   // app and universal. Its install script is tolerant on purpose (a dev box
   // without Xcode CLT still installs, the key store falls back), but a RELEASE
   // that shipped without it would silently downgrade every new vault from the
   // SecItem access group to safeStorage — a guarantee this hook exists to
-  // enforce, not to hope for. Both arches checked for the same reason the
-  // providers are: a thin addon clears every gate on the packaging Mac and
-  // lands broken on the other arch's users.
+  // enforce, not to hope for. Both arches checked for the same reason a
+  // plugin's binaries are: a thin addon clears every gate on the packaging Mac
+  // and lands broken on the other arch's users.
   const keychainAddon = path.join(
     context.appOutDir, appName, "Contents", "Resources",
     "app.asar.unpacked", "node_modules", "@domo", "native-keychain", "build", "Release", "keychain.node",
@@ -183,22 +173,22 @@ module.exports = async function afterPack(context) {
   }
   assertUniversalMachO("native-keychain addon", keychainAddon, "rebuild it universal (binding.gyp forces both arches)");
 
-  // `await import`, because the manifest is ESM and this hook is not. It is the
-  // one list of providers; a literal here was true of one and false of two.
-  const { VENDORED } = await import("../../../scripts/vendored-providers.mjs");
-  for (const { command, arches } of VENDORED) {
-    const dir = path.join(context.appOutDir, appName, "Contents", "Resources", "providers", command);
-    const missingArches = Object.keys(arches).filter((a) => {
-      const binary = path.join(dir, a, command);
-      return !fs.existsSync(binary) || fs.statSync(binary).size === 0;
-    });
-    if (missingArches.length > 0) {
-      throw new Error(
-        `[afterPack] the packed app has no ${command} for ${missingArches.join(", ")} — ` +
-          `run \`just fetch-vendored ${command}\``,
-      );
-    }
-  }
+  // The bundled plugins: every manifest under apps/desktop/plugins must have
+  // its executable staged for both arches inside the packed app. Checked
+  // against each declared binary's own name (what stageBinaries writes to
+  // bin/), not exec.argv[0] — argv[0] may name something that falls through
+  // to PATH rather than a binary this plugin stages. A staged binary is signed
+  // by electron-builder's own signer: it is outside signIgnore's
+  // browser-runtime scope and has no nested plists for the universal merge to
+  // rewrite, so what it needs from here is proof it is in the packed app.
+  //
+  // The BINARY, with a size — not `bare` on the directory, which passes for a
+  // folder carrying only a stray .DS_Store the copy picked up.
+  assertBundledPlugins({
+    resourcesDir: path.join(context.appOutDir, appName, "Contents", "Resources"),
+    platform: "darwin",
+    arches: ["arm64", "x64"],
+  });
   // camoufox's interior: a fuse that stopped partway leaves files behind but no
   // bundle to sign.
   const camoufoxApps = findApps(camoufox);
@@ -427,16 +417,17 @@ async function afterPackWin(context) {
   if (want !== undefined && peArch(browser) !== want) {
     throw new Error(`[afterPack] Windows Camoufox is not ${wantArch} (PE machine mismatch)`);
   }
-  const { VENDORED } = await import("../../../scripts/vendored-providers.mjs");
-  for (const { command } of VENDORED) {
-    const provider = path.join(resources, "providers", command, wantArch, `${command}.exe`);
-    if (!present(provider)) {
-      throw new Error(`[afterPack] the packed app has no ${command} provider for ${wantArch}`);
-    }
-    if (want !== undefined && peArch(provider) !== want) {
-      throw new Error(`[afterPack] the ${command} provider is not ${wantArch} (PE machine mismatch)`);
-    }
-  }
+  // Every bundled plugin must be staged for the arch this pack targets — and
+  // the staged PE must be that arch, not this host's, because a thin payload
+  // clears every gate on the packaging Mac and lands broken on users.
+  assertBundledPlugins({
+    resourcesDir: resources,
+    platform: "win32",
+    arches: [wantArch],
+    archKind: "PE",
+    archOf: peArch,
+    wantMachine: want !== undefined ? PE_MACHINE[wantArch] : undefined,
+  });
 }
 
 /**
@@ -505,16 +496,16 @@ async function afterPackLinux(context) {
   if (want !== undefined && elfArch(browser) !== want) {
     throw new Error(`[afterPack] Linux Camoufox is not ${wantArch} (ELF machine mismatch)`);
   }
-  const { VENDORED } = await import("../../../scripts/vendored-providers.mjs");
-  for (const { command } of VENDORED) {
-    const provider = path.join(resources, "providers", command, wantArch, command);
-    if (!present(provider)) {
-      throw new Error(`[afterPack] the packed app has no ${command} provider for ${wantArch}`);
-    }
-    if (want !== undefined && elfArch(provider) !== want) {
-      throw new Error(`[afterPack] the ${command} provider is not ${wantArch} (ELF machine mismatch)`);
-    }
-  }
+  // Every bundled plugin must be staged for the arch this pack targets, and
+  // the staged ELF must be that arch (same posture as the Windows gate).
+  assertBundledPlugins({
+    resourcesDir: resources,
+    platform: "linux",
+    arches: [wantArch],
+    archKind: "ELF",
+    archOf: elfArch,
+    wantMachine: want,
+  });
   const probe = spawnSync(launcher, ["--probe"], { encoding: "utf8" });
   if (probe.status !== 0) {
     throw new Error(
@@ -522,6 +513,64 @@ async function afterPackLinux(context) {
         `${(probe.stderr || probe.stdout || "").trim() || "no output"} — ` +
         "install bubblewrap and ensure a systemd user session is available",
     );
+  }
+}
+
+/** The name `stageBinaries` writes a plugin's executable under, per platform. */
+function stagedPluginBinary(binary, platform) {
+  return platform === "win32" ? `${binary.name}.exe` : binary.name;
+}
+
+/**
+ * The bundled plugins, checked in the PACKED app: every `runtime.binaries`
+ * entry of every `apps/desktop/plugins/<name>/latch-plugin.json` must have its
+ * staged executable present, with a size, for each arch in `arches` — under
+ * the platform's own staged name — and, where a machine checker is handed in,
+ * be that arch's machine. A manifest that pins nothing for the platform being
+ * packed is refused outright: another OS's payload must never pass as this
+ * one's.
+ */
+function assertBundledPlugins({ resourcesDir, platform, arches, archKind, archOf, wantMachine }) {
+  const bundled = path.join(__dirname, "..", "plugins");
+  for (const name of fs.readdirSync(bundled)) {
+    // A stray non-plugin entry (a .DS_Store, say) has no manifest to read.
+    const manifestFile = path.join(bundled, name, "latch-plugin.json");
+    if (!fs.existsSync(manifestFile)) continue;
+    const manifest = JSON.parse(fs.readFileSync(manifestFile, "utf8"));
+    const dir = path.join(resourcesDir, "plugins", name);
+    for (const binary of manifest.runtime.binaries) {
+      const pinned = platform === "darwin" || (binary.platforms ?? {})[platform] !== undefined;
+      if (!pinned) {
+        throw new Error(
+          `[afterPack] the ${name} plugin pins no ${platform} binary for ${binary.name} — ` +
+            `a ${platform} pack cannot ship it`,
+        );
+      }
+      const file = stagedPluginBinary(binary, platform);
+      // Every arch missing at once is one refusal naming the joined list, the
+      // way it always read: the both-absent case is the silent half-install,
+      // and naming only the first arch would hide that the other is gone too.
+      const missing = arches.filter((arch) => {
+        const bin = path.join(dir, "runtime", arch, "bin", file);
+        return !fs.existsSync(bin) || fs.statSync(bin).size === 0;
+      });
+      if (missing.length > 0) {
+        throw new Error(
+          `[afterPack] the packed app has no ${name} plugin's ${file} for ${missing.join(", ")} — ` +
+            `run \`just stage-plugins ${name}\``,
+        );
+      }
+      if (archOf !== undefined && wantMachine !== undefined) {
+        for (const arch of arches) {
+          const bin = path.join(dir, "runtime", arch, "bin", file);
+          if (archOf(bin) !== wantMachine) {
+            throw new Error(
+              `[afterPack] the ${name} plugin's ${file} is not ${arch} (${archKind} machine mismatch)`,
+            );
+          }
+        }
+      }
+    }
   }
 }
 

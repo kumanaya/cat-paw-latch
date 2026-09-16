@@ -35,13 +35,12 @@ export * from "./executor.js";
 export {
   impliesNetwork,
   PROVIDERS,
-  vendoredProvider,
+  providerFor,
+  providerRefusal,
 } from "./providers/registry.js";
-export type { VendoredProvider } from "./providers/registry.js";
+export type { Provider } from "./providers/registry.js";
 export { MintError } from "./providers/mint.js";
 export type { MintedAccounts, Minter } from "./providers/mint.js";
-export { overrideVar, resolveVendoredBinary } from "./providers/vendoredBinary.js";
-export type { VendoredLocation } from "./providers/vendoredBinary.js";
 export { reservedFlagIn } from "./providers/gogFlags.js";
 export * from "./fileLockdown.js";
 export * from "./fileOps.js";
@@ -54,3 +53,9 @@ export * from "./windowsWorkspace.js";
 export * from "./windowsLaunchConfig.js";
 export * from "./linuxWorkspace.js";
 export * from "./linuxLaunchConfig.js";
+export { fetchBytes, runPostinstall, stageBinaries } from "./plugins/stage.js";
+export type { Arch } from "./plugins/stage.js";
+export { parseManifest, PluginError } from "./plugins/manifest.js";
+export type { PluginManifest } from "./plugins/manifest.js";
+export { loadPlugins, pluginFor, pluginRoots } from "./plugins/registry.js";
+export type { StagedPlugin } from "./plugins/registry.js";

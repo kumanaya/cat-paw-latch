@@ -3,7 +3,7 @@
  * Package the Linux AppImage (see `just package-linux`). Must run on Linux so
  * @domo/native-linuxsandbox compiles for the packaging host; afterPack refuses
  * a pack whose launcher --probe fails (bubblewrap + systemd user session) or
- * whose Camoufox / vendored provider ELF is missing or the wrong arch.
+ * whose Camoufox / plugin ELF is missing or the wrong arch.
  *
  * Version stamping matches `package-win.mjs` / `just package`: major.minor from
  * the desktop package.json + a UTC timestamp patch, with the git commit riding
@@ -46,7 +46,7 @@ let sha = run("git", ["-C", root, "rev-parse", "--short=12", "HEAD"]);
 if (run("git", ["-C", root, "status", "--porcelain"]) !== "") sha += "-dirty";
 
 for (const [label, argv] of [
-  ["fetch-vendored", [path.join(root, "scripts", "fetch-vendored.mjs"), "--all"]],
+  ["stage-plugins", [path.join(root, "scripts", "stage-plugins.mjs"), "--all"]],
   ["fetch-browser", [path.join(root, "scripts", "build-browser-runtime.mjs"), "--browser"]],
 ]) {
   const prep = spawnSync(process.execPath, argv, { cwd: root, stdio: "inherit", shell: false });

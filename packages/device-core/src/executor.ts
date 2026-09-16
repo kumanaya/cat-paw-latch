@@ -529,16 +529,6 @@ export class Executor {
     public readonly scratchRoot: string,
     /** Overridden only by tests, which cannot wait out the real window. */
     private readonly reapAfterMs: number = REAP_AFTER_MS,
-    /**
-     * Directories holding vendored provider CLIs, prepended to the child's
-     * PATH so `gog` resolves to the binary this app ships rather than to
-     * whatever the owner happens to have installed.
-     *
-     * Prepended rather than appended for that reason: the provider registry
-     * matches on a bare `argv[0]`, so which binary that name reaches is a
-     * security decision, not a convenience.
-     */
-    private readonly vendorDirs: readonly string[] = [],
   ) {
     fs.mkdirSync(scratchRoot, { recursive: true });
   }
@@ -554,7 +544,7 @@ export class Executor {
     /**
      * Extra environment for the child, merged over the curated set below.
      *
-     * This is how a vendored provider CLI receives its token: in the child's
+     * This is how a provider's CLI receives its token: in the child's
      * environment and nowhere else. A token on the command line lands in the
      * calling agent's captured output and from there in a persisted
      * transcript, where it outlives the token by a long way — and unlike argv,
@@ -573,11 +563,7 @@ export class Executor {
     // cwd must be readable for the process to even start; it was part of the
     // approved exec capability, so allowing it matches the approval.
     const workingDir = args.cwd !== undefined ? canonicalize(args.cwd) : scratch;
-    // The vendor dirs are always readable, because a vendored CLI lives inside
-    // the .app bundle rather than under the owner's home — the broad home
-    // grant in the profile does not reach it, so without this the child cannot
-    // even exec the binary its PATH just resolved.
-    const reads = [...args.readPaths, ...this.vendorDirs, workingDir];
+    const reads = [...args.readPaths, workingDir];
 
     // Frozen as the generator saw them: canonical now, and never resolved
     // again. A later `grants()` asks what THIS profile allowed, and a run
@@ -597,13 +583,11 @@ export class Executor {
     // Windows, bubblewrap + staged workspace on Linux. The approval bound in
     // `profiles` is recorded on all three, so the diagnosis asks one question.
     //
-    // Windows and Linux will not exec a bare name: argv[0] must rewrite into
-    // the staged workspace. The owner approved `gog`; resolve it against the
-    // same vendor dirs we put on PATH so the staged bytes are what run.
-    const argv =
-      process.platform === "win32" || process.platform === "linux"
-        ? this.resolveVendorArgv(args.argv)
-        : args.argv;
+    // A provider's CLI reaches here with an absolute argv[0] under its staged
+    // plugin's bin dir (the owner approved `plow-gog`; DeviceAgent resolves the
+    // staged bytes), and the bin dir rides in `readPaths` so the Windows/Linux
+    // workspace stages it like any other approved root.
+    const argv = args.argv;
     if (process.platform === "win32") {
       return this.runWindows(handle, scratch, {
         argv,
@@ -611,7 +595,7 @@ export class Executor {
         // `profileArgs` also contains this run's scratch.  It is not an
         // owner input and staging it would recursively copy the workspace
         // into itself, so feed only real approved/runtime roots here.
-        readPaths: [...args.readPaths, ...this.vendorDirs, ...(args.cwd === undefined ? [] : [workingDir])]
+        readPaths: [...args.readPaths, ...(args.cwd === undefined ? [] : [workingDir])]
           .map((p) => canonicalize(p)),
         writePaths: args.writePaths.map((p) => canonicalize(p)),
         network: args.network,
@@ -624,7 +608,7 @@ export class Executor {
       return this.runLinux(handle, scratch, {
         argv,
         cwd: args.cwd === undefined ? undefined : workingDir,
-        readPaths: [...args.readPaths, ...this.vendorDirs, ...(args.cwd === undefined ? [] : [workingDir])]
+        readPaths: [...args.readPaths, ...(args.cwd === undefined ? [] : [workingDir])]
           .map((p) => canonicalize(p)),
         writePaths: args.writePaths.map((p) => canonicalize(p)),
         network: args.network,
@@ -644,29 +628,6 @@ export class Executor {
       waitMs: args.waitMs,
       reapable: isReapable(args),
     });
-  }
-
-  /**
-   * Turn a bare provider name into the staged file under `vendorDirs`.
-   *
-   * Seatbelt can search PATH. The Windows/Linux cages cannot: they refuse an
-   * argv[0] that does not rewrite into the workspace. Without this, plow-gog
-   * would pass `"gog"` and the cage would fail closed on a binary we shipped.
-   */
-  private resolveVendorArgv(argv: readonly string[]): string[] {
-    const head = argv[0];
-    if (head === undefined || path.isAbsolute(head)) return [...argv];
-    const want =
-      process.platform === "win32" && !/\.[A-Za-z0-9]+$/.test(head) ? `${head}.exe` : head;
-    for (const dir of this.vendorDirs) {
-      const candidate = path.join(dir, want);
-      try {
-        if (fs.statSync(candidate).isFile()) return [candidate, ...argv.slice(1)];
-      } catch {
-        /* next dir */
-      }
-    }
-    return [...argv];
   }
 
   /**
@@ -921,16 +882,16 @@ export class Executor {
         process.platform === "win32"
           ? {
               ...opts.env,
-              // Curated the same way as the POSIX set below: vendor dirs
-              // first (the provider registry matches on a bare argv[0], so
-              // which binary that name reaches is a security decision), then
-              // the system directories a console tool needs. TEMP/TMP stay
-              // in the disposable scratch dir. No HOME override — Windows
-              // tools read USERPROFILE, which is the owner's real one.
-              // PATHEXT/SYSTEMROOT-shape variables are the world, not secrets:
-              // without PATHEXT even `where` cannot resolve an extension.
+              // Curated: the system directories a console tool needs. A
+              // provider's CLI does not ride on PATH — it reaches the child
+              // as an absolute argv[0] under its staged plugin's bin dir, so
+              // which binary a name reaches is never a PATH question here.
+              // TEMP/TMP stay in the disposable scratch dir. No HOME
+              // override — Windows tools read USERPROFILE, which is the
+              // owner's real one. PATHEXT/SYSTEMROOT-shape variables are the
+              // world, not secrets: without PATHEXT even `where` cannot
+              // resolve an extension.
               Path: [
-                ...this.vendorDirs,
                 `${process.env.SystemRoot ?? "C:\\Windows"}\\System32`,
                 process.env.SystemRoot ?? "C:\\Windows",
                 `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0`,
@@ -950,7 +911,6 @@ export class Executor {
         // its token, never the shape of the world its child runs in.
         PATH:
           [
-            ...this.vendorDirs,
             `${realHome}/.local/bin`,
             `${realHome}/bin`,
             `${realHome}/.cargo/bin`,

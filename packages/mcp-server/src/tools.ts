@@ -35,7 +35,8 @@ import {
   MAX_CLICK_TIMEOUT_MS,
   MAX_FILE_BYTES,
   impliesNetwork,
-  vendoredProvider,
+  providerFor,
+  providerRefusal,
   resolveAppBundleId,
 } from "@domo/device-core";
 import { BlockedError, DeferredResults, DeniedError, DeviceError, Progress } from "./deferred.js";
@@ -594,7 +595,7 @@ export const TOOLS: ToolSpec[] = [
       `and in exchange its only writable place is \`${RUN_COMMAND_OS.scratchVar}\`, a directory of its own that is deleted ` +
       "when it is killed. Declare a write path (or " +
       "network, or apple_events) and it is never killed that way, because it could be mid-work and a " +
-      "truncated file — or a message already sent — is worse than the wait. A vendored provider command counts as having declared network even " +
+      "truncated file — or a message already sent — is worse than the wait. A provider command counts as having declared network even " +
       `though you did not — so it is never killed that way either, and the \`${RUN_COMMAND_OS.scratchVar}\` exchange is ` +
       "off — unless it asks for help (`--help`/`-h` last, no `--` before it), which " +
       "reaches nothing and is exempt. " +
@@ -631,7 +632,7 @@ export const TOOLS: ToolSpec[] = [
           type: "boolean",
           description:
             "Whether the command needs network access (default false). Ignored for a " +
-            "vendored provider command: those reach their service by definition, so " +
+            "provider command: those reach their service by definition, so " +
             "network is granted whether you omit this or set it false, and the approver " +
             "sees it either way. The exception is asking for help — `--help` or `-h` as " +
             "the LAST argument, with no `--` before it — which reaches nothing.",
@@ -670,20 +671,43 @@ export const TOOLS: ToolSpec[] = [
       let argv = strings(argvValues);
       if (argv.length !== argvValues.length) throw new ToolError("argv must be strings");
 
-      // A vendored provider CLI refuses some argv outright — an argument that
-      // would disarm its safety flags, or a command group the bundled binary
-      // may not run. Checked HERE,
+      // A provider refuses some argv outright — an argument that would disarm
+      // its safety flags, or a command group the bundled binary may not run.
+      // Checked HERE,
       // before an intent exists, because a card the owner approves mints a
       // live provider token: nobody should be asked to authorise a call this
       // Mac was always going to refuse. The device checks again; it is the
       // chokepoint and cannot rely on this caller.
-      const provider = vendoredProvider(argv);
-      const refusal = provider?.refuse(argv) ?? null;
+      const refusal = providerRefusal(argv);
       if (refusal !== null) throw new ToolError(refusal);
+      const provider = providerFor(argv);
+
+      // Same chokepoint, for a staged non-provider plugin's own manifest
+      // belt: an argv the plugin's argv.read/argv.write would refuse — or a
+      // caller-supplied cwd, which a plugin's own dispatch never reads —
+      // must never reach an approval card, or the card the owner approved
+      // and what could actually run would silently disagree. Checked only
+      // when it isn't a provider's own command — pluginFor matches on
+      // manifest.command, which for a provider-driven plugin (gog) IS the
+      // provider's own command, and that path is providerRefusal's above.
+      // The device, not the caller, supplies the plugin's own directory
+      // below (`pluginDir`) — that is the one true cwd for this run, so a
+      // caller-supplied one is still refused unconditionally rather than
+      // compared against it.
+      const rawCwd = a.get("cwd").str;
+      if (provider === null) {
+        const pluginRefusal = ctx.device.pluginRefusal(argv, rawCwd ?? undefined);
+        if (pluginRefusal !== null) throw new ToolError(pluginRefusal);
+      }
+      // Resolved here, before the intent is built, so the approval card
+      // shows the owner the true run location (`Run: <argv> (in <dir>)`)
+      // instead of nothing — the device then refuses at execution if the
+      // approved cwd ever disagrees with this, rather than substituting its
+      // own answer for whatever was approved (deviceAgent.ts's executeCommand).
+      const pluginDir = provider === null ? ctx.device.pluginDir(argv) : null;
 
       // Resolve every declared or provider-derived path before it becomes the
       // bound the human approves and the sandbox enforces.
-      const rawCwd = a.get("cwd").str;
       const cwd = rawCwd === null ? undefined : await resolved(rawCwd);
       const providerReadPaths: string[] = [];
       const providerWritePaths: string[] = [];
@@ -716,9 +740,26 @@ export const TOOLS: ToolSpec[] = [
         ...await resolveAll(strings(a.get("write_paths").arr)),
         ...providerWritePaths,
       ]);
+      // A provider ignores cwd entirely: executePlowGog's runGog builds
+      // executor.run({...}) with no cwd field at all, so folding a
+      // caller-supplied one into the capability would show the owner a card
+      // claiming the run happens somewhere it never will — the same lie the
+      // plugin path above refuses outright. Unlike the plugin path this is
+      // stripped, not refused: the plugin path is brand new with no existing
+      // callers, so teaching the caller via refusal costs nothing, while
+      // `gog` is live and first-party (driven through plow-gog today), so
+      // turning a previously-accepted argument into a refusal risks breaking
+      // a real caller. Stripping removes the owner-facing lie — the actual
+      // security property — without changing what succeeds. `cwd` itself is
+      // still resolved above and used to make relative provider file args
+      // absolute; only the capability (and therefore the card) never sees it.
+      // A staged plugin's own cwd is never the caller's `cwd` (refused
+      // above) — it is always this plugin's own directory. `pluginDir` is
+      // already canonical (registry.ts, at load), so no second resolution.
+      const execCwd = provider !== null ? undefined : pluginDir ?? cwd;
       const capabilities: Capability[] = [
-        { kind: "process.exec", argv, cwd },
-        // A vendored provider implies network. Its whole purpose is to reach
+        { kind: "process.exec", argv, cwd: execCwd },
+        // A provider implies network. Its whole purpose is to reach
         // the service its minted token authenticates against, so a gog call
         // approved without it is a call the sandbox then denies — and making
         // the agent remember a flag whose answer is never in doubt is a
@@ -736,7 +777,7 @@ export const TOOLS: ToolSpec[] = [
           allowed: (a.get("network").bool ?? false) || impliesNetwork(argv),
         },
       ];
-      // Unlike network, no vendored command implies this one, so it is pushed
+      // Unlike network, no provider command implies this one, so it is pushed
       // only when the agent explicitly asks — never as an `allowed: false`
       // entry, which would change the approval rule hash of every command
       // that doesn't touch Apple events at all.

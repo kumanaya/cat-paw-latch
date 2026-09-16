@@ -143,10 +143,10 @@ network.
 ### Enable the browser tools
 
 The file and command tools work as soon as the app runs. The bundled browser and
-the vendored provider CLI are fetched separately, once:
+the bundled provider plugin are staged separately, once:
 
 ```sh
-just fetch-vendored    # the pinned gog CLI
+just stage-plugins     # the pinned gog CLI, for this host's OS
 just fetch-browser     # Camoufox + fingerprint pool (~320 MB)
 ```
 

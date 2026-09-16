@@ -60,8 +60,9 @@ const wantBoth = args.includes("--browser-both");
 // downloaded, unverified xpi, so it must rebuild clean.
 const PRUNE_VERSION = "3";
 
-// Same transient-CDN guard as fetch-vendored.mjs: GitHub returns 504 while a
-// large asset is being served, and a single gateway error used to fail the run.
+// Same transient-CDN guard the plugin staging's fetch keeps: GitHub returns
+// 504 while a large asset is being served, and a single gateway error used to
+// fail the run.
 const DOWNLOAD_ATTEMPTS = 5;
 
 function log(msg) {
@@ -115,7 +116,8 @@ function download(url, expectedSha, dest) {
   // GitHub's release CDN intermittently answers 504 for a large asset while it
   // is busy (fetched these browser archives from the same host). The asset is
   // immutable and its digest is checked below, so retrying the URL is safe;
-  // the same retry guards fetch-vendored.mjs for the gog tarballs.
+  // the same retry guards the plugin staging for the gog tarballs
+  // (`packages/device-core/src/plugins/stage.ts`).
   for (let attempt = 1; ; attempt += 1) {
     try {
       run("curl", ["-fsSL", "-o", dest + ".part", url]);

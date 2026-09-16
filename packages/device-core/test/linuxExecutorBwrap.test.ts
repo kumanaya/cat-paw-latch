@@ -48,17 +48,20 @@ describe.skipIf(!ON_LINUX)("Executor Linux bubblewrap integration", () => {
     })).rejects.toThrow(/outside the approved staged workspace/);
   });
 
-  it("resolves a bare vendor argv[0] into the staged workspace", async () => {
+  it("stages an absolute plugin argv[0] under an approved bin dir", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "plow-executor-bwrap-"));
     cleanups.push(root);
-    const vendor = path.join(root, "vendor");
-    fs.mkdirSync(vendor);
-    fs.writeFileSync(path.join(vendor, "gog"), "#!/bin/sh\necho BARE_GOG\n", { mode: 0o755 });
-    const executor = new Executor(path.join(root, "scratch"), undefined, [vendor]);
+    const binDir = path.join(root, "plugins", "gog", "runtime", process.arch, "bin");
+    fs.mkdirSync(binDir, { recursive: true });
+    const gog = path.join(binDir, "gog");
+    fs.writeFileSync(gog, "#!/bin/sh\necho PLUGIN_GOG\n", { mode: 0o755 });
+    // The provider path hands the executor an ABSOLUTE argv[0] under the
+    // plugin's bin dir, and the bin dir rides in readPaths — the workspace
+    // stages it like any other approved root and rewrites the argv into it.
+    const executor = new Executor(path.join(root, "scratch"));
     const result = await executor.run({
-      argv: ["gog"],
-      cwd: vendor,
-      readPaths: [],
+      argv: [gog],
+      readPaths: [binDir],
       writePaths: [],
       network: false,
       appleEvents: false,
@@ -66,7 +69,7 @@ describe.skipIf(!ON_LINUX)("Executor Linux bubblewrap integration", () => {
     });
     expect(result.running).toBe(false);
     expect(result.exitCode).toBe(0);
-    expect(result.output.toString()).toContain("BARE_GOG");
+    expect(result.output.toString()).toContain("PLUGIN_GOG");
   });
 
   it("cannot exec a live host /usr/bin tool from a staged script", async () => {
