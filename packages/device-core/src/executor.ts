@@ -11,6 +11,7 @@ import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { canonicalize, isLexicallyWithin, overlapsRoot } from "@domo/protocol";
+import { unpackedPath } from "./asarPath.js";
 import { WindowsWorkspace } from "./windowsWorkspace.js";
 import { writeWindowsLaunchConfig } from "./windowsLaunchConfig.js";
 import { LinuxWorkspace } from "./linuxWorkspace.js";
@@ -249,7 +250,10 @@ function winLauncher(): string | null {
   try {
     const require_ = createRequire(import.meta.url);
     const addon = require_.resolve("@domo/native-winsandbox");
-    const launcher = path.join(path.dirname(addon), "build", "Release", "winsandbox_launcher.exe");
+    // `unpackedPath`: a spawned .exe cannot live inside app.asar — asarPath.ts.
+    const launcher = unpackedPath(
+      path.join(path.dirname(addon), "build", "Release", "winsandbox_launcher.exe"),
+    );
     return fs.existsSync(launcher) ? launcher : null;
   } catch {
     return null;
@@ -279,7 +283,12 @@ function linuxLauncher(): string | null {
   try {
     const require_ = createRequire(import.meta.url);
     const addon = require_.resolve("@domo/native-linuxsandbox");
-    const launcher = path.join(path.dirname(addon), "build", "Release", "linuxsandbox_launcher");
+    // `unpackedPath`: in a packaged app this resolves inside app.asar, and a
+    // spawned executable cannot live there — see asarPath.ts. The real bytes
+    // are the `.unpacked` sibling electron-builder's asarUnpack creates.
+    const launcher = unpackedPath(
+      path.join(path.dirname(addon), "build", "Release", "linuxsandbox_launcher"),
+    );
     return fs.existsSync(launcher) ? launcher : null;
   } catch {
     return null;

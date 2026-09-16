@@ -14,6 +14,7 @@ import { createRequire } from "node:module";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { unpackedPath } from "../asarPath.js";
 
 export interface ResolvedBrowserRuntime {
   /** Argv that starts the browser server (before server-specific flags). */
@@ -145,7 +146,11 @@ function fromLayout(layout: Layout): ResolvedBrowserRuntime | null {
 function repoServerPkgDir(): string | null {
   try {
     const require = createRequire(import.meta.url);
-    return path.dirname(require.resolve("@domo/browser-server/package.json"));
+    // `unpackedPath`: in a packaged app this is an app.asar path, and server.js
+    // is handed to a SPAWNED Node — the `.unpacked` sibling asarUnpack creates
+    // is the real tree. (It happened to read through the archive, but nothing
+    // promises that; the spawn path should not depend on it.)
+    return unpackedPath(path.dirname(require.resolve("@domo/browser-server/package.json")));
   } catch {
     // Dev fallback: walk up to the repo and point at the sibling package.
     let dir = path.dirname(fileURLToPath(import.meta.url));

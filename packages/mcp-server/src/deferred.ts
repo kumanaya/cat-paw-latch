@@ -20,6 +20,9 @@
  * nothing open and cannot keep a process alive.
  */
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { lockdownSecretFile } from "@domo/device-core";
 import { JSONValue, jv } from "@domo/protocol";
 
 /**
@@ -172,13 +175,79 @@ type Entry = {
 
 export class DeferredResults {
   private readonly entries = new Map<string, Entry>();
+  /**
+   * Handles a PREVIOUS process minted and could not settle — a quit, a crash,
+   * an update install. Read once from `stateDir` at construction, then
+   * answered `abandoned` exactly once each. Without this a call whose app
+   * closed under it reads as a handle that never existed, and the agent
+   * cannot tell "it never happened" from "it may have happened" — the one
+   * thing it needs to decide whether to retry.
+   */
+  private readonly orphans = new Map<string, string>();
 
   constructor(
     private readonly budgetMs = CALL_BUDGET_MS,
     private readonly ttlMs = HANDLE_TTL_MS,
     /** Injectable for tests; the real one is Date.now. */
     private readonly now: () => number = () => Date.now(),
-  ) {}
+    /**
+     * Where an in-flight handle is noted on disk, owner-only, and removed the
+     * moment the work settles. Null (a test, a bare use) keeps everything in
+     * memory, which is today's behaviour.
+     */
+    private readonly stateDir: string | null = null,
+  ) {
+    if (stateDir === null) return;
+    try {
+      for (const name of fs.readdirSync(stateDir)) {
+        if (!name.endsWith(".json")) continue;
+        const file = path.join(stateDir, name);
+        const handle = name.slice(0, -".json".length);
+        try {
+          const owner = (JSON.parse(fs.readFileSync(file, "utf8")) as { agentId?: unknown }).agentId;
+          if (typeof owner === "string") this.orphans.set(handle, owner);
+        } catch {
+          /* an unreadable note names nothing; forget it */
+        }
+        try {
+          fs.rmSync(file, { force: true });
+        } catch {
+          /* best-effort: worst case it is read again next start */
+        }
+      }
+    } catch {
+      /* no directory yet — the first `run` creates it */
+    }
+  }
+
+  /** Note a handle on disk while its work is in flight. Best-effort: the note
+   *  only improves an answer after a crash, and never gates the call. */
+  private notePending(handle: string, agentId: string): void {
+    if (this.stateDir === null) return;
+    try {
+      fs.mkdirSync(this.stateDir, { recursive: true, mode: 0o700 });
+      const file = path.join(this.stateDir, `${handle}.json`);
+      fs.writeFileSync(file, JSON.stringify({ agentId }), { mode: 0o600 });
+      // The handle is a capability: same owner-only ACL as every other secret
+      // file, best-effort off Windows (ApprovalStore does the same).
+      try {
+        lockdownSecretFile(file);
+      } catch {
+        /* the 0600 mode is the floor that always holds */
+      }
+    } catch {
+      /* the call is already answered; the note is for the next process */
+    }
+  }
+
+  private clearPending(handle: string): void {
+    if (this.stateDir === null) return;
+    try {
+      fs.rmSync(path.join(this.stateDir, `${handle}.json`), { force: true });
+    } catch {
+      /* the orphan scan will forget it on the next start */
+    }
+  }
 
   /**
    * Run one tool body against the call budget. If it finishes in time the
@@ -223,6 +292,7 @@ export class DeferredResults {
         entry.terminal = value;
         entry.expiresAt = this.now() + this.ttlMs;
       }
+      this.clearPending(handle);
     };
     // A call that finished says so in its own payload. The pending envelope
     // is self-describing; a bare object that came back inside the budget was
@@ -272,6 +342,7 @@ export class DeferredResults {
       terminal: null,
       expiresAt: this.now() + this.ttlMs,
     });
+    this.notePending(handle, agentId);
     return pendingEnvelope(handle, reason);
   }
 
@@ -283,7 +354,23 @@ export class DeferredResults {
   get(agentId: string, handle: string): JSONValue {
     this.sweep();
     const entry = this.entries.get(handle);
-    if (!entry || entry.agentId !== agentId) return { status: "unknown", handle };
+    if (!entry) {
+      // A handle this process never minted. If the disk says the owner did,
+      // the app that was serving it closed mid-call — answer that, once.
+      const owner = this.orphans.get(handle);
+      if (owner !== undefined && owner === agentId) {
+        this.orphans.delete(handle);
+        return {
+          status: "abandoned",
+          handle,
+          reason:
+            "Latch closed while this call was in flight; it may or may not have run — " +
+            "check the result on this Mac, or call again (a new call is a new approval)",
+        };
+      }
+      return { status: "unknown", handle };
+    }
+    if (entry.agentId !== agentId) return { status: "unknown", handle };
     if (this.now() > entry.expiresAt) return { status: "expired", handle };
     if (entry.terminal !== null) return entry.terminal;
     return pendingEnvelope(handle, entry.reason);

@@ -205,6 +205,15 @@ export class BrowserSessions {
    * passes the same one gets the same browser back, and two agents passing
    * different ones cannot see each other's pages. */
   private readonly sessions = new Map<string, Session>();
+  /**
+   * Handles whose session ended recently, with the reason. Without this a
+   * later action on a closed session reads exactly like a handle that never
+   * existed ("unknown session"), and the agent cannot tell an idle close
+   * (open a new one) from a browser that crashed (retry) from a handle it
+   * invented (its own bug). Bounded by count and age; the handle is a
+   * capability, so this map holds no more than the live one did.
+   */
+  private readonly ended = new Map<string, { reason: string; at: number }>();
   /** Set once, when the app is on its way out. Nothing opens after that. */
   private quitting = false;
 
@@ -219,6 +228,43 @@ export class BrowserSessions {
      * client (see `DeviceAgent`). */
     private readonly approval: PaymentApprovalClient | null = null,
   ) {}
+
+  /** Recently-ended sessions are remembered briefly: at most 64, for an hour. */
+  private static readonly ENDED_MAX = 64;
+  private static readonly ENDED_KEEP_MS = 60 * 60_000;
+
+  private noteEnded(handle: string, reason: string): void {
+    this.ended.set(handle, { reason, at: Date.now() });
+    const cutoff = Date.now() - BrowserSessions.ENDED_KEEP_MS;
+    for (const [h, e] of this.ended) if (e.at < cutoff) this.ended.delete(h);
+    while (this.ended.size > BrowserSessions.ENDED_MAX) {
+      const oldest = this.ended.keys().next().value;
+      if (oldest === undefined) break;
+      this.ended.delete(oldest);
+    }
+  }
+
+  /** Why a handle that is not live any more ended, or null when this Mac never
+   *  saw it. The remedy differs per reason, so the sentence names it. */
+  private endedSentence(handle: string): string | null {
+    const e = this.ended.get(handle);
+    if (!e) return null;
+    switch (e.reason) {
+      case "idle": {
+        const minutes = Math.max(1, Math.round(this.idleMs / 60_000));
+        return (
+          `this browser session closed after ${minutes === 1 ? "1 minute" : `${minutes} minutes`} without a command — ` +
+          "open a new one with plow_browser_open"
+        );
+      }
+      case "crashed":
+        return "this browser session crashed (its browser process exited) — open a new one with plow_browser_open";
+      case "shutdown":
+        return "this browser session ended when Latch shut down — open a new one with plow_browser_open";
+      default:
+        return `this browser session was already closed (${e.reason}) — open a new one with plow_browser_open`;
+    }
+  }
 
   /** True when a page URL is inside the session's approved origins.
    * Only the initial blank page has no host and remains in scope.  A hostless
@@ -556,7 +602,7 @@ export class BrowserSessions {
   /** Close a session: the handle says which browser goes. */
   async close(handle: string, reason: string): Promise<JSONValue> {
     const s = this.sessions.get(handle);
-    if (!s) return { status: "error", error: "unknown session" };
+    if (!s) return { status: "error", error: this.endedSentence(handle) ?? "unknown session" };
     // The session stays registered across the shutdown below — the claim is
     // held until the browser is really down — so it is still reachable while
     // it is on its way out: the idle clock can come due, or a second close can
@@ -633,6 +679,9 @@ export class BrowserSessions {
         // Listed until the very end, so a quit that snapshots the map while
         // this is running waits for it rather than leaving mid-merge.
         this.sessions.delete(s.handle);
+        // And remembered a while longer, so the next action on this handle
+        // gets the reason it ended instead of a bare "unknown session".
+        this.noteEnded(s.handle, reason);
       }
     }
   }
@@ -667,7 +716,7 @@ export class BrowserSessions {
    */
   private validate(handle: string): Session | string {
     const s = this.sessions.get(handle);
-    if (!s) return "unknown session (open one with plow_browser_open)";
+    if (!s) return this.endedSentence(handle) ?? "unknown session (open one with plow_browser_open)";
     // A session stays in the map while its browser shuts down. An approval
     // that lands in that window would widen — or drive — a browser already on
     // its way out, and the widening would be audited for a session that ends
