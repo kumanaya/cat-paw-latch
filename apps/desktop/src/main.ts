@@ -90,6 +90,7 @@ import {
   storedRuleMayGrant,
 } from "./reviewPolicy.js";
 import {
+  holdsOldDeviceKey,
   isSignedIn,
   readAgentPurpose,
   readInference,
@@ -645,10 +646,10 @@ ipcMain.handle("settings:getRelay", async () => {
 /**
  * Forget this Mac's credential and put the user back at the start.
  *
- * The relay's `onAuthFailed` path only. Nobody clicked anything here: the
- * credential was retired on the account and the relay refused it, so there is
- * nothing to revoke and the window has to be OPENED — otherwise the app sits
- * silently disconnected with no way forward but quitting.
+ * Nobody clicked anything on the relay's `onAuthFailed` path or on
+ * `signInAgainIfOldKey`: the credential is already retired on the account, so
+ * there is nothing to revoke and the window has to be OPENED — otherwise the app
+ * sits silently disconnected with no way forward but quitting.
  *
  * `signOutOfPlow` rather than blanking the fields inline: losing the Plow
  * credential takes the Plow reviewer with it, and retiring Adversarial mode is
@@ -713,6 +714,50 @@ async function signOutThisMac(): Promise<void> {
 }
 
 ipcMain.handle("settings:signOut", async () => signOutThisMac());
+
+/**
+ * A Mac still on a pre-session device key signs in again, once, by itself.
+ *
+ * Nothing that key lacks can be fixed by retrying, so every screen it reaches
+ * would say "Not permitted." (#419). Asked on every relay connect until Plow
+ * answers, so a Mac that launched offline still gets asked.
+ *
+ * The key is retired BEFORE the local sign-out, and a failed retire leaves the
+ * Mac as it was: a still-active key holds this Mac's device row, and the new
+ * login's registration would be refused against it.
+ */
+let fullAccessCredential = "";
+let checkingKey = false;
+async function signInAgainIfOldKey(): Promise<void> {
+  const credential = loadSettings(home).relayCredential.trim();
+  if (!credential || credential === fullAccessCredential || checkingKey) return;
+  checkingKey = true;
+  try {
+    const api = new PlowApi(apiBaseUrl);
+    const old = await holdsOldDeviceKey(api, credential);
+    if (old === false) fullAccessCredential = credential;
+    if (old !== true || loadSettings(home).relayCredential.trim() !== credential) return;
+    try {
+      await api.revokeDeviceCredential(credential);
+    } catch (error) {
+      // Already retired is retired; anything else is asked again next connect.
+      if (!(error instanceof PlowApiError) || error.kind !== "unauthorized") return;
+    }
+    console.log("[relay] old device key retired; signing in again");
+    // The relay can see the retired key first and sign out on its own; either
+    // way the setup window must say why it is back.
+    if (loadSettings(home).relayCredential.trim() === credential) {
+      signOut();
+      await startRelay();
+    }
+    if (!isSignedIn(home)) {
+      onboarding?.showMessage("Plow Latch was updated. Sign in again to keep using it.");
+    }
+  } finally {
+    checkingKey = false;
+  }
+}
+
 ipcMain.handle("onboarding:open", async () => openOnboardingWindow());
 
 // MARK: IPC for "Connect a client" (main window)
@@ -1936,6 +1981,7 @@ async function startRelay(): Promise<void> {
       }
       connected = isConnected;
       notifyRenderer("status:changed");
+      if (isConnected) void signInAgainIfOldKey();
     },
     // The relay refused the credential — revoked in the console, or minted
     // against a different environment. It will never work again, so the app

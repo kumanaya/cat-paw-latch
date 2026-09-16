@@ -255,7 +255,7 @@ export function sectionRoster(
  * match, and an absent or malformed prefix matches nothing rather than
  * everything.
  */
-function isDeviceCredential(prefix: string | null, credential: string): boolean {
+export function isDeviceCredential(prefix: string | null, credential: string): boolean {
   if (!prefix || !credential) return false;
   return credential.slice(5, 13) === prefix;
 }
