@@ -24,6 +24,7 @@ import {
   type Provider,
   type StagedPlugin,
 } from "@domo/device-core";
+import { ownerTimeZone } from "../src/providers/plowGog.js";
 import { fakePlugin } from "./pluginFixtures.js";
 
 /**
@@ -898,6 +899,19 @@ esac
     expect(new Set(items.map((i) => i.account))).toEqual(new Set(["a@example.com", "b@example.com"]));
     // The fake echoes its argv for calendar events; the flag is not in it.
     expect(JSON.stringify(response)).not.toContain("--account");
+  });
+
+  itSpawns("returns a fanned-out calendar read compact, asked for in the owner's zone", async () => {
+    const d = device(accountsMinter(AB), plowGogPlugin());
+    const response = await run(d, ["plow-gog", "calendar", "events", "list"]);
+    expect(response).toMatchObject({ status: "completed", degraded: [] });
+    const items = (response as { items: Record<string, unknown>[] }).items;
+    expect(items).toHaveLength(2);
+    for (const item of items) {
+      expect(Object.keys(item)).toEqual(["summary", "startDayOfWeek", "startLocal", "endLocal", "id", "account"]);
+      // The fake echoes its argv into the summary.
+      expect(item.summary).toContain(`--timezone ${ownerTimeZone()}`);
+    }
   });
 
   itSpawns("carries a named-but-degraded account as degraded, and queries only the healthy one", async () => {
