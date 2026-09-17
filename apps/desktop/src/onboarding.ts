@@ -19,14 +19,14 @@ import { loadSettings, saveSettings, Settings } from "./settings.js";
 
 /**
  * The verification sub-steps retain their existing mechanics. A successful
- * login pauses on a confirmation screen before the post-login data choice.
+ * login moves straight to Privacy, which doubles as the confirmation screen
+ * before the post-login data choice.
  */
 export type OnboardingStep =
   | "welcome"
   | "privacy"
   | "activate"
   | "waiting"
-  | "verified"
   | "data"
   | "availability"
   | "connect"
@@ -203,10 +203,6 @@ export class Onboarding {
   async advance(): Promise<OnboardingState> {
     if (this.busy) return this.state();
     if (this.step === "welcome") {
-      this.step = "privacy";
-      return this.publish();
-    }
-    if (this.step === "privacy") {
       // Returning from verification keeps the live activation and its watcher.
       // Re-entering therefore shows the same code without another network call.
       if (this.activation) {
@@ -215,10 +211,7 @@ export class Onboarding {
       }
       return this.newActivationCode();
     }
-    if (this.step === "verified") {
-      // The display code is spent, but stays visible through the confirmation
-      // treatment so the screen does not jump while redemption finishes.
-      this.activation = null;
+    if (this.step === "privacy") {
       this.step = "data";
       return this.publish();
     }
@@ -252,8 +245,7 @@ export class Onboarding {
   /** Return through the steps that have a Back affordance. */
   async back(): Promise<OnboardingState> {
     if (this.busy) return this.state();
-    if (this.step === "privacy") this.step = "welcome";
-    else if (this.step === "activate" || this.step === "waiting") this.step = "privacy";
+    if (this.step === "activate" || this.step === "waiting") this.step = "welcome";
     else if (this.step === "availability") this.step = "data";
     else if (this.step === "connect") this.step = "availability";
     else return this.state();
@@ -275,7 +267,7 @@ export class Onboarding {
   /** Retry a mint only when the activation view is already waiting for one. */
   async begin(): Promise<OnboardingState> {
     // Renderer boot is intentionally a read-like no-op on the presentational
-    // steps. The first activation is minted only by Continue from Privacy.
+    // steps. The first activation is minted only by Get started on Welcome.
     if (this.step !== "activate" || this.activation) {
       return this.state();
     }
@@ -298,7 +290,7 @@ export class Onboarding {
     // SINGLE-FLIGHT. A display code IS a credential — whoever texts it gets the
     // account — so a second mint nobody is shown is a live credential loose on
     // the account, and the screen can only ever show one of them. A double-click
-    // on Privacy Continue and a retry arriving while its mint is in flight can
+    // on Get started and a retry arriving while its mint is in flight can
     // race before `activation` is set. Joining the flight in progress is the
     // only place that gap can be closed.
     if (this.pendingMint) return this.pendingMint;
@@ -448,10 +440,9 @@ export class Onboarding {
         this.activationSecret = null;
         this.stall();
         const finished = await this.run(() => this.finishWithSession(result.token as string));
-        // The verified screen is actionable while the relay connects. `run`
-        // clears busy and publishes before this await, and nothing after it
-        // mutates onboarding state.
-        if (finished.step === "verified") await this.deps.startRelay();
+        // Privacy is actionable while the relay connects. `run` clears busy and
+        // publishes before this await, and nothing after it mutates state.
+        if (finished.step === "privacy") await this.deps.startRelay();
         return;
       }
       if (generation !== this.pollGeneration) return;
@@ -612,18 +603,15 @@ export class Onboarding {
     // cannot be wrong.
     this.save(settings);
 
-    // The activation secret is spent and dropped. The public display value is
-    // retained until Continue so the verified treatment can hold the same
-    // screen steady.
-    //
-    // Everything here is derived from the save above; none of it needs the
-    // socket to be up.
+    // The activation is spent and dropped. Everything here is derived from
+    // the save above; none of it needs the socket to be up.
     this.cancelPolling();
+    this.activation = null;
     this.activationSecret = null;
     this.activationStale = false;
     this.message = "";
     this.noteKind = "error";
-    this.step = "verified";
+    this.step = "privacy";
     this.telemetryEnabled = settings.telemetryEnabled;
   }
 
