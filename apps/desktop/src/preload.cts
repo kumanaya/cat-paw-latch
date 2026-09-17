@@ -84,8 +84,8 @@ contextBridge.exposeInMainWorld("domo", {
   // Availability booleans and the active model — never a credential.
   inferenceGet: () => ipcRenderer.invoke("settings:getInference"),
   statusGet: () => ipcRenderer.invoke("status:get"),
-  // The Capabilities tab (capabilitiesModel.ts): every switch with its
-  // status and what it stopped, the banner, and the badge — one whole-state
+  // Settings' Permissions section (capabilitiesModel.ts): every switch with
+  // its status and what it stopped, and the banner — one whole-state
   // shape per read, like every other pane. `act` does the row's one thing
   // (the panel flow, a request, a folder touch) and answers with the fresh
   // state; `dismiss` and `bannerSeen` record the owner's "not now".
@@ -93,7 +93,15 @@ contextBridge.exposeInMainWorld("domo", {
   capabilitiesAct: (key: string) => ipcRenderer.invoke("capabilities:act", key),
   capabilitiesDismiss: (key: string) => ipcRenderer.invoke("capabilities:dismiss", key),
   capabilitiesBannerSeen: () => ipcRenderer.invoke("capabilities:bannerSeen"),
-  // A block by this Mac lands the tray item and the notification here.
+  // The Plugins tab (pluginsModel.ts): one whole-state shape per read;
+  // `setEnabled` is the owner's off switch and answers with the fresh state.
+  pluginsGet: () => ipcRenderer.invoke("plugins:get"),
+  pluginsSetEnabled: (name: string, on: boolean) => ipcRenderer.invoke("plugins:setEnabled", name, on),
+  // The Browser row's one action: enable Safari's JavaScript setting. Other
+  // rows still use connectorsConnect.
+  pluginsEnableSafari: () => ipcRenderer.invoke("plugins:enableSafari"),
+  // A block by this Mac lands the tray item and the notification on its
+  // switch (Settings), or on the Audit tab's Blocked view when it named none.
   onShowCapabilities: (cb: () => void) => ipcRenderer.on("ui:showCapabilities", cb),
   onShowAuditBlocked: (cb: () => void) => ipcRenderer.on("ui:showAuditBlocked", cb),
   // The floating panel's own poll: which switch it points at, and whether
@@ -116,7 +124,7 @@ contextBridge.exposeInMainWorld("domo", {
   // Start the Full Disk Access grant flow: main opens the pane and floats the
   // drag panel next to System Settings (fdaGrantFlow.ts owns the whole
   // lifecycle). Setup's "Data & permissions" step uses this; the
-  // Capabilities tab goes through `capabilitiesAct`.
+  // Permissions section goes through `capabilitiesAct`.
   fullDiskGrantFlow: () => ipcRenderer.invoke("fullDisk:grantFlow"),
   // The floating panel's close button; main owns the panel's lifecycle.
   fullDiskDismiss: () => ipcRenderer.send("fullDisk:dismiss"),
@@ -145,7 +153,7 @@ contextBridge.exposeInMainWorld("domo", {
   onAuditChanged: (cb: (change: { ids: string[] }) => void) =>
     ipcRenderer.on("audit:changed", (_event, change: { ids: string[] }) => cb(change)),
   // A block by this Mac, or its clearing: the only lines that move the
-  // Capabilities tab, so the only ones that refresh it.
+  // Permissions section, so the only ones that refresh it.
   onCapabilitiesChanged: (cb: () => void) => ipcRenderer.on("capabilities:changed", cb),
   onStatusChanged: (cb: () => void) => ipcRenderer.on("status:changed", cb),
 
@@ -202,15 +210,10 @@ contextBridge.exposeInMainWorld("domo", {
   // missing — an inactive credential on a still-running agent — where there is
   // no roster row to name and none is needed.
   cloudRemove: (agentId: string) => ipcRenderer.invoke("cloud:remove", agentId),
-  agentDismissToken: () => ipcRenderer.invoke("agents:dismissToken"),
   cloudRefresh: () => ipcRenderer.invoke("cloud:refresh"),
   cloudAgents: (): Promise<CloudAgentsPreloadState | null> => ipcRenderer.invoke("cloud:agents"),
-  cloudCreate: (input: { name: string; provider: string; lineUid: string | null }) =>
-    ipcRenderer.invoke("cloud:create", input),
-  cloudCancelLineFlow: () => ipcRenderer.invoke("cloud:cancelLineFlow"),
-  cloudRetryLineFlow: () => ipcRenderer.invoke("cloud:retryLineFlow"),
-  cloudRetryFailed: (agentId: string) => ipcRenderer.invoke("cloud:retryFailed", agentId),
-  cloudChangeLine: (input: { agentId: string; lineUid: string | null }) =>
+  cloudNewAgentMessages: (providerId: string) => ipcRenderer.invoke("cloud:newAgentMessages", providerId),
+  cloudChangeLine: (input: { agentId: string; lineUid: string }) =>
     ipcRenderer.invoke("cloud:changeLine", input),
   cloudOpenMessages: (agentId?: string) => ipcRenderer.invoke("cloud:openMessages", agentId),
   onConnectChanged: (cb: () => void) => ipcRenderer.on("connect:changed", cb),

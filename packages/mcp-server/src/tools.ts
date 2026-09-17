@@ -34,6 +34,8 @@ import {
   LIVE_WEB_ROUTING,
   MAX_CLICK_TIMEOUT_MS,
   MAX_FILE_BYTES,
+  HARD_BLOCK_ROUTING,
+  SAFARI_HARD_BLOCK_ROUTING,
   impliesNetwork,
   providerFor,
   providerRefusal,
@@ -682,23 +684,15 @@ export const TOOLS: ToolSpec[] = [
       if (refusal !== null) throw new ToolError(refusal);
       const provider = providerFor(argv);
 
-      // Same chokepoint, for a staged non-provider plugin's own manifest
-      // belt: an argv the plugin's argv.read/argv.write would refuse — or a
-      // caller-supplied cwd, which a plugin's own dispatch never reads —
-      // must never reach an approval card, or the card the owner approved
-      // and what could actually run would silently disagree. Checked only
-      // when it isn't a provider's own command — pluginFor matches on
-      // manifest.command, which for a provider-driven plugin (gog) IS the
-      // provider's own command, and that path is providerRefusal's above.
-      // The device, not the caller, supplies the plugin's own directory
-      // below (`pluginDir`) — that is the one true cwd for this run, so a
-      // caller-supplied one is still refused unconditionally rather than
-      // compared against it.
+      // Same chokepoint, for what the device knows about a staged plugin: the
+      // owner's off switch (a provider's command is a staged plugin's too),
+      // and for a non-provider plugin its own manifest belt and a
+      // caller-supplied cwd, which its dispatch never reads (`pluginDir`
+      // below is the one true cwd). None of it may reach an approval card,
+      // or the card the owner approved and what could run would disagree.
       const rawCwd = a.get("cwd").str;
-      if (provider === null) {
-        const pluginRefusal = ctx.device.pluginRefusal(argv, rawCwd ?? undefined);
-        if (pluginRefusal !== null) throw new ToolError(pluginRefusal);
-      }
+      const pluginRefusal = ctx.device.pluginRefusal(argv, rawCwd ?? undefined);
+      if (pluginRefusal !== null) throw new ToolError(pluginRefusal);
       // Resolved here, before the intent is built, so the approval card
       // shows the owner the true run location (`Run: <argv> (in <dir>)`)
       // instead of nothing — the device then refuses at execution if the
@@ -835,7 +829,9 @@ export const TOOLS: ToolSpec[] = [
           title: "Script an app on the user's Mac",
     description:
       "Run an AppleScript that controls one app on the user's own Mac through Latch — Mail, Finder, " +
-      "Calendar, Notes, Reminders, Messages, System Events — and return what it produces. Use this " +
+      "Calendar, Notes, Reminders, Messages, Safari, System Events — and return what it produces. " +
+      `When a plow_browser session is bot-walled, ${SAFARI_HARD_BLOCK_ROUTING} (the camoufox-browsing skill has the recipe). ` +
+      "Use this " +
       "for AppleScript rather than plow_run_command with osascript: some apps refuse commands " +
       "from inside the sandbox (-10004), and this tool runs outside it. Name the app the script " +
       "addresses in 'app', by the name it has in `tell application \"…\"`; it is resolved to an " +
@@ -1100,6 +1096,11 @@ export const TOOLS: ToolSpec[] = [
       const a = jv(args);
       const origins = strings(a.get("origins").arr);
       if (origins.length === 0) throw new ToolError("missing 'origins'");
+      // Same chokepoint as a staged plugin's off switch: refused by name
+      // before an intent exists, so nobody is asked to approve a call this
+      // Mac was always going to refuse.
+      const refusal = ctx.device.browserRefusal();
+      if (refusal !== null) throw new ToolError(refusal);
       const capabilities: Capability[] = [{ kind: "browser", origins }];
       // The owner does not see the browser unless this session asks for a
       // window: say when one is coming in the line they read, and carry the
@@ -1152,6 +1153,11 @@ export const TOOLS: ToolSpec[] = [
       const a = jv(args);
       const session = a.get("session").str;
       if (session === null) throw new ToolError("missing 'session'");
+      // Same chokepoint as plow_browser_open: refused by name before an
+      // intent exists, so nobody is asked to approve a call this Mac was
+      // always going to refuse.
+      const refusal = ctx.device.browserRefusal();
+      if (refusal !== null) throw new ToolError(refusal);
       const origins = strings(a.get("origins").arr);
       const items = strings(a.get("credential_items").arr);
       const capabilities: Capability[] = [];
@@ -1223,7 +1229,13 @@ export const TOOLS: ToolSpec[] = [
       "refused — use plow_browser_request to widen scope. Every result includes the current url and " +
       "page_count (watch it for popups; switch with use_page), and 'failed_requests' when the " +
       "page's own requests came back refused — a 401, 403 or 429 there is why an action that " +
-      "reported success changed nothing, so read it before retrying.",
+      "reported success changed nothing, so read it before retrying. " +
+      "A page that says you are blocked and offers nothing to solve — no CAPTCHA, no button, " +
+      "often a plain 200 with no failed_requests at all — is a hard block: the same URL in this " +
+      "browser will not change, and waiting will not help: " +
+      (process.platform === "darwin"
+        ? `${SAFARI_HARD_BLOCK_ROUTING}. The camoufox-browsing skill's Safari section has the recipe.`
+        : `${HARD_BLOCK_ROUTING}.`),
     inputSchema: {
       type: "object",
       required: ["session", "action"],

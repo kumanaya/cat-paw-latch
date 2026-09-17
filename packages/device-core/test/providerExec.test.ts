@@ -6,23 +6,31 @@
  * touches it, and a refusal or a failed mint never spawns a child.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { JSONValue, jv, makeIntent } from "@domo/protocol";
+import { fileURLToPath } from "node:url";
+import { canonicalize, JSONValue, jv, makeIntent } from "@domo/protocol";
 
 import {
+  BROWSER_PLUGIN,
+  BrowserSessions,
   DeviceAgent,
   HeadlessPolicy,
   impliesNetwork,
   loadPlugins,
   MintError,
+  providerFor,
   type Minter,
   type PolicyDelegate,
   type Provider,
   type StagedPlugin,
 } from "@domo/device-core";
+import { ownerTimeZone } from "../src/providers/plowGog.js";
 import { fakePlugin } from "./pluginFixtures.js";
+
+const FAKE_SERVER = fileURLToPath(new URL("../../../e2e/fixtures/fakeBrowserServer.cjs", import.meta.url));
 
 /**
  * Spawn tests need a real cage: seatbelt on macOS, bubblewrap on Linux.
@@ -80,9 +88,8 @@ const GOG_MANIFEST = {
       url: { arm64: "https://example.invalid/gog-arm64.tar.gz", x64: "https://example.invalid/gog-x64.tar.gz" },
       sha256: { arm64: "0".repeat(64), x64: "0".repeat(64) },
     }],
-    sources: [],
   },
-  exec: { cwd: "plugin", argv: ["gog", "--no-input", "--wrap-untrusted", "--enable-commands=gmail,calendar"] },
+  exec: { argv: ["gog", "--no-input", "--wrap-untrusted", "--enable-commands=gmail,calendar"] },
   env: {}, argv: { read: [], write: [] },
 };
 
@@ -98,9 +105,9 @@ function gogPlugin(): StagedPlugin[] {
   return stagedGog('#!/bin/sh\necho "TOKEN=$GOG_ACCESS_TOKEN ARGV=$*"\n');
 }
 
-function device(minter: Minter | null, plugins: StagedPlugin[]): DeviceAgent {
+function device(minter: Minter | null, plugins: StagedPlugin[], home: string = tmp()): DeviceAgent {
   return new DeviceAgent(
-    tmp(),
+    home,
     "Test Mac",
     new HeadlessPolicy({ intent: "allow_once" }),
     null,
@@ -110,6 +117,19 @@ function device(minter: Minter | null, plugins: StagedPlugin[]): DeviceAgent {
   );
 }
 
+/**
+ * A device with a browser runtime resolved — same shape deviceCore.test.ts's
+ * fingerprint-pinning test constructs, trimmed to what this file needs.
+ */
+function makeDeviceWithBrowser(): DeviceAgent {
+  return new DeviceAgent(tmp(), "Test Mac", new HeadlessPolicy({ intent: "allow_once" }), {
+    serverCommand: ["node", "/x/server.js"],
+    credentialBrokerCommand: null,
+    mergeCookiesCommand: ["node", "/x/mergeCookies.js"],
+    env: {},
+    executablePath: "/x/camoufox",
+  });
+}
 
 /**
  * Refused, recorded as refused, and never started.
@@ -287,8 +307,8 @@ describe("a provider through the exec path", () => {
       root,
       {
         name: "impostor", version: "test", command: "plow-gog",
-        runtime: { binaries: [], sources: [] },
-        exec: { cwd: "plugin", argv: ["/bin/sh", "-c", "echo SHOULD_NOT_RUN"] },
+        runtime: { binaries: [] },
+        exec: { argv: ["/bin/sh", "-c", "echo SHOULD_NOT_RUN"] },
         env: {}, argv: { read: [], write: [] },
       },
       "#!/bin/sh\necho SHOULD_NOT_RUN\n",
@@ -355,7 +375,7 @@ describe("a provider through the exec path", () => {
     fakePlugin(otherRoot, {
       ...GOG_MANIFEST,
       name: "other", command: "other",
-      runtime: { binaries: [{ ...GOG_MANIFEST.runtime.binaries[0], name: "other" }], sources: [] },
+      runtime: { binaries: [{ ...GOG_MANIFEST.runtime.binaries[0], name: "other" }] },
     }, "#!/bin/sh\n");
     expect(device(okMinter(), loadPlugins([otherRoot])).skills.manifest().map((s) => s.name)).not.toContain(
       "google-workspace",
@@ -368,6 +388,32 @@ describe("a provider through the exec path", () => {
  * closes: reachable on the manifest alone, not a second dispatch system
  * beside providers.
  */
+const ECHOER_MANIFEST = {
+  name: "echoer", version: "test", command: "echoer",
+  runtime: {
+    binaries: [{
+      name: "echo-bin", version: "test",
+      url: { arm64: "https://example.invalid/e-arm64.tar.gz", x64: "https://example.invalid/e-x64.tar.gz" },
+      sha256: { arm64: "0".repeat(64), x64: "0".repeat(64) },
+    }],
+  },
+  exec: { argv: ["echo-bin", "--quiet"] },
+  env: {}, argv: { read: [["say"]], write: [] },
+  skill: "skill.md",
+};
+
+/** A staged echoer plugin whose binary runs `script`, with a skill.md the
+ * manifest names (fakePlugin only stages the binary, not this). */
+function echoerPlugin(script: string): StagedPlugin[] {
+  const root = tmp();
+  const dir = fakePlugin(root, ECHOER_MANIFEST, script);
+  fs.writeFileSync(
+    path.join(dir, "skill.md"),
+    "---\nname: echoer\ndescription: says things\n---\nSay what the owner asks.\n",
+  );
+  return loadPlugins([root]);
+}
+
 describe("a staged non-provider plugin through the exec path", () => {
   // The binary's staged name ("echo-bin") and the manifest's own command
   // ("echoer") are deliberately different strings: the agent's argv[0] is
@@ -376,33 +422,6 @@ describe("a staged non-provider plugin through the exec path", () => {
   // exec path ever resolved off the caller's argv[0] instead of the
   // manifest's own entrypoint, these two being the same string (as they
   // were before) would hide it.
-  const ECHOER_MANIFEST = {
-    name: "echoer", version: "test", command: "echoer",
-    runtime: {
-      binaries: [{
-        name: "echo-bin", version: "test",
-        url: { arm64: "https://example.invalid/e-arm64.tar.gz", x64: "https://example.invalid/e-x64.tar.gz" },
-        sha256: { arm64: "0".repeat(64), x64: "0".repeat(64) },
-      }],
-      sources: [],
-    },
-    exec: { cwd: "plugin", argv: ["echo-bin", "--quiet"] },
-    env: {}, argv: { read: [["say"]], write: [] },
-    skill: "skill.md",
-  };
-
-  /** A staged echoer plugin whose binary runs `script`, with a skill.md the
-   * manifest names (fakePlugin only stages the binary, not this). */
-  function echoerPlugin(script: string): StagedPlugin[] {
-    const root = tmp();
-    const dir = fakePlugin(root, ECHOER_MANIFEST, script);
-    fs.writeFileSync(
-      path.join(dir, "skill.md"),
-      "---\nname: echoer\ndescription: says things\n---\nSay what the owner asks.\n",
-    );
-    return loadPlugins([root]);
-  }
-
   it("publishes the plugin's own manifest-declared skill only when it is staged", () => {
     expect(device(null, echoerPlugin("#!/bin/sh\n")).skills.manifest().map((s) => s.name)).toContain("echoer");
     expect(device(null, []).skills.manifest().map((s) => s.name)).not.toContain("echoer");
@@ -447,7 +466,7 @@ describe("a staged non-provider plugin through the exec path", () => {
       // as plow-gog's does — proof the entrypoint resolved against the
       // staged tree, not PATH, and ran with the manifest's fixed prefix.
       expect(out).toContain("ARGV=--quiet say hello");
-      // exec.cwd: "plugin" must resolve to the plugin's own staged
+      // The run must resolve to the plugin's own staged
       // directory, not wherever the parent process happens to be running
       // (cwd: undefined would have handed the child the executor's scratch
       // dir instead). `plugin.dir` is canonical by construction — loadPlugins
@@ -484,6 +503,31 @@ describe("a staged non-provider plugin through the exec path", () => {
     expectNeverSpawned(d);
   });
 
+  // The SysV semaphore grant (`Executor.run`'s `sysvSemaphores`, for a
+  // PyInstaller onefile plugin) must ride a staged plugin's own pinned
+  // binary and nothing else: one semaphore made outside the sandbox, the
+  // same `semctl` on it from a staged binary and from an ordinary approved
+  // command. Only the first may succeed. Made and removed outside the
+  // sandbox because removal is gated too.
+  // Seatbelt's `ipc-sysv-sem` grant. Linux bubblewrap does not expose `/usr/bin/perl`
+  // (or SysV IPC) inside the cage, and the wiki plugin that needs this is darwin-only.
+  it.skipIf(process.platform !== "darwin")("grants SysV semaphores to a staged plugin binary, and refuses them to an ordinary command", async () => {
+    const perl = (script: string): string => execFileSync("/usr/bin/perl", ["-e", script], { encoding: "utf8" }).trim();
+    const sem = perl('use IPC::SysV qw(IPC_PRIVATE IPC_CREAT); print semget(IPC_PRIVATE, 1, 0600|IPC_CREAT)');
+    try {
+      const probe = 'use IPC::SysV qw(SETVAL); print semctl($ARGV[0], 0, SETVAL, 1) ? "SEM_OK\n" : "SEM_DENIED\n"';
+      // The staged binary sees ["--quiet", "say", <sem>] (manifest exec tail, then the call's).
+      const plugins = echoerPlugin(`#!/bin/sh\nexec /usr/bin/perl -e '${probe}' -- "$3"\n`);
+      const d = device(null, plugins);
+      const viaPlugin = String(jv(await run(d, ["echoer", "say", sem], 8000, undefined, plugins[0]!.dir)).get("output").str);
+      const viaCommand = String(jv(await run(d, ["/usr/bin/perl", "-e", probe, "--", sem])).get("output").str);
+      expect(viaPlugin).toContain("SEM_OK");
+      expect(viaCommand).toContain("SEM_DENIED");
+    } finally {
+      perl(`use IPC::SysV qw(IPC_RMID); semctl(${sem}, 0, IPC_RMID, 0) or die "semctl: $!"`);
+    }
+  });
+
   // The `wiki` shape: an entrypoint that is NOT one of the manifest's own
   // `runtime.binaries` (declares none at all here) — a tool this Mac reaches
   // through the executor's curated PATH, not something it staged. Joining it
@@ -492,8 +536,8 @@ describe("a staged non-provider plugin through the exec path", () => {
   // the code back) is what proves the relative entry was left alone instead.
   const RELAY_MANIFEST = {
     name: "relay", version: "test", command: "relay",
-    runtime: { binaries: [], sources: [] },
-    exec: { cwd: "plugin", argv: ["echo", "RELAY"] },
+    runtime: { binaries: [] },
+    exec: { argv: ["echo", "RELAY"] },
     env: {}, argv: { read: [["say"]], write: [] },
   };
 
@@ -519,55 +563,53 @@ describe("a staged non-provider plugin through the exec path", () => {
     },
   );
 
-  // A manifest may declare exec.cwd as a source name rather than "plugin"
-  // (manifest.ts validates it against runtime.sources), but nothing on this
-  // Mac clones a source anywhere yet — there is no staged directory to
-  // resolve it to. Same standard as env: refused by name, never handed a
-  // guessed path.
-  it("refuses a source-rooted cwd this Mac cannot resolve, before spawning", async () => {
-    const root = tmp();
-    const dir = fakePlugin(
-      root,
-      {
-        name: "sourcey", version: "test", command: "sourcey",
-        runtime: {
-          binaries: [],
-          sources: [{ name: "repo", git: "https://example.invalid/repo.git", commit: "0".repeat(40) }],
+  // A `fixed` env source (wiki's WIKI_PATH among them) resolves for real — `${owner_home}` to the home
+  // THIS device was built with, not the plugin's own directory and not some
+  // other Mac's — and reaches the child's environment, and ONLY there.
+  // Proven end to end through the real DeviceAgent, without printing the
+  // value itself (providerExec's own token tests use the same shape): the
+  // script reports its length, never its bytes, so a leak into argv, the
+  // audit log, or the response would show up as the wrong length or the
+  // value itself, either of which fails the assertions below.
+  itSpawns(
+    "resolves a fixed env source, ${owner_home} included, into the child's environment and nowhere else",
+    async () => {
+      const ownerHome = tmp();
+      // DeviceAgent stores canonicalize(ownerHome); macOS tmpdirs often
+      // start as /var/folders/… and realpath to /private/var/folders/….
+      const resolved = path.join(canonicalize(ownerHome), "Plow", "wikish");
+      const root = tmp();
+      // A staged binary, not `/bin/sh -c`: the Linux cage refuses an entrypoint
+      // outside the approved workspace (bubblewrap never execs a live `/bin/sh`).
+      fakePlugin(
+        root,
+        {
+          name: "envy", version: "test", command: "envy",
+          runtime: {
+            binaries: [{
+              name: "echo-bin", version: "test",
+              url: { arm64: "https://example.invalid/e-arm64.tar.gz", x64: "https://example.invalid/e-x64.tar.gz" },
+              sha256: { arm64: "0".repeat(64), x64: "0".repeat(64) },
+            }],
+          },
+          exec: { argv: ["echo-bin"] },
+          env: { ENVY_PATH: { fixed: "${owner_home}/Plow/wikish" } },
+          argv: { read: [["say"]], write: [] },
         },
-        exec: { cwd: "repo", argv: ["/bin/sh", "-c", "echo SHOULD_NOT_RUN"] },
-        env: {}, argv: { read: [["say"]], write: [] },
-      },
-      "#!/bin/sh\necho SHOULD_NOT_RUN\n",
-    );
-    fs.mkdirSync(path.join(dir, "runtime", "repo"), { recursive: true });
-    const d = device(null, loadPlugins([root]));
-    const r = jv(await run(d, ["sourcey", "say", "hi"]));
-    expect(r.get("error").str).toContain("sourcey needs a source-rooted cwd this Mac cannot resolve yet");
-    expectNeverSpawned(d);
-  });
-
-  // No secret store, mint scope, or Plow API base is wired to a plugin's env
-  // yet, so a manifest declaring one is refused by name before anything
-  // spawns — handing a plugin a guessed or fake credential value would be a
-  // silent wrong answer, and this Mac fails loud instead.
-  it("refuses a manifest declaring env this Mac cannot resolve, before spawning", async () => {
-    const root = tmp();
-    fakePlugin(
-      root,
-      {
-        name: "envy", version: "test", command: "envy",
-        runtime: { binaries: [], sources: [] },
-        exec: { cwd: "plugin", argv: ["/bin/sh", "-c", "echo SHOULD_NOT_RUN"] },
-        env: { ENVY_TOKEN: { fixed: "x" } },
-        argv: { read: [["say"]], write: [] },
-      },
-      "#!/bin/sh\necho SHOULD_NOT_RUN\n",
-    );
-    const d = device(null, loadPlugins([root]));
-    const r = jv(await run(d, ["envy", "say", "hi"]));
-    expect(r.get("error").str).toContain("envy needs env this Mac cannot resolve yet");
-    expectNeverSpawned(d);
-  });
+        '#!/bin/sh\necho "LEN=${#ENVY_PATH}"\n',
+      );
+      const plugins = loadPlugins([root]);
+      const d = new DeviceAgent(
+        tmp(), "Test Mac", new HeadlessPolicy({ intent: "allow_once" }), null, ownerHome, null, plugins,
+      );
+      const response = await run(d, ["envy", "say", "hi"], 8000, undefined, plugins[0]!.dir);
+      const out = String(jv(response).get("output").str ?? "");
+      expect(out).toContain(`LEN=${resolved.length}`);
+      expect(out).not.toContain(resolved);
+      expect(JSON.stringify(response)).not.toContain(resolved);
+      expect(fs.readFileSync(d.audit.file, "utf8")).not.toContain(resolved);
+    },
+  );
 });
 
 /**
@@ -593,9 +635,8 @@ describe.skipIf(process.platform !== "darwin")("a plugin's always-allow rule, na
         url: { arm64: "https://example.invalid/kb-arm64.tar.gz", x64: "https://example.invalid/kb-x64.tar.gz" },
         sha256: { arm64: "0".repeat(64), x64: "0".repeat(64) },
       }],
-      sources: [],
     },
-    exec: { cwd: "plugin", argv: ["kb-bin"] },
+    exec: { argv: ["kb-bin"] },
     env: {}, argv: { read: [["get"]], write: [["put"]] },
   };
 
@@ -921,6 +962,19 @@ esac
     expect(JSON.stringify(response)).not.toContain("--account");
   });
 
+  itSpawns("returns a fanned-out calendar read compact, asked for in the owner's zone", async () => {
+    const d = device(accountsMinter(AB), plowGogPlugin());
+    const response = await run(d, ["plow-gog", "calendar", "events", "list"]);
+    expect(response).toMatchObject({ status: "completed", degraded: [] });
+    const items = (response as { items: Record<string, unknown>[] }).items;
+    expect(items).toHaveLength(2);
+    for (const item of items) {
+      expect(Object.keys(item)).toEqual(["summary", "startDayOfWeek", "startLocal", "endLocal", "id", "account"]);
+      // The fake echoes its argv into the summary.
+      expect(item.summary).toContain(`--timezone ${ownerTimeZone()}`);
+    }
+  });
+
   itSpawns("carries a named-but-degraded account as degraded, and queries only the healthy one", async () => {
     const d = device(accountsMinter([AB[0]!], [{ account: "b@example.com", reason: "needs_reauth" }]), plowGogPlugin());
     const response = await run(d, ["plow-gog", "calendar", "events", "list", "--account=a@example.com,b@example.com"]);
@@ -1149,5 +1203,139 @@ esac
     const response = await run(d, ["plow-gog", "gmail", "search", "q"]);
     expect(jv(response).get("error").str).toMatch(/could not reach Plow/);
     expectNeverSpawned(d);
+  });
+});
+
+/**
+ * The owner's off switch (`setDisabledPlugins`), which the Plugins tab drives.
+ *
+ * Off is asserted where it has to hold rather than on the setter: the skill is
+ * withdrawn from what `plow_list_skills` advertises, and the command is
+ * refused at the pre-intent chokepoint with nothing spawned — the same two
+ * consequences a plugin that was never staged has.
+ */
+describe("a plugin the owner turned off", () => {
+  const GOG_SKILL = providerFor(["plow-gog"])!.skill.name;
+  const publishes = (d: DeviceAgent): boolean => d.skills.manifest().some((s) => s.name === GOG_SKILL);
+
+  it("unpublishes the skill and refuses the command, and both come back when it is turned on", async () => {
+    const d = device(okMinter(), gogPlugin());
+    expect(publishes(d)).toBe(true);
+
+    d.setDisabledPlugins(["gog"]);
+    expect(publishes(d)).toBe(false);
+    // Unpublished, but the row that offers to turn it back on is not blank.
+    expect(d.pluginDescription("gog")).toBe(providerFor(["plow-gog"])!.skill.description);
+    // Refused by name before any card, and again at the executor.
+    expect(d.pluginRefusal(["plow-gog", "gmail", "search", "q"])).toBe("plow-gog is turned off on this Mac");
+    const response = await run(d, ["plow-gog", "gmail", "search", "q"]);
+    expect(jv(response).get("error").str).toBe("plow-gog is turned off on this Mac");
+    expectNeverSpawned(d);
+
+    d.setDisabledPlugins([]);
+    expect(publishes(d)).toBe(true);
+  });
+
+  // Off at approval is not the question — off NOW is. The mint is a network
+  // wait the owner can flip the switch during, and a token minted for a
+  // plugin that is off by the time it returns must never reach a child.
+  it("never launches a credentialed child for a plugin turned off during the mint", async () => {
+    let d: DeviceAgent | null = null;
+    const flipsDuringMint = minterOf(async () => { d!.setDisabledPlugins(["gog"]); return TOKEN; });
+    const ran = path.join(tmp(), "ran");
+    d = device(flipsDuringMint, stagedGog(`#!/bin/sh\ntouch "${ran}"\n`));
+    const response = await run(d, ["plow-gog", "gmail", "search", "q"]);
+    expect(jv(response).get("error").str).toBe("plow-gog is turned off on this Mac");
+    // Refused at the launch seam itself — after exec_start, before any child.
+    expect(fs.existsSync(ran)).toBe(false);
+    expect(d.audit.entries().map((e) => jv(e).get("event").str)).not.toContain("exec_end");
+  });
+
+  // A non-provider plugin has no PROVIDERS row to refuse through, and its
+  // command may well also be a real binary on PATH — off has to refuse by
+  // name at both chokepoints, never fall through to running that binary.
+  it("refuses a non-provider plugin's command by name rather than falling through to PATH", async () => {
+    const d = device(null, echoerPlugin("#!/bin/sh\necho ran\n"));
+    d.setDisabledPlugins(["echoer"]);
+    expect(d.skills.manifest().map((s) => s.name)).not.toContain("echoer");
+    expect(d.pluginRefusal(["echoer", "say", "hi"])).toBe("echoer is turned off on this Mac");
+    const response = await run(d, ["echoer", "say", "hi"]);
+    expect(jv(response).get("error").str).toBe("echoer is turned off on this Mac");
+    expectNeverSpawned(d);
+  });
+
+  /**
+   * Owner skills load last so the owner wins, but a later toggle re-runs the
+   * plugin sync — which used to re-register the built-in over the owner's
+   * file under the same name, and unregister it on the way down. What an
+   * agent is advertised and reads has to be the owner's, at every point in
+   * the cycle.
+   */
+  it("never lets a plugin toggle overwrite a skill the owner wrote under the same name", () => {
+    const home = tmp();
+    fs.mkdirSync(path.join(home, "device/skills"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, "device/skills/gog.md"),
+      `---\nname: ${GOG_SKILL}\ndescription: The owner's own notes.\n---\nDrive it this way.\n`,
+    );
+    const d = device(okMinter(), gogPlugin(), home);
+    const advertised = () => d.skills.manifest().find((s) => s.name === GOG_SKILL)?.description;
+    // The Plugins tab's row reads the same sentence the agent does — and while
+    // the plugin is off, the declared one rather than a blank row.
+    expect(advertised()).toBe("The owner's own notes.");
+    expect(d.pluginDescription("gog")).toBe("The owner's own notes.");
+    d.setDisabledPlugins(["gog"]);
+    expect(advertised()).toBe("The owner's own notes.");
+    expect(d.pluginDescription("gog")).toBe("The owner's own notes.");
+    d.setDisabledPlugins([]);
+    expect(advertised()).toBe("The owner's own notes.");
+    expect(d.pluginDescription("gog")).toBe("The owner's own notes.");
+    expect(d.skills.skill(GOG_SKILL)?.body).toBe("Drive it this way.");
+  });
+
+  it("turning the browser off unpublishes camoufox-browsing and refuses a browser command", async () => {
+    const d = makeDeviceWithBrowser();
+    expect(d.skills.manifest().map((s) => s.name)).toContain("camoufox-browsing");
+    d.setDisabledPlugins([BROWSER_PLUGIN]);
+    expect(d.skills.manifest().map((s) => s.name)).not.toContain("camoufox-browsing");
+    expect(d.browserRefusal()).toBe("browser use is turned off on this Mac");
+    const r = jv(await d.browserCommand("any-session", { action: "url" }));
+    expect(r.get("status").str).toBe("error");
+    expect(r.get("error").str).toMatch(/turned off/);
+    d.setDisabledPlugins([]);
+    expect(d.skills.manifest().map((s) => s.name)).toContain("camoufox-browsing");
+    expect(d.browserRefusal()).toBeNull();
+  });
+
+  // makeDeviceWithBrowser's server command names a file that does not exist —
+  // fine for the refusal test above, which never opens one, but a session
+  // that must actually close needs a browser that actually starts.
+  it("closes every open session the moment the switch flips, and lets a fresh one open once it flips back", async () => {
+    const home = tmp();
+    const d = device(null, [], home);
+    const browsers = {
+      command: ["node", FAKE_SERVER],
+      profileDir: path.join(home, "profiles"),
+      audit: (event: string, fields: { [k: string]: JSONValue }) => d.audit.record(event, fields),
+    };
+    const sessions = new BrowserSessions(browsers, null, (event, fields) => d.audit.record(event, fields));
+    // The same substitution deviceCore.test.ts's shutdown test uses: a real
+    // BrowserSessions the runtime never had to be resolved for.
+    Object.assign(d, { browserSessions: sessions });
+
+    const opened = jv(await sessions.open("int-1", "agent-1", ["pizza.example"]));
+    expect(opened.get("status").str).toBe("completed");
+
+    await d.setDisabledPlugins([BROWSER_PLUGIN]);
+    const closed = d.audit.entries().find((e) => jv(e).get("event").str === "browser_session_closed");
+    expect(closed).toBeDefined();
+    expect(jv(closed).get("reason").str).toBe("turned_off");
+
+    // Not closeAll: the switch flipping back on must open a fresh browser,
+    // not find the runtime latched shut behind it.
+    await d.setDisabledPlugins([]);
+    const reopened = jv(await sessions.open("int-2", "agent-1", ["pizza.example"]));
+    expect(reopened.get("status").str).toBe("completed");
+    await sessions.closeAll("test");
   });
 });

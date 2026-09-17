@@ -56,6 +56,6 @@ export * from "./linuxLaunchConfig.js";
 export { fetchBytes, runPostinstall, stageBinaries } from "./plugins/stage.js";
 export type { Arch } from "./plugins/stage.js";
 export { parseManifest, PluginError } from "./plugins/manifest.js";
-export type { PluginManifest } from "./plugins/manifest.js";
+export type { PluginManifest, PluginRequires } from "./plugins/manifest.js";
 export { loadPlugins, pluginFor, pluginRoots } from "./plugins/registry.js";
 export type { StagedPlugin } from "./plugins/registry.js";

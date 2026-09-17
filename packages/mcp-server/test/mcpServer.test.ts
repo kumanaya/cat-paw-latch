@@ -76,12 +76,14 @@ const OTHER: RelayAuth = { agent_id: "agent-2", agent_name: "Agent Two", scopes:
 class ScriptedPolicy implements PolicyDelegate {
   constructor(
     private readonly decision: "allow_once" | "always_allow" | "deny" = "allow_once",
-    private readonly delayMs = 0,
+    /** How long the human takes — or, as a Promise, the moment they answer. */
+    private readonly delay: number | Promise<unknown> = 0,
     /** How it decided. Some sources carry an explanation to the caller. */
     private readonly source = "ask",
   ) {}
   async decideIntent() {
-    if (this.delayMs > 0) await new Promise((r) => setTimeout(r, this.delayMs));
+    if (typeof this.delay !== "number") await this.delay;
+    else if (this.delay > 0) await new Promise((r) => setTimeout(r, this.delay));
     return { decision: this.decision, source: this.source };
   }
 }
@@ -180,7 +182,7 @@ describe("plow_history", () => {
     expect((limited.payload as { rows: unknown[] }).rows.length).toBe(1);
   });
 
-  it("a browser request that fails before a session exists ends in the log", async () => {
+  it("without a runtime, open and widen are refused before any intent, and the history stays empty", async () => {
     const { server, device } = makeServer();
     const { isError } = await callTool(
       server,
@@ -189,10 +191,12 @@ describe("plow_history", () => {
       AGENT,
     );
     expect(isError).toBe(true);
-    expect(events(device)).toEqual(["intent_received", "intent_decision", "tool_error"]);
-    const rows = (await callTool(server, "plow_history", {}, AGENT)).payload as { rows: { status: string }[] };
-    expect(rows.rows[0]!.status).toBe("Error");
-    // A widening that fails is the other tool's failure, and the log says which.
+    // No browser runtime is refused at the same pre-intent chokepoint as the
+    // owner's off switch (browser.test.ts owns that contract): nothing was
+    // asked, nothing recorded.
+    expect(events(device)).toEqual([]);
+    // A widening is refused at the same chokepoint: no runtime means no
+    // session it could widen, so nothing reaches the log or the history.
     const widen = await callTool(
       server,
       "plow_browser_request",
@@ -200,11 +204,10 @@ describe("plow_history", () => {
       AGENT,
     );
     expect(widen.isError).toBe(true);
-    const tools = device.audit
-      .entries()
-      .filter((e) => jv(e as JSONValue).get("event").str === "tool_error")
-      .map((e) => jv(e as JSONValue).get("tool").str);
-    expect(tools).toEqual(["plow_browser_open", "plow_browser_request"]);
+    expect(JSON.stringify(widen.payload)).toMatch(/no browser runtime/);
+    expect(events(device)).toEqual([]);
+    const rows = (await callTool(server, "plow_history", {}, AGENT)).payload as { rows: unknown[] };
+    expect(rows.rows).toEqual([]);
   });
 });
 
@@ -411,7 +414,7 @@ describe("agent identity", () => {
 });
 
 describe("the deferred-result contract (§4.3)", () => {
-  /** A budget short enough that a slow approval always outruns it. */
+  /** A budget short enough that an approval still outstanding always outruns it. */
   const SHORT = 40;
 
   async function deferredRead(
@@ -434,7 +437,11 @@ describe("the deferred-result contract (§4.3)", () => {
   }
 
   it("a call that outruns the budget returns a pending handle, then the real result", async () => {
-    const { server, first, file } = await deferredRead(new ScriptedPolicy("allow_once", 200));
+    // The human has not answered; only the test's own hand will, so nothing
+    // the budget timer races can land before it does.
+    let answer!: () => void;
+    const answered = new Promise<void>((r) => (answer = r));
+    const { server, first, file } = await deferredRead(new ScriptedPolicy("allow_once", answered));
     expect(first.isError).toBe(false);
     expect(first.payload.status).toBe("pending");
     expect(first.payload.reason).toBe("awaiting_approval");
@@ -445,6 +452,7 @@ describe("the deferred-result contract (§4.3)", () => {
     const early = await callTool(server, "plow_get_result", { handle }, AGENT);
     expect(early.payload.status).toBe("pending");
 
+    answer();
     const poll = (
       await pollUntil(
         () => callTool(server, "plow_get_result", { handle }, AGENT),
@@ -454,7 +462,8 @@ describe("the deferred-result contract (§4.3)", () => {
     expect(poll.status).toBe("ready");
     // Byte-for-byte what the original call would have returned.
     expect(poll.result).toEqual({ status: "completed", path: canonicalize(file), content: "slow content" });
-    // A call that finishes inside the budget says so in its own payload.
+    // A call that finishes inside the budget says so in its own payload —
+    // the real budget, so a slow disk cannot turn "finished" into "pending".
     const { first: fast } = await deferredRead(new ScriptedPolicy("allow_once"), AGENT, CALL_BUDGET_MS);
     expect(fast.payload.status).toBe("completed");
   });
@@ -950,16 +959,17 @@ describe("review findings", () => {
   // capability the card displayed never matched what could run. Same
   // chokepoint shape as providerRefusal, just above in this file's tools.ts.
   describe("a staged plugin's own argv belt gates before an intent exists too", () => {
-    function stagePlugin(root: string): void {
-      const dir = path.join(root, "echoer");
+    const ECHOER = { name: "echoer", command: "echoer", argv: { read: [["say"]], write: [] } };
+    function stagePlugin(root: string, plugin = ECHOER): void {
+      const dir = path.join(root, plugin.name);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(
         path.join(dir, "latch-plugin.json"),
         JSON.stringify({
-          name: "echoer", version: "test", command: "echoer",
-          runtime: { binaries: [], sources: [] },
-          exec: { cwd: "plugin", argv: ["/bin/echo"] },
-          env: {}, argv: { read: [["say"]], write: [] },
+          ...plugin, version: "test",
+          runtime: { binaries: [] },
+          exec: { argv: ["/bin/echo"] },
+          env: {},
         }),
       );
     }
@@ -967,9 +977,9 @@ describe("review findings", () => {
     // One staged "echoer" plugin, a fresh device and server around it, and
     // cleanup registered — the lifecycle every test below needs, varying
     // only the policy delegate.
-    function makePluginServer(delegate: PolicyDelegate) {
+    function makePluginServer(delegate: PolicyDelegate, plugin = ECHOER) {
       const root = tempDir();
-      stagePlugin(root);
+      stagePlugin(root, plugin);
       const home = tempDir();
       const device = new DeviceAgent(home, "Test Mac", delegate, null, undefined, null, loadPlugins([root]));
       const server = createDomoMcpServer(device, {});
@@ -993,6 +1003,24 @@ describe("review findings", () => {
       // The refusal never became an approval decision, and nothing was audited.
       expect(decided).toBe(false);
       expect(events(device)).not.toContain("exec_start");
+    });
+
+    // A provider's command is a staged plugin's too, and the owner's off
+    // switch is the device's answer for it before any card — not "not
+    // installed" after one.
+    it("refuses a provider's command when the owner turned its plugin off, before an intent is ever built", async () => {
+      let decided = false;
+      const { server, device } = makePluginServer(
+        { async decideIntent() { decided = true; return "allow_once" as const; } },
+        { name: "gog", command: "plow-gog", argv: { read: [], write: [] } },
+      );
+      device.setDisabledPlugins(["gog"]);
+
+      const { isError, payload } = await callTool(server, "plow_run_command", { argv: ["plow-gog", "gmail", "search", "q"] }, AGENT);
+
+      expect(isError).toBe(true);
+      expect(String(payload.error ?? payload)).toContain("plow-gog is turned off on this Mac");
+      expect(decided).toBe(false);
     });
 
     // A plugin's own dispatch (deviceAgent.ts's executeCommand) always execs

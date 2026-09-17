@@ -7,6 +7,12 @@
  * because a PluginError reaches the owner directly — the installer's caller,
  * or launch-time stderr — never the audit log or an agent.
  */
+
+/** The account connectors this Mac can connect — "Connect Google" is the only
+ *  button the Plugins tab can offer, so any other id is a requirement nothing
+ *  can ever meet. Refused at the boundary. */
+const ACCOUNT_IDS: ReadonlySet<string> = new Set(["google"]);
+
 export class PluginError extends Error {
   constructor(message: string) {
     super(message);
@@ -14,7 +20,14 @@ export class PluginError extends Error {
   }
 }
 
-export type EnvSource = { fixed: string } | { secret: string } | { mint: string };
+export type EnvSource = { fixed: string };
+
+/** What a plugin needs before it can work. One kind today — a connector the
+ *  owner must connect — keyed so another is a field added, not a reshaping.
+ *  Present and empty when the manifest omits it. */
+export interface PluginRequires {
+  accounts: string[]; // a connector id the app can connect, e.g. "google"
+}
 
 export type Arch = "arm64" | "x64";
 /**
@@ -45,13 +58,13 @@ export interface PluginManifest {
       /** Per-OS builds. A platform absent here has no pinned binary. */
       platforms: Partial<Record<PluginPlatform, PlatformBinary>>;
     }[];
-    sources: { name: string; git: string; commit: string; install?: string[] }[];
   };
-  exec: { cwd: string; argv: string[] }; // cwd is a runtime/ entry ("gbrain", "plugin"); each binary is staged as runtime/<arch>/bin/<binary name>, which leads a child's PATH — argv[0] names one of those or anything else on PATH
+  exec: { argv: string[] }; // runs in the plugin's own directory; each binary is staged as runtime/<arch>/bin/<binary name>, which leads a child's PATH — argv[0] names one of those or anything else on PATH
   daemon: { argv: string[]; health: string } | null;
   env: Record<string, EnvSource>;
   argv: { read: string[][]; write: string[][] };
   hooks: { postinstall?: string };
+  requires: PluginRequires;
   skill: string | null; // path in repo/, or null when a code layer publishes the skill
 }
 
@@ -66,7 +79,7 @@ const PLATFORMS = ["darwin", "win32", "linux"] as const;
 const NO_DOTDOT = /^(?!.*(^|\/)\.\.(\/|$))[^\0]+$/;
 /**
  * NO_DOTDOT plus no leading `/`: a path INSIDE the plugin's own tree,
- * relative only. Every path-shaped field (exec.cwd, skill, hooks, a binary's
+ * relative only. Every path-shaped field (skill, hooks, a binary's
  * executable) is joined under `$DOMO_HOME/plugins/<name>/` by the installer,
  * so a traversal here would be a write outside the plugin's directory.
  */
@@ -76,7 +89,7 @@ function fail(message: string): never {
   throw new PluginError(message);
 }
 const isInside = (v: unknown): v is string => typeof v === "string" && INSIDE.test(v);
-/** One name per binary / source: a duplicate would make `runtime/<name>` ambiguous. */
+/** One name per binary: a duplicate would make `runtime/<arch>/bin/<name>` ambiguous. */
 function unique(names: string[], what: string): void {
   if (new Set(names).size !== names.length) fail(`${what} names must be unique`);
 }
@@ -93,6 +106,13 @@ function typedArray(v: unknown, what: string): unknown[] {
   if (v === undefined || v === null) return [];
   if (!Array.isArray(v)) fail(`${what} must be an array`);
   return v;
+}
+/** A present-but-wrong-type list is refused, never coerced; absent is empty. */
+function strList(v: unknown, field: string): string[] {
+  return typedArray(v, field).map((e: unknown) => {
+    if (typeof e !== "string") fail(`${field} entries must be strings`);
+    return e;
+  });
 }
 /** Absent stays absent (caller applies its own default); a present value of the wrong type is refused, never stringified. */
 function typedString(v: unknown, what: string): string | undefined {
@@ -122,6 +142,7 @@ export function parseManifest(raw: string): PluginManifest {
     const bin = obj(b);
     const bname = typedString(bin.name, "binary name") ?? "";
     if (!SLUG.test(bname)) fail("binary name must be lowercase letters, digits and dashes");
+    if (bname === "bin") fail('binary name must not be "bin" — runtime/<arch>/bin is reserved');
     // One pinned build: an https url and a 64-hex digest for each arch. https
     // only even though the bytes are verified by sha: a plaintext or file: URL
     // is still a download the owner did not intend to trust the network with.
@@ -163,25 +184,9 @@ export function parseManifest(raw: string): PluginManifest {
     };
   });
   unique(binaries.map((b) => b.name), "binary");
-  const sources = typedArray(runtime.sources, "runtime.sources").map((s: unknown) => {
-    const src = obj(s);
-    const sname = typedString(src.name, "source name") ?? "";
-    if (!SLUG.test(sname)) fail("source name must be lowercase letters, digits and dashes");
-    // A leading dash would read as a git option when cloned; the installer
-    // also passes `--`, this is the layer under it.
-    if (typeof src.git !== "string" || !src.git || src.git.startsWith("-")) fail(`source ${sname} needs a git url`);
-    if (typeof src.commit !== "string" || !/^[0-9a-f]{40}$/.test(src.commit)) {
-      fail(`source ${sname} needs a 40-character commit`);
-    }
-    if (src.install !== undefined && !isStrings(src.install)) fail(`source ${sname} install must be an argv array`);
-    return { name: sname, git: src.git, commit: src.commit, ...(src.install ? { install: src.install as string[] } : {}) };
-  });
-  unique(sources.map((s) => s.name), "source");
 
   const exec = obj(m.exec);
-  if (typeof exec.cwd !== "string" || !isStrings(exec.argv) || exec.argv.length === 0) {
-    fail("manifest needs exec.cwd and exec.argv");
-  }
+  if (!isStrings(exec.argv) || exec.argv.length === 0) fail("manifest needs exec.argv");
   // A ".." here would let a manifest name an arbitrary host file as the
   // thing to exec. An absolute argv[0] (e.g. /bin/sh) is legitimate for a
   // plugin run BY NAME: nothing joins it under bin/, so it falls through to
@@ -190,9 +195,6 @@ export function parseManifest(raw: string): PluginManifest {
   // staged bin/ — so that one must be relative and name a staged binary, or
   // the join nests an absolute path and resolves nothing.
   if (!NO_DOTDOT.test(exec.argv[0])) fail("exec.argv[0] must not contain a .. segment");
-  // cwd names a runtime/ entry the installer creates: a source, or `plugin`
-  // (the repo itself). Anything else is a directory outside the staged tree.
-  if (exec.cwd !== "plugin" && !sources.some((s) => s.name === exec.cwd)) fail("exec.cwd must be plugin or a source name");
 
   let daemon: PluginManifest["daemon"] = null;
   if (m.daemon !== undefined && m.daemon !== null) {
@@ -206,10 +208,9 @@ export function parseManifest(raw: string): PluginManifest {
   const env: Record<string, EnvSource> = {};
   for (const [key, value] of Object.entries(typedObj(m.env, "env"))) {
     if (!/^[A-Z][A-Z0-9_]*$/.test(key)) fail("env names must be UPPER_SNAKE_CASE");
-    const v = obj(value);
-    const kinds = (["fixed", "secret", "mint"] as const).filter((k) => typeof v[k] === "string");
-    if (kinds.length !== 1) fail(`env value ${key} must be one of fixed, secret or mint`);
-    env[key] = { [kinds[0]]: v[kinds[0]] } as EnvSource;
+    const fixed = obj(value).fixed;
+    if (typeof fixed !== "string") fail(`env value ${key} needs a fixed string`);
+    env[key] = { fixed };
   }
 
   const argv = typedObj(m.argv, "argv");
@@ -226,6 +227,15 @@ export function parseManifest(raw: string): PluginManifest {
     }
   }
 
+  // Names the field, never the value: a requirement id is third-party text.
+  const req = typedObj(m.requires, "requires");
+  const requires: PluginRequires = {
+    accounts: strList(req.accounts, "requires.accounts").map((e) => {
+      if (!ACCOUNT_IDS.has(e)) fail("requires.accounts entries must name an account connector this Mac offers");
+      return e;
+    }),
+  };
+
   const hooks = obj(m.hooks);
   const postinstall = hooks.postinstall === undefined ? null : insideOrFail(hooks.postinstall, "hooks.postinstall");
   const skill = m.skill === undefined ? null : insideOrFail(m.skill, "skill");
@@ -234,12 +244,13 @@ export function parseManifest(raw: string): PluginManifest {
     name,
     version,
     command,
-    runtime: { binaries, sources },
-    exec: { cwd: exec.cwd, argv: exec.argv },
+    runtime: { binaries },
+    exec: { argv: exec.argv },
     daemon,
     env,
     argv: { read: read as string[][], write: write as string[][] },
     hooks: postinstall === null ? {} : { postinstall },
+    requires,
     skill,
   };
 }
