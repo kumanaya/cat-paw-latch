@@ -313,6 +313,12 @@ async function setUp() {
   ipcMain.handle("ui:getTab", async () => "agents");
   ipcMain.handle("ui:setTab", async () => {});
   ipcMain.handle("onboarding:open", async () => {});
+  // Settings awaits these on boot. Without them the invoke rejects and the
+  // Connected Accounts section never paints (the fork notice and vault
+  // hand-off are not this script's subject, but they sit on the same pane).
+  ipcMain.handle("vault:exchangePending", async () => null);
+  ipcMain.handle("fork:banner", async () =>
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
   // The main window's boot also asks for the update banner's state; without a
   // handler the invoke rejects and the renderer never finishes booting.
   ipcMain.handle("updates:get", async () => ({
