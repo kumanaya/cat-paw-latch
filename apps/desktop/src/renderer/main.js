@@ -8,7 +8,7 @@ import {
   PURPOSE_PLACEHOLDER,
 } from "./approvals.js";
 
-import { el, icon } from "./dom.js";
+import { el, icon, switchEl } from "./dom.js";
 import { singleFlight } from "./onboardingAction.js";
 import { renderVault, vaultConfirmLeave } from "./vault.js";
 import {
@@ -23,7 +23,6 @@ if (window.domo?.platform !== "darwin") document.body.classList.add("platform-no
 const seg = document.getElementById("seg");
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");
-const NEW_LINE_VALUE = "__new_line__";
 
 // Null until boot() picks one: the HTML marks Audit active for the first paint,
 // but boot must still RENDER that pane, and "already on this tab" now returns
@@ -40,7 +39,7 @@ const STATUS_FILTERS = [
   ["any", "Any"], ["completed", "Completed"], ["running", "Running"], ["blocked", "Blocked"], ["failed", "Failed"],
 ];
 // The Date filter: rows at or after a cutoff. The presets are relative to
-// now; "since" is a fixed moment set by the Capabilities tab's "Show in
+// now; "since" is a fixed moment set by the Permissions section's "Show in
 // Audit" (the dismissal its count starts from) and listed in the menu only
 // while it is set.
 let dateFilter = "any";
@@ -350,7 +349,7 @@ async function refreshAuditNow(opts) {
     decision: decisionFilter,
     status: statusFilter,
     cutoffMs: cutoff,
-    // The Capabilities tab counts by the block's own time, so its cutoff
+    // The Permissions section counts by the block's own time, so its cutoff
     // keys on that; the presets key on when the row began.
     cutoffKey: dateFilter === "since" ? "blocked" : "ts",
     // The selected row stays loaded even when new activity above it pushes
@@ -1113,10 +1112,7 @@ function syncStaticModal(s, redraw) {
   // ever taken away by one.
   staticModal.nameInput.disabled = !!s.busy;
   for (const b of staticModal.panel.querySelectorAll("button")) b.disabled = !!s.busy;
-  // A name is all this mint needs. The one other bar is a cloud-agent token
-  // still on screen: a second one-time secret would overwrite the copy nobody
-  // has saved yet.
-  if (kind === "form") staticModal.actions[1].disabled = !!s.busy || !!s.agentToken;
+
 }
 
 /**
@@ -1231,6 +1227,7 @@ function openMcpModal(trigger, s, redraw) {
 /** The cloud-agent dialog, if one is open. It lives outside #view so a state
     refresh can redraw the roster without taking an in-progress choice away. */
 let cloudModal = null;
+let selectedCloudProvider = null;
 
 function closeCloudModal() {
   if (!cloudModal) return;
@@ -1266,378 +1263,40 @@ function cloudLine(agent) {
   return agent?.line?.label || "No line";
 }
 
-function focusCloudAgent(agentId) {
-  const row = [...document.querySelectorAll(".cloud-agent-row")]
-    .find((candidate) => candidate.dataset.cloudAgentId === agentId);
-  row?.querySelector(".cloud-agent-open")?.focus();
-}
-
-function dismissCloudLineModal() {
-  if (cloudModal?.kind === "line-flow" && cloudModal.phase === "creating") return;
-  if (cloudModal?.kind === "line-flow") void window.domo.cloudCancelLineFlow();
-  closeCloudModal();
-}
-
-function cloudLineProgress(
-  panel,
-  text,
-  cancellable = true,
-  title = "New agent",
-) {
-  const cancel = cancellable ? el("button", { class: "btn", text: "Cancel" }) : null;
-  cancel?.addEventListener("click", dismissCloudLineModal);
-  panel.replaceChildren(
-    el("div", { class: "group-title", text: title }),
-    el("div", { class: "cloud-progress" }, [
-      el("span", { class: "cloud-spinner", attrs: { "aria-hidden": "true" } }),
-      el("span", { text }),
-    ]),
-    el("div", { class: "row cloud-modal-actions" }, [
-      el("div", { class: "spacer" }),
-      cancel,
-    ]),
-  );
-  cancel?.focus();
-}
-
-function cloudActivationScreen(panel, flow) {
-  const cancel = el("button", { class: "btn", text: "Cancel" });
-  const messages = el("button", { class: "btn primary", text: "Open Messages…" });
-  cancel.addEventListener("click", dismissCloudLineModal);
-  messages.addEventListener("click", () => window.domo.cloudOpenMessages());
-  panel.replaceChildren(
-    el("div", { class: "group-title", text: "New line" }),
-    el("p", {
-      class: "conn-note",
-      text: `Text this code to ${flow.activation.sendTo} from your phone.`,
-    }),
-    el("div", { class: "cloud-activation-code mono", text: flow.activation.displayCode }),
-    el("div", { class: "field" }, [
-      el("label", { text: "Send this exact message" }),
-      copyRow(flow.activation.smsBody, "Copy"),
-    ]),
-    ...(flow.message ? [el("p", { class: "faint modal-note", text: flow.message })] : []),
-    el("div", { class: "row cloud-modal-actions" }, [
-      cancel,
-      el("div", { class: "spacer" }),
-      messages,
-    ]),
-  );
-  messages.focus();
-}
-
-function cloudLinePickerNodes(state, modal, start, cancel, message = null) {
-  if (state.cloudLinesLoaded !== true) {
-    const unavailable = state.cloudChatsError
-      ? cloudErrorCopy(state.cloudChatsError)
-      : "Your lines couldn't be loaded yet. Try again.";
-    return [
-      el("div", { class: "cloud-callout cloud-error" }, [
-        el("div", { class: "cloud-callout-title", text: "Lines could not be loaded" }),
-        el("p", { class: "faint", text: unavailable }),
-      ]),
-      el("div", { class: "row cloud-modal-actions" }, [cancel]),
-    ];
-  }
-  const freeLines = state.cloudFreeLines ?? [];
-  const lineSelect = el("select", {
-    class: "text",
-    attrs: { "aria-label": "Line" },
-  }, [
-    el("option", { text: "Choose a line…", attrs: { value: "", disabled: "" } }),
-    ...freeLines.map((line) => el("option", { text: line.label, attrs: { value: line.uid } })),
-    el("option", { text: "New line", attrs: { value: NEW_LINE_VALUE } }),
-  ]);
-  const available = new Set(freeLines.map((line) => line.uid));
-  if (modal.selectedLineUid !== undefined && modal.selectedLineUid !== null &&
-      !available.has(modal.selectedLineUid)) {
-    modal.selectedLineUid = undefined;
-  }
-  lineSelect.value = modal.selectedLineUid === null
-    ? NEW_LINE_VALUE
-    : modal.selectedLineUid ?? "";
-  const submit = el("button", {
-    class: "btn primary",
-    text: modal.mode === "change" ? "Change line" : "Create agent",
-  });
-  submit.disabled = modal.selectedLineUid === undefined;
-  lineSelect.addEventListener("change", () => {
-    modal.selectedLineUid = lineSelect.value === NEW_LINE_VALUE
-      ? null
-      : lineSelect.value || undefined;
-    submit.disabled = modal.selectedLineUid === undefined;
-  });
-  submit.addEventListener("click", () => {
-    if (modal.selectedLineUid !== undefined) start(modal.selectedLineUid);
-  });
-  return [
-    ...(message ? [el("div", { class: "cloud-callout cloud-error" }, [
-      el("p", { class: "faint", text: cloudErrorCopy(message) }),
-    ])] : []),
-    el("div", { class: "field cloud-agent-line" }, [
-      el("label", { text: "Line" }),
-      lineSelect,
-    ]),
-    el("div", { class: "row cloud-modal-actions" }, [
-      cancel,
-      el("div", { class: "spacer" }),
-      submit,
-    ]),
-  ];
-}
-
-function cloudLineConfirmed(panel, title) {
-  panel.replaceChildren(
-    el("div", { class: "group-title", text: title }),
-    el("div", { class: "cloud-confirmed", text: "Code confirmed" }),
-    el("p", { class: "faint modal-note", text: "Setting up your agent…" }),
-  );
-}
-
-function syncCloudLineModal(state, redraw) {
-  if (cloudModal?.kind !== "line-flow") return;
-  const modal = cloudModal;
-  const changing = modal.mode === "change";
-  const title = changing ? "Change line" : "New agent";
-  const agent = changing
-    ? (state.cloudAgents ?? []).find((candidate) => candidate.agentId === modal.agentId)
-    : null;
-  if (changing && !agent) {
-    void window.domo.cloudCancelLineFlow();
-    closeCloudModal();
-    return;
-  }
-  const flow = state.cloudLineFlow ?? { phase: "idle" };
-  const { panel } = modal;
-  modal.phase = flow.phase;
-
-  const providers = changing ? null : state.cloudProviders;
-  const providerView = cloudProviderPickerViewModel(
-    providers,
-    state.cloudProvidersError,
-  );
-  if (!changing && !modal.started && providers) {
-    const selected = modal.providerSelect.value;
-    modal.providerSelect.replaceChildren(...providers.map((provider) =>
-      el("option", { text: provider.name, attrs: { value: provider.id } })));
-    if (providers.some((provider) => provider.id === selected)) {
-      modal.providerSelect.value = selected;
-    }
-  }
-
-  if (!changing && !modal.started && providerView.mode === "blocked") {
-    const cancel = el("button", { class: "btn", text: "Cancel" });
-    cancel.addEventListener("click", dismissCloudLineModal);
-    panel.replaceChildren(
-      el("div", { class: "group-title", text: title }),
-      cloudErrorBanner(providerView.message, providerView.heading),
-      el("div", { class: "row cloud-modal-actions" }, [cancel]),
-    );
-    cancel.focus();
-    return;
-  }
-
-  if (modal.started && flow.completedAgentId) {
-    const completedAgentId = flow.completedAgentId;
-    if (modal.selectedLineUid === null) {
-      if (!modal.confirmationTimer) {
-        const confirmedModal = modal;
-        modal.phase = "confirmed";
-        cloudLineConfirmed(panel, title);
-        modal.confirmationTimer = setTimeout(() => {
-          if (cloudModal !== confirmedModal) return;
-          closeCloudModal();
-          focusCloudAgent(completedAgentId);
-        }, 1_500);
-      }
-      return;
-    }
-    closeCloudModal();
-    focusCloudAgent(completedAgentId);
-    return;
-  }
-
-  if (modal.started && flow.phase === "activating") {
-    cloudLineProgress(panel, "Getting a new line from Plow…", true, title);
-    return;
-  }
-  if (modal.started && flow.phase === "creating") {
-    cloudLineProgress(panel, changing ? "Moving the agent…" : "Setting up the agent…", false, title);
-    return;
-  }
-
-  if (modal.started && flow.phase === "waiting" && flow.activation) {
-    cloudActivationScreen(panel, flow);
-    return;
-  }
-
-  if (modal.started && flow.phase === "error" && flow.terminal === "no_numbers") {
-    const close = el("button", { class: "btn primary", text: "Close" });
-    close.addEventListener("click", dismissCloudLineModal);
-    panel.replaceChildren(
-      el("div", { class: "group-title", text: title }),
-      el("div", { class: "cloud-callout cloud-error" }, [
-        el("p", {
-          class: "faint",
-          text: "No numbers are available right now. Try again later.",
-        }),
-      ]),
-      el("div", { class: "row cloud-modal-actions" }, [
-        el("div", { class: "spacer" }),
-        close,
-      ]),
-    );
-    close.focus();
-    return;
-  }
-
-  if (modal.started && flow.phase === "error") {
-    const cancel = el("button", { class: "btn", text: "Cancel" });
-    const retry = el("button", {
-      class: "btn primary",
-      text: !changing && flow.retryNewLine ? "Retry New agent" : "Try again",
-    });
-    cancel.addEventListener("click", dismissCloudLineModal);
-    retry.addEventListener("click", async () => {
-      retry.disabled = true;
-      cancel.disabled = true;
-      await window.domo.cloudRetryLineFlow();
-      await redraw();
-    });
-    panel.replaceChildren(
-      el("div", { class: "group-title", text: title }),
-      el("div", { class: "cloud-callout cloud-error" }, [
-        el("div", {
-          class: "cloud-callout-title",
-          text: changing ? "The line change did not finish" : "The agent wasn't created",
-        }),
-        el("p", {
-          class: "faint",
-          text: cloudErrorCopy(flow.message || "Something went wrong. Try again."),
-        }),
-      ]),
-      el("div", { class: "row cloud-modal-actions" }, [
-        cancel,
-        el("div", { class: "spacer" }),
-        retry,
-      ]),
-    );
-    retry.focus();
-    return;
-  }
-
-  if (modal.started && flow.phase === "idle") {
-    modal.started = false;
-    modal.selectedLineUid = undefined;
-  }
-
-  const start = async (lineUid) => {
-    modal.started = true;
-    modal.phase = lineUid === null ? "activating" : "creating";
-    cloudLineProgress(
-      panel,
-      lineUid === null
-        ? "Getting a new line from Plow…"
-        : changing ? "Moving the agent…" : "Setting up the agent…",
-      lineUid === null,
-      title,
-    );
-    if (changing) {
-      await window.domo.cloudChangeLine({ agentId: agent.agentId, lineUid });
-    } else {
-      await window.domo.cloudCreate({
-        name: modal.nameInput.value.trim(),
-        provider: modal.providerSelect.value,
-        lineUid,
-      });
-    }
-    await redraw();
-  };
-  const cancel = el("button", { class: "btn", text: "Cancel" });
-  cancel.addEventListener("click", dismissCloudLineModal);
-  panel.replaceChildren(
-    el("div", { class: "group-title", text: title }),
-    ...(changing ? [el("p", {
-      class: "conn-note",
-      text: "The agent keeps its name and memory and moves to the new number.",
-    })] : [el("div", { class: "field cloud-agent-name" }, [
-      el("label", { text: "Name (optional)" }),
-      modal.nameInput,
-    ]), el("div", { class: "field" }, [
-      el("label", { text: "Agent type" }),
-      modal.providerSelect,
-    ])]),
-    ...cloudLinePickerNodes(state, modal, start, cancel, changing ? flow.message : null),
-  );
-  if (modal.firstPaint) {
-    modal.firstPaint = false;
-    if (changing) panel.querySelector('select[aria-label="Line"]')?.focus();
-    else modal.nameInput.focus();
-  }
-}
-
-function openCloudCreate(trigger, state, redraw) {
-  const nameInput = el("input", {
-    class: "text",
-    attrs: { placeholder: "Cloud agent", "aria-label": "Agent name" },
-  });
-  const providerSelect = el("select", {
-    class: "text",
-    attrs: { "aria-label": "Agent type" },
-  });
-  if (!openCloudModal(trigger, [], nameInput, dismissCloudLineModal)) return;
-  Object.assign(cloudModal, {
-    kind: "line-flow",
-    mode: "create",
-    nameInput,
-    providerSelect,
-    selectedLineUid: undefined,
-    started: false,
-    phase: "idle",
-    firstPaint: true,
-  });
-  cloudLineProgress(cloudModal.panel, "Loading your lines…");
-  void (async () => {
-    await window.domo.cloudCancelLineFlow();
-    const refreshed = await window.domo.cloudRefresh();
-    if (cloudModal?.kind === "line-flow") syncCloudLineModal(refreshed ?? state, redraw);
-  })();
-}
-
 function openCloudChangeLine(agent, state, redraw) {
   if (!cloudModal) return;
-  Object.assign(cloudModal, {
-    kind: "line-flow",
-    mode: "change",
-    agentId: agent.agentId,
-    selectedLineUid: undefined,
-    started: false,
-    phase: "idle",
-    firstPaint: true,
-    dismiss: dismissCloudLineModal,
+  const { panel } = cloudModal;
+  cloudModal.kind = "change-line";
+  const close = el("button", { class: "btn", text: "Cancel" });
+  close.addEventListener("click", closeCloudModal);
+  const note = el("p", { class: "faint", text: "Choose an existing line for this agent." });
+  const choices = (state.cloudFreeLines ?? []).map((line) => {
+    const button = el("button", { class: "btn", text: line.label });
+    button.addEventListener("click", async () => {
+      for (const choice of panel.querySelectorAll("button")) choice.disabled = true;
+      const result = await window.domo.cloudChangeLine({ agentId: agent.agentId, lineUid: line.uid });
+      if (result?.cloudActionError) {
+        note.textContent = cloudErrorCopy(result.cloudActionError);
+        for (const choice of panel.querySelectorAll("button")) choice.disabled = false;
+      } else {
+        closeCloudModal();
+      }
+      await redraw();
+    });
+    return button;
   });
-  cloudLineProgress(
-    cloudModal.panel,
-    "Loading your lines…",
-    true,
-    "Change line",
+  panel.replaceChildren(
+    el("div", { class: "group-title", text: "Change line" }),
+    note,
+    ...choices,
+    ...(!choices.length ? [el("p", { class: "faint", text: "No available lines." })] : []),
+    close,
   );
-  void (async () => {
-    await window.domo.cloudCancelLineFlow();
-    const refreshed = await window.domo.cloudRefresh();
-    if (cloudModal?.kind === "line-flow") {
-      syncCloudLineModal(refreshed ?? state, redraw);
-    }
-  })();
 }
 
-/** Repaint the open agent detail from the same state as the roster behind it. */
 function syncCloudModal(state, redraw) {
   if (!cloudModal) return;
-  if (cloudModal.kind === "line-flow") {
-    syncCloudLineModal(state, redraw);
-    return;
-  }
+  if (cloudModal.kind === "change-line") return;
   const agent = (state.cloudAgents ?? [])
     .find((candidate) => candidate.agentId === cloudModal.agentId);
   if (!agent) {
@@ -1655,7 +1314,6 @@ function syncCloudModal(state, redraw) {
       : el("button", { class: "btn", text: "Change line" });
     const message = agent.canMessage ? el("button", { class: "btn", text: "Message" }) : null;
     const remove = el("button", { class: "btn danger", text: "Delete agent" });
-    remove.disabled = Boolean(state.agentToken);
     close.addEventListener("click", closeCloudModal);
     message?.addEventListener("click", () => window.domo.cloudOpenMessages(agent.agentId));
     changeLine?.addEventListener("click", () => openCloudChangeLine(agent, state, redraw));
@@ -1720,7 +1378,7 @@ function syncCloudModal(state, redraw) {
       el("div", { class: "group-title", text: `Delete ${name}?` }),
       el("p", {
         class: "conn-note",
-        text: "The agent will stop reading and replying, and your conversations on this line may be removed. To use an agent again, you’ll need to activate again and may get a different number.",
+        text: "The agent will stop reading and replying, and your conversations on this line may be removed. To get another agent, use New agent to send a setup text.",
       }),
       note,
       el("div", { class: "row cloud-modal-actions" }, [
@@ -1950,9 +1608,6 @@ function cloudEntityRow(agent, state, redraw) {
     event.preventDefault();
     openCloudDetail(main, agent, state, redraw);
   });
-  const retry = agent.status === "failed" && agent.canRetry
-    ? el("button", { class: "btn small", text: "Retry" })
-    : null;
   const message = agent.canMessage
     ? el("button", {
         class: "btn small message-btn",
@@ -1961,12 +1616,7 @@ function cloudEntityRow(agent, state, redraw) {
       })
     : null;
   message?.addEventListener("click", () => window.domo.cloudOpenMessages(agent.agentId));
-  retry?.addEventListener("click", async () => {
-    retry.disabled = true;
-    await window.domo.cloudRetryFailed(agent.agentId);
-    await redraw();
-  });
-  const actions = [message, retry].filter(Boolean);
+  const actions = [message].filter(Boolean);
   return el("div", { class: "entity-row cloud-agent-row", attrs: { "data-cloud-agent-id": agent.agentId } }, [
     entityMark(name),
     main,
@@ -2019,8 +1669,24 @@ function sectionHeader(title, count, unit, action) {
 
 function cloudSection(s, redraw) {
   const add = el("button", { class: "btn primary", text: "New agent" });
-  add.disabled = Boolean(s.agentToken);
-  add.addEventListener("click", () => openCloudCreate(add, s, redraw));
+  const providers = s.cloudProviders ?? [];
+  const providerView = cloudProviderPickerViewModel(s.cloudProviders, s.cloudProvidersError);
+  const select = providers.length > 1 ? el("select", {
+    class: "text", attrs: { "aria-label": "Agent type" },
+  }, providers.map((provider) => el("option", {
+    text: provider.name, attrs: { value: provider.id },
+  }))) : null;
+  if (select) {
+    if (providers.some((provider) => provider.id === selectedCloudProvider)) select.value = selectedCloudProvider;
+    select.addEventListener("change", () => { selectedCloudProvider = select.value; });
+  }
+  add.disabled = providers.length === 0;
+  const note = el("p", { class: "faint", text: "" });
+  add.addEventListener("click", async () => {
+    const opened = await window.domo.cloudNewAgentMessages(select?.value ?? providers[0]?.id);
+    note.textContent = opened ? "Send the prefilled message to start your agent." : "Could not open Messages. Refresh and try again.";
+  });
+  const action = el("div", { class: "row cloud-new-agent" }, [select, add].filter(Boolean));
   const rows = s.cloudAgents.map((agent) => cloudEntityRow(agent, s, redraw));
   const notices = [];
   if (!s.cloudChatsLoaded) {
@@ -2038,7 +1704,9 @@ function cloudSection(s, redraw) {
   if (refreshError) notices.push(refreshError);
   if (s.cloudActionError) notices.push(cloudErrorBanner(s.cloudActionError, "That change did not finish"));
   return el("section", { class: "list-section" }, [
-    sectionHeader("Agents", rows.length, "agent", add),
+    sectionHeader("Agents", rows.length, "agent", action),
+    ...(providerView.mode === "blocked" ? [cloudErrorBanner(providerView.message, providerView.heading)] : []),
+    note,
     ...notices,
     el("div", { class: "entity-list compact-list" }, rows.length
       ? rows
@@ -2089,12 +1757,6 @@ async function renderAgents() {
     const s = await window.domo.connectGet();
     if (!s || !panel.isConnected) return s;
     panel.replaceChildren(...[
-      ...(s.agentToken ? [el("div", { class: "cloud-callout" }, [
-        el("p", { text: "Copy this agent token now. It is only shown once." }),
-        copyRow(s.agentToken, "Copy token"),
-        (() => { const done = el("button", { class: "btn", text: "I saved the token" });
-          done.addEventListener("click", async () => { await window.domo.agentDismissToken(); await refreshConnect(); }); return done; })(),
-      ])] : []),
       rosterNotice(s),
       cloudSection(s, refreshConnect),
       sessionSection("MCP clients", s.roster?.mcp ?? [], "mcp", s, refreshConnect),
@@ -2178,30 +1840,20 @@ async function refreshUpdateBanner() {
 
 // ---- Settings ----
 
-// ---- Capabilities: what this Mac lets agents do, and what that stopped ----
-// Everything renders from one shape (capabilitiesModel.ts, over IPC): the
-// sections, each row's status and count and one action, the banner, and the
-// badge. The renderer keeps nothing of its own but which rows are open.
+// ---- Plugins, and the permission inventory Settings holds ----
+// Two panes, one shape each, both from IPC: the Plugins tab draws
+// `pluginsModel.ts`'s rows (what each plugin still needs), and Settings'
+// Permissions section draws `capabilitiesModel.ts`'s
+// sections, banner and rows. The renderer keeps nothing of its own but which
+// rows are open.
 
-let capabilitiesMounted = null;
-const capCount = document.getElementById("capCount");
-
-/** The tab's badge, read fresh: rows needing a decision, or none. */
-async function refreshCapabilitiesBadge(view) {
-  try {
-    const v = view ?? (await window.domo.capabilitiesGet()).view;
-    const n = v?.badge ?? 0;
-    capCount.textContent = String(n);
-    capCount.hidden = n === 0;
-  } catch {
-    capCount.hidden = true;
-  }
-}
+let pluginsMounted = null;
+let permissionsMounted = null;
 
 /** The audit tab, filtered to what this Mac blocked: the Blocked chip, and
     the search box set to `term` — a switch's name from a row's button, or
     cleared from the banner's, so a stale search never hides the rows. */
-// The Capabilities tab's "Show in Audit": the blocked rows, narrowed to one
+// The Permissions section's "Show in Audit": the blocked rows, narrowed to one
 // switch by `term` when a row asked, and to the moment the count started
 // from by `since` — so the list is exactly the requests it counted.
 async function showAuditBlocked(term = "", since = null) {
@@ -2239,9 +1891,14 @@ function whenText(iso) {
     : d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
-async function renderCapabilities() {
-  const panel = el("div", { class: "panel settings" });
-  view.replaceChildren(panel);
+/**
+ * Settings' Permissions section: every switch this Mac has — the
+ * machine-configuration view, where the Plugins tab shows only what is unmet.
+ * Returns the drawn container and how to refresh it; `display: contents`
+ * keeps its cards in Settings' own column.
+ */
+async function permissionsPane() {
+  const panel = el("div", { class: "permissions" });
   const openRows = new Set();
   // Which groups are open. Seeded from the model on first sight of each
   // group (a group with blocked requests inside opens itself), then the
@@ -2305,7 +1962,6 @@ async function renderCapabilities() {
   void refreshConnectors();
 
   const draw = (v) => {
-    refreshCapabilitiesBadge(v);
     const nodes = [];
     if (v.banner) {
       const summary = v.banner.summary.map((s) => `${s.count} ${s.title}`).join(", ");
@@ -2320,7 +1976,7 @@ async function renderCapabilities() {
       nodes.push(el("div", { class: "cap-banner" }, [
         icon("warning", { class: "ico cap-banner-icon" }),
         el("div", {}, [
-          // Leads with the badge's number, then what those switches did.
+          // Leads with how many switches need attention, then what they did.
           el("div", { class: "bt", text:
             `${v.banner.switches} capabilit${oneSwitch ? "y needs" : "ies need"} to be allowed. ` +
             `${oneSwitch ? "It" : "They"} blocked ${v.banner.count} request${one ? "" : "s"}, ` +
@@ -2553,9 +2209,7 @@ async function renderCapabilities() {
         ? [el("div", { class: "cap-sentence" }, [el("p", { class: "lbl", text: "What the agent was told" }), el("span", { text: sentence })])]
         : []),
       el("div", { class: "cap-actions" }, [
-        ...(r.key === "full_disk_access" && r.status !== "granted"
-          ? [el("span", { class: "badge b-amber" }, [el("span", { class: "dot" }), el("span", { text: "Quit and reopen after granting" })])]
-          : []),
+        ...(r.hint ? [el("span", { class: "badge b-amber" }, [el("span", { class: "dot" }), el("span", { text: r.hint })])] : []),
         el("div", { class: "spacer" }),
         inAudit,
         notNow,
@@ -2569,13 +2223,130 @@ async function renderCapabilities() {
     draw(c.view);
   };
   await load();
-  capabilitiesMounted = {
-    applyConnectors,
-    refresh: async () => {
-      await load();
-      await refreshConnectors();
+  return {
+    node: panel,
+    mounted: {
+      applyConnectors,
+      refresh: async () => {
+        await load();
+        await refreshConnectors();
+      },
     },
   };
+}
+
+/**
+ * The Plugins tab: one row per staged plugin — whether it can work right now
+ * and the one thing the owner has to do if it cannot. A met requirement
+ * renders NOTHING; the inventory is Settings' Permissions section. Every
+ * plugin-authored string (name, description) goes through `el`, which sets
+ * textContent — never innerHTML, as in the approval window.
+ */
+async function renderPlugins() {
+  const panel = el("div", { class: "panel settings" });
+  view.replaceChildren(panel);
+  // The three statuses, in the row's own vocabulary: the dot's class and the
+  // word beside the toggle. Amber for needs-setup — it is the owner's to fix.
+  const STATUS = {
+    off: { dot: "", tone: "zinc", word: "Off" },
+    "needs-setup": { dot: " off", tone: "amber", word: "Needs setup" },
+    ready: { dot: " on", tone: "green", word: "Ready" },
+  };
+  const reload = async () => draw(await window.domo.pluginsGet());
+
+  /** A requirement's button, while it is doing its one thing. */
+  const busy = async (button, label, act) => {
+    button.disabled = true;
+    const was = button.textContent;
+    button.textContent = label;
+    try {
+      await act();
+      await reload();
+    } catch {
+      button.disabled = false;
+      button.textContent = was;
+    }
+  };
+
+  // A row with no action (e.g. the Browser row's missing runtime) shows
+  // just the sub text; one with an action gets a button whose click routes
+  // to the Browser row's own flow or the existing account-connect flow.
+  const unmetRow = (u, r) => {
+    const isBrowser = r.kind === "Browser";
+    const action = u.action
+      ? el("button", { class: "btn attention", text: u.action, attrs: { type: "button" } })
+      : null;
+    if (action) {
+      action.addEventListener("click", () =>
+        isBrowser
+          ? busy(action, "Enabling…", async () => {
+              // A failed write's error line is drawn BEFORE throwing —
+              // busy()'s catch only resets this button, which draw() has by
+              // then replaced; success leaves the redraw to busy()'s reload.
+              const v = await window.domo.pluginsEnableSafari();
+              if (v.error) {
+                draw(v);
+                throw new Error(v.error);
+              }
+            })
+          : busy(action, "Connecting…", () => window.domo.connectorsConnect()));
+    }
+    return el("div", { class: "cap-row plugin-req" }, [
+      el("span", { class: "status-dot off" }),
+      el("div", {}, [
+        el("div", { class: "cap-name", text: u.title }),
+        el("div", { class: "cap-sub", text: u.detail }),
+      ]),
+      action,
+    ]);
+  };
+
+  const pluginRow = (r) => {
+    const s = STATUS[r.status];
+    const box = el("input", { attrs: { type: "checkbox", "aria-label": `Turn ${r.title} on or off` } });
+    box.checked = r.status !== "off";
+    box.addEventListener("change", async () => {
+      box.disabled = true;
+      try {
+        draw(await window.domo.pluginsSetEnabled(r.name, box.checked));
+      } catch {
+        box.checked = !box.checked;
+        box.disabled = false;
+      }
+    });
+    const head = el("div", { class: "cap-row plugin-row" }, [
+      el("span", { class: "status-dot" + s.dot, attrs: { title: s.word } }),
+      el("div", {}, [
+        el("div", { class: "cap-name plugin-name" }, [
+          el("span", { text: r.title }),
+          badge("zinc", r.kind),
+        ]),
+        r.description ? el("div", { class: "cap-sub", text: r.description }) : null,
+      ]),
+      badge(s.tone, s.word),
+      switchEl(box, { title: "Turn this plugin on or off" }),
+    ]);
+    return el("div", { class: "cap-group open" }, [
+      head,
+      r.unmet.length ? el("div", { class: "cap-group-rows" }, r.unmet.map((u) => unmetRow(u, r))) : null,
+    ]);
+  };
+
+  const draw = (state) => {
+    const rows = state.rows.map(pluginRow);
+    panel.replaceChildren(group(
+      "Plugins",
+      "The tools agents can run on this Mac. Turning one off unpublishes its skill and refuses its commands.",
+      state.error ? [el("p", { class: "warn", text: state.error }), ...rows] : rows,
+    ));
+  };
+
+  draw(await window.domo.pluginsGet());
+  pluginsMounted = { refresh: reload };
+  // Main holds no accounts until something asks Plow, so a launch straight into
+  // this tab said "Needs setup" for a connected Google. Not awaited — selecting
+  // a tab never waits on the network; onConnectorsChanged redraws this tab.
+  void window.domo.connectorsRefresh();
 }
 
 async function renderSettings() {
@@ -2765,6 +2536,13 @@ async function renderSettings() {
 
   // What a status change re-reads: display nodes only, every one of them read
   // back from main rather than remembered here.
+  // The permission inventory and the connected accounts, which used to be a
+  // tab of their own: the machine-configuration view, where it belongs. Drawn
+  // before the pane is assembled so a switch is on screen with everything else.
+  const permissions = await permissionsPane();
+  if (generation !== settingsRenderGeneration || currentTab !== "settings") return;
+  permissionsMounted = permissions.mounted;
+
   const mounted = {
     refresh: async () => {
       await refreshAccount();
@@ -2815,6 +2593,7 @@ async function renderSettings() {
         ]),
       ]),
     ]),
+    permissions.node,
     group("Software Updates", `Version ${u.currentVersion}`, [
       el("div", { class: "row" }, [updateStatus, el("div", { class: "spacer" }), updateAction]),
       autoCheckLabel,
@@ -2865,7 +2644,7 @@ function render() {
   else if (currentTab === "audit") renderAudit();
   else if (currentTab === "rules") renderRules();
   else if (currentTab === "vault") renderVault(view, () => currentTab === "vault");
-  else if (currentTab === "capabilities") renderCapabilities();
+  else if (currentTab === "plugins") renderPlugins();
   else if (currentTab === "settings") renderSettings();
 }
 
@@ -2887,8 +2666,8 @@ async function selectTab(tab) {
     closeCloudModal();
   }
   if (tab !== "audit") auditMounted = null; // avoid stale refreshes into detached nodes
-  if (tab !== "settings") settingsMounted = null;
-  if (tab !== "capabilities") capabilitiesMounted = null;
+  if (tab !== "settings") settingsMounted = permissionsMounted = null;
+  if (tab !== "plugins") pluginsMounted = null;
   if (tab !== "agents") agentsMounted = null;
   if (tab !== "rules") rulesMounted = null;
   for (const b of seg.querySelectorAll("button")) b.classList.toggle("active", b.dataset.tab === tab);
@@ -2909,12 +2688,12 @@ window.domo.onAuditChanged((change) => {
   if (currentTab === "audit") refreshAudit({ followTop: true, changed: new Set(change?.ids ?? ["*"]) });
 });
 // A block by this Mac is an audit row, and the only kind that moves the
-// Capabilities tab's badge, lines and banner — main says so only for those,
+// Permissions section's lines and banner — main says so only for those,
 // because refreshing the tab takes the standing permission inventory (a
 // helper process per switch), which every audit line used to trigger.
 window.domo.onCapabilitiesChanged(() => {
-  if (currentTab === "capabilities") capabilitiesMounted?.refresh();
-  else refreshCapabilitiesBadge();
+  if (currentTab === "plugins") pluginsMounted?.refresh();
+  if (currentTab === "settings") permissionsMounted?.refresh();
 });
 window.domo.onStatusChanged(() => {
   refreshStatus();
@@ -2935,7 +2714,9 @@ window.domo.onRulesChanged(() => {
 // Minting or dismissing a credential redraws only the Agents flow.
 window.domo.onConnectChanged(() => { agentsMounted?.refreshConnect(); });
 window.domo.onConnectorsChanged((state) => {
-  if (currentTab === "capabilities") capabilitiesMounted?.applyConnectors(state);
+  if (currentTab === "settings") permissionsMounted?.applyConnectors(state);
+  // Connecting an account can be the requirement a plugin was waiting on.
+  if (currentTab === "plugins") pluginsMounted?.refresh();
 });
 window.domo.onUpdatesChanged(() => {
   refreshUpdateBanner();
@@ -2959,11 +2740,10 @@ window.domo.onConfirmLeave(async (hasPendingAgentSetup) => {
 window.domo.onShowSettings(async () => {
   if (await selectTab("settings")) window.domo.updatesCheck();
 });
-// The tray item and the notification for a block by this Mac land here —
-// on the switch's row when the block named one, else on the Audit tab's
-// Blocked view, where the row carries the sentence that fixes it.
+// A block by this Mac lands on its switch in Settings; one that named no
+// permission goes to onShowAuditBlocked instead.
 window.domo.onShowCapabilities(async () => {
-  if (await selectTab("capabilities")) window.domo.uiSetTab("capabilities");
+  if (await selectTab("settings")) window.domo.uiSetTab("settings");
 });
 window.domo.onShowAuditBlocked(() => showAuditBlocked());
 // Another app handed main a credential exchange (Apple Passwords' export):
@@ -2979,9 +2759,12 @@ window.domo.onVaultExchange(async () => {
 // this app when it does — the moment a pane can learn the outcome is when
 // the person comes back.
 window.addEventListener("focus", () => {
-  if (currentTab === "settings") settingsMounted?.refresh();
-  if (currentTab === "capabilities") capabilitiesMounted?.refresh();
-  else refreshCapabilitiesBadge();
+  if (currentTab === "agents") void window.domo.cloudRefresh();
+  if (currentTab === "settings") {
+    settingsMounted?.refresh();
+    permissionsMounted?.refresh();
+  }
+  if (currentTab === "plugins") pluginsMounted?.refresh();
 });
 
 // Restore the last-selected tab (falls back to the HTML default on any miss).
@@ -2989,9 +2772,8 @@ async function boot() {
   refreshStatus();
   refreshUpdateBanner();
   const saved = await window.domo.uiGetTab();
-  const known = ["agents", "audit", "rules", "vault", "capabilities", "settings"];
+  const known = ["agents", "audit", "rules", "vault", "plugins", "settings"];
   selectTab(known.includes(saved) ? saved : "audit");
-  refreshCapabilitiesBadge();
   // A credential exchange can arrive before this window exists (the system
   // launches the app for it); the push above then had no listener, so ask.
   // Only when landing elsewhere: a boot onto the Vault tab found it already.

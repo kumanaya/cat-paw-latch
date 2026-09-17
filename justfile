@@ -362,6 +362,10 @@ verify-preload: build
       VAULT_OUT="${VAULT_OUT:-{{outdir}}/vault-locked.png}" \
       npx electron apps/desktop/scripts/verify-preload.mjs
 
+# Real-input signup verification; run on the test Mac.
+verify-new-agent: build
+    OUT_DIR="{{outdir}}/new-agent" npx electron apps/desktop/scripts/verify-new-agent.mjs
+
 # Screenshot the audit screen's live-browser thumbnail (evidence the owner can watch the browser).
 viewer-screenshot: build
     @mkdir -p "{{outdir}}"
@@ -408,7 +412,7 @@ clean:
     @echo "wiped {{apphome}}"
 
 # ---------------------------------------------------------------------------
-# Permissions — exercising the Capabilities tab
+# Permissions — exercising the Permissions section
 # ---------------------------------------------------------------------------
 
 # The packaged app's bundle id AND the from-source Electron.app's, plus the
@@ -427,13 +431,13 @@ reset-permissions-dry-run host="auto":
     scripts/reset-permissions.sh "{{apphome}}" {{host}} --dry-run
 
 # Fake agents, fake goals, spread over the last eight hours, appended to
-# THIS checkout's audit log so the Capabilities tab's banner, counts and
+# THIS checkout's audit log so the Permissions section's banner, counts and
 # "See blocked requests…" can be looked at without revoking a grant first.
 # The banner's dismissal is left alone: if it was dismissed less than eight
 # hours ago the rows land after that moment instead, so they count as new
 # and "Show in Audit" narrows to them (Date: Since …). Every seeded row is
 # marked, and unseed removes exactly those.
-# Seed the audit log with sample blocked requests for the Capabilities tab.
+# Seed the audit log with sample blocked requests for the Permissions section.
 seed-blocked-requests:
     node scripts/seed-blocked-requests.mjs "{{apphome}}/device/audit.ndjson" "{{apphome}}/app/settings.json"
 

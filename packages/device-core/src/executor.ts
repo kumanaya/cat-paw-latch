@@ -39,6 +39,8 @@ export const SandboxProfile = {
     writePaths: string[];
     network: boolean;
     appleEvents: boolean;
+    /** See `run`'s option of the same name. */
+    sysvSemaphores?: boolean;
     scratch: string;
     /** Home override for golden tests; defaults to the real home. */
     home?: string;
@@ -121,6 +123,9 @@ export const SandboxProfile = {
       lines.push("(deny network*)");
     }
     if (args.appleEvents) lines.push("(allow appleevent-send)");
+    // No filter narrows this rule (the whole host namespace); it admits SysV
+    // semaphore operations only — attaching shared memory stays denied.
+    if (args.sysvSemaphores) lines.push("(allow ipc-sysv-sem)");
     return lines.join("\n");
   },
 };
@@ -545,10 +550,22 @@ export class Executor {
   async run(args: {
     argv: string[];
     cwd?: string;
+    /** The caller's last word, asked after every wait this run makes and
+     *  before anything launches: a sentence refuses the launch with it. */
+    guard?: () => string | null;
     readPaths: string[];
     writePaths: string[];
     network: boolean;
     appleEvents: boolean;
+    /**
+     * Let the child operate SysV semaphores. A PyInstaller onefile binary on
+     * macOS (plow-wiki's `wiki`) syncs its bootloader with the Python child
+     * through one, and `semctl` under `(deny default)` fails before Python
+     * starts. Only a staged plugin's own pinned binary gets this — never an
+     * ordinary approved command — because the grant reaches every semaphore
+     * the owner's other processes hold.
+     */
+    sysvSemaphores?: boolean;
     waitMs: number;
     /**
      * Extra environment for the child, merged over the curated set below.
@@ -583,10 +600,13 @@ export class Executor {
       writePaths: args.writePaths.map((p) => canonicalize(p)),
       network: args.network,
       appleEvents: args.appleEvents,
+      sysvSemaphores: args.sysvSemaphores ?? false,
       scratch: canonicalize(scratch),
     };
     // No new writer over what a hold is about, while it is out.
     while (this.conflicts(writableRoots(profileArgs))) await new Promise<void>((wake) => this.holdWaiters.push(wake));
+    const refusal = args.guard?.() ?? null;
+    if (refusal !== null) throw new ExecutorError(refusal);
     this.profiles.set(handle, profileArgs);
     // The cage is per-OS: seatbelt on macOS, Job Object + AppContainer on
     // Windows, bubblewrap + staged workspace on Linux. The approval bound in

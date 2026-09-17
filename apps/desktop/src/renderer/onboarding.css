@@ -265,41 +265,24 @@ h1 {
   opacity: 0;
 }
 
-.welcome-eyebrow {
-  position: relative;
-  z-index: 1;
-  margin: 0 auto 12px;
-  opacity: 0;
-  transform: translateY(14px);
-  color: var(--muted);
-  font: 500 10.5px var(--mono);
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-}
-
 .welcome-wrap h1 {
   position: relative;
   z-index: 1;
   max-width: none;
-  margin: 0 auto 16px;
+  margin: 0 auto;
   opacity: 0;
   transform: translateY(14px);
   font-size: 34px;
   letter-spacing: -0.03em;
-  line-height: 1.04;
+  line-height: 1.12;
 }
 
-.welcome-lead {
-  position: relative;
-  z-index: 1;
-  max-width: 40ch;
-  margin: 0 auto;
-  opacity: 0;
-  transform: translateY(14px);
-  color: var(--muted-2);
-  font-size: 14.5px;
-  font-weight: 300;
-  line-height: 1.6;
+.welcome-wrap h1 span {
+  display: block;
+}
+
+.welcome-wrap h1 .kick {
+  color: var(--volt);
 }
 
 .wizard-screen.is-welcome.entering-full .plw-mark {
@@ -327,19 +310,9 @@ h1 {
     glow-breathe 6s ease-in-out 1.75s infinite;
 }
 
-.wizard-screen.is-welcome.entering-full .welcome-eyebrow {
-  opacity: 0;
-  animation: reveal-up 600ms cubic-bezier(0.2, 0.7, 0.2, 1) 1.02s both;
-}
-
 .wizard-screen.is-welcome.entering-full h1 {
   opacity: 0;
   animation: reveal-up 600ms cubic-bezier(0.2, 0.7, 0.2, 1) 1.13s both;
-}
-
-.wizard-screen.is-welcome.entering-full .welcome-lead {
-  opacity: 0;
-  animation: reveal-up 600ms cubic-bezier(0.2, 0.7, 0.2, 1) 1.25s both;
 }
 
 body.on-welcome .wizard-footer .nav-next {
@@ -604,6 +577,11 @@ body.on-welcome.welcome-full .wizard-footer .nav-next {
   color: var(--success-text);
 }
 
+/* Privacy opens on the verified line; it leads the screen instead of trailing a code. */
+.step-inner > .waiting-status.verified {
+  margin: 0 0 22px;
+}
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
@@ -785,60 +763,6 @@ body.on-welcome.welcome-full .wizard-footer .nav-next {
 
 .toggle-row + .toggle-row {
   margin-top: 14px;
-}
-
-.switch {
-  position: relative;
-  flex: none;
-  display: inline-block;
-  width: 46px;
-  height: 27px;
-  cursor: pointer;
-}
-
-.switch input {
-  position: absolute;
-  width: 0;
-  height: 0;
-  margin: 0;
-  opacity: 0;
-}
-
-.switch .track {
-  position: absolute;
-  inset: 0;
-  border: 1px solid var(--border-2);
-  border-radius: 999px;
-  background: var(--surface-2);
-  transition: background 180ms, border-color 180ms, box-shadow 180ms;
-}
-
-.switch .knob {
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--muted-2);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
-  transition: transform 200ms cubic-bezier(0.3, 0.7, 0.2, 1), background 180ms;
-}
-
-.switch input:checked ~ .track {
-  border-color: rgba(213, 239, 138, 0.5);
-  background: var(--volt-dim);
-  box-shadow: 0 0 12px -2px var(--volt-glow), inset 0 0 0 1px rgba(213, 239, 138, 0.25);
-}
-
-.switch input:checked ~ .knob {
-  transform: translateX(19px);
-  background: var(--volt);
-}
-
-.switch input:focus-visible ~ .track {
-  outline: 2px solid var(--volt);
-  outline-offset: 2px;
 }
 
 .data-divider {
@@ -1233,17 +1157,13 @@ body.dev-preview {
   .wizard-screen.is-welcome .plw-mark,
   .wizard-screen.is-welcome .plw-sheen,
   .wizard-screen.is-welcome .welcome-glow,
-  .wizard-screen.is-welcome .welcome-eyebrow,
   .wizard-screen.is-welcome h1,
-  .wizard-screen.is-welcome .welcome-lead,
   body.on-welcome .wizard-footer .nav-next {
     animation: none !important;
   }
 
   .wizard-screen.is-welcome .welcome-logo,
-  .wizard-screen.is-welcome .welcome-eyebrow,
   .wizard-screen.is-welcome h1,
-  .wizard-screen.is-welcome .welcome-lead,
   body.on-welcome .wizard-footer .nav-next {
     opacity: 1 !important;
     transform: none !important;
