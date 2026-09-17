@@ -870,6 +870,11 @@ export const TOOLS: ToolSpec[] = [
       const a = jv(args);
       const origins = strings(a.get("origins").arr);
       if (origins.length === 0) throw new ToolError("missing 'origins'");
+      // Same chokepoint as a staged plugin's off switch: refused by name
+      // before an intent exists, so nobody is asked to approve a call this
+      // Mac was always going to refuse.
+      const refusal = ctx.device.browserRefusal();
+      if (refusal !== null) throw new ToolError(refusal);
       const capabilities: Capability[] = [{ kind: "browser", origins }];
       // The owner does not see the browser unless this session asks for a
       // window: say when one is coming in the line they read, and carry the
@@ -922,6 +927,11 @@ export const TOOLS: ToolSpec[] = [
       const a = jv(args);
       const session = a.get("session").str;
       if (session === null) throw new ToolError("missing 'session'");
+      // Same chokepoint as plow_browser_open: refused by name before an
+      // intent exists, so nobody is asked to approve a call this Mac was
+      // always going to refuse.
+      const refusal = ctx.device.browserRefusal();
+      if (refusal !== null) throw new ToolError(refusal);
       const origins = strings(a.get("origins").arr);
       const items = strings(a.get("credential_items").arr);
       const capabilities: Capability[] = [];

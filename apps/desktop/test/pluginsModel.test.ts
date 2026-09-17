@@ -6,8 +6,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseManifest, type PluginManifest } from "@domo/device-core";
-import { pluginRows, type PluginsInput } from "../src/pluginsModel.js";
+import { BROWSER_PLUGIN, parseManifest, type PluginManifest } from "@domo/device-core";
+import { browserPluginRow, BROWSER_RUNTIME, pluginRows, SAFARI_JAVASCRIPT, type PluginsInput } from "../src/pluginsModel.js";
 
 const manifest = (requires: object, name = "wiki"): PluginManifest =>
   parseManifest(JSON.stringify({
@@ -41,7 +41,7 @@ describe("pluginRows status", () => {
 
 it("names an unmet requirement with the action that fixes it, and stays silent once met", () => {
   const unmet = (connected: string[]) => pluginRows(build({ requires: { accounts: ["google"] }, enabled: true, connected }))[0]!.unmet;
-  expect(unmet([])).toEqual([{ id: "google", action: "Connect Google" }]);
+  expect(unmet([])).toEqual([{ id: "google", title: "Account", detail: "google", action: "Connect Google" }]);
   expect(unmet(["google"])).toEqual([]);
 });
 
@@ -71,5 +71,25 @@ describe("the shipped plugins", () => {
   ])("reads gog as $status with connected accounts $connected", ({ connected, status, unmet }) => {
     const [row] = pluginRows({ plugins: [{ manifest: shipped("gog"), enabled: true }], connectedAccounts: connected });
     expect(row).toMatchObject({ name: "gog", status, unmet });
+  });
+});
+
+describe("browserPluginRow", () => {
+  const base = { enabled: true, runtimePresent: true, safariJavaScript: true, description: "Browse websites…" };
+  it.each([
+    ["ready when the runtime is present and Safari allows JavaScript", base, "ready", []],
+    ["needs setup with an Enable button when Safari does not", { ...base, safariJavaScript: false }, "needs-setup", [{ id: SAFARI_JAVASCRIPT, title: "Safari", detail: "Allow JavaScript from Apple Events — Safari relaunches", action: "Enable in Safari" }]],
+    ["needs setup with no button when the runtime is missing", { ...base, runtimePresent: false }, "needs-setup", [{ id: BROWSER_RUNTIME, title: "Browser runtime", detail: "Not in this build — from source, run just fetch-browser", action: null }]],
+    ["off hides its requirements", { ...base, enabled: false, safariJavaScript: false }, "off", []],
+  ] as const)("is %s", (_what, input, status, unmet) => {
+    const row = browserPluginRow(input);
+    expect(row).toMatchObject({ name: BROWSER_PLUGIN, title: "Browser use", kind: "Browser", status });
+    // The words the owner reads, exactly — a swap of the two would otherwise pass.
+    expect(row.unmet).toEqual(unmet);
+  });
+
+  it("every manifest plugin row is a CLI titled by its name", () => {
+    const [row] = pluginRows({ plugins: [{ manifest: manifest(none, "gog"), enabled: true }], connectedAccounts: [] });
+    expect(row).toMatchObject({ kind: "CLI", title: row!.name });
   });
 });

@@ -26,6 +26,8 @@ import { Intent, JSONValue } from "@domo/protocol";
 import {
   ApprovalStore,
   LEGACY_VAULT_SERVER_FRAGMENTS,
+  BROWSER_PLUGIN,
+  BROWSING_SKILL,
   DeviceAgent,
   PaymentApprovalClient,
   PaymentApprovalRequest,
@@ -61,7 +63,8 @@ import { appBundleName, appBundlePath, decodeTileImage } from "./permissionFlow.
 import { FdaGrantFlow, GrantTarget } from "./fdaGrantFlow.js";
 import { AUTOMATION_APPS, automationApp, osascriptRunner, reconcile, requestAutomation } from "./automation.js";
 import { capabilitiesView, CapabilitiesView, isGroup, paneFor, PERMISSION_TITLES } from "./capabilitiesModel.js";
-import { pluginRows } from "./pluginsModel.js";
+import { browserPluginRow, pluginRows } from "./pluginsModel.js";
+import { enableSafariJavaScript, Runner, safariJavaScriptEnabled } from "./safariJavaScript.js";
 import { launchAtLoginState, LoginItemApi, setLaunchAtLogin } from "./loginItem.js";
 import { KeepAwake } from "./keepAwake.js";
 import { devIconScript } from "./devIcon.js";
@@ -1544,8 +1547,21 @@ ipcMain.handle("capabilities:bannerSeen", async () => {
 
 // MARK: The Plugins tab (pluginsModel.ts)
 
+/** A runner safariJavaScript.ts drives directly against this Mac —
+ *  never the device's sandboxed inventory runner, which runs under seatbelt
+ *  and cannot write into Safari's container. */
+const unsandboxedRunner: Runner = async (argv) => {
+  try {
+    const { stdout } = await promisify(execFile)(argv[0]!, argv.slice(1), { timeout: 30_000 });
+    return { exitCode: 0, stdout };
+  } catch (e) {
+    const err = e as { code?: unknown; stdout?: string };
+    return { exitCode: typeof err.code === "number" ? err.code : 1, stdout: err.stdout ?? "" };
+  }
+};
+
 /** The whole tab, fresh: what is staged, and what each plugin still needs. */
-function pluginsNow(): { rows: ReturnType<typeof pluginRows> } {
+async function pluginsNow(): Promise<{ rows: ReturnType<typeof pluginRows>; error: string | null }> {
   const disabled = new Set(loadSettings(home).disabledPlugins ?? []);
   const rows = pluginRows({
     plugins: stagedPlugins.map((p) => ({
@@ -1556,7 +1572,13 @@ function pluginsNow(): { rows: ReturnType<typeof pluginRows> } {
     // One connector today, and it is connected exactly when an account is.
     connectedAccounts: (connectors?.state().google.accounts.length ?? 0) > 0 ? ["google"] : [],
   });
-  return { rows };
+  rows.push(browserPluginRow({
+    enabled: !disabled.has(BROWSER_PLUGIN),
+    runtimePresent: device !== null && device.browserSessions !== null,
+    safariJavaScript: process.platform === "darwin" ? await safariJavaScriptEnabled(unsandboxedRunner) : false,
+    description: device?.skills.skill(BROWSING_SKILL.name)?.description ?? BROWSING_SKILL.description,
+  }));
+  return { rows, error: null };
 }
 
 ipcMain.handle("plugins:get", async () => pluginsNow());
@@ -1565,15 +1587,34 @@ ipcMain.handle("plugins:get", async () => pluginsNow());
  *  by default), and the device is told in the same breath, so the skill and
  *  the exec gate follow without a relaunch. */
 ipcMain.handle("plugins:setEnabled", async (_e, name: string, on: boolean) => {
-  if (stagedPlugins.some((p) => p.manifest.name === name)) {
+  if (stagedPlugins.some((p) => p.manifest.name === name) || name === BROWSER_PLUGIN) {
     const settings = loadSettings(home);
     const disabled = new Set(settings.disabledPlugins ?? []);
     if (on) disabled.delete(name);
     else disabled.add(name);
     saveSettings(home, { ...settings, disabledPlugins: [...disabled] });
-    device?.setDisabledPlugins([...disabled]);
+    await device?.setDisabledPlugins([...disabled]);
   }
   return pluginsNow();
+});
+
+/** The Browser row's one action: enable Safari's "Allow JavaScript from
+ *  Apple Events". An account row's button keeps the existing
+ *  "connectors:connect" flow instead — there is nothing else for this one
+ *  to do. */
+ipcMain.handle("plugins:enableSafari", async () => {
+  if (!(await probeFullDiskAccess())) {
+    return {
+      ...(await pluginsNow()),
+      error: "Safari's setting needs this app to have Full Disk Access (Settings › Permissions)",
+    };
+  }
+  try {
+    await enableSafariJavaScript(unsandboxedRunner);
+    return pluginsNow();
+  } catch (error) {
+    return { ...(await pluginsNow()), error: error instanceof Error ? error.message : String(error) };
+  }
 });
 // The floating panel's poll: has the switch it points at landed?
 ipcMain.handle("grant:state", async () => {
