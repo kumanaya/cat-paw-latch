@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { JSONValue, jv, makeIntent } from "@domo/protocol";
+import { canonicalize, JSONValue, jv, makeIntent } from "@domo/protocol";
 
 import {
   BROWSER_PLUGIN,
@@ -575,7 +575,9 @@ describe("a staged non-provider plugin through the exec path", () => {
     "resolves a fixed env source, ${owner_home} included, into the child's environment and nowhere else",
     async () => {
       const ownerHome = tmp();
-      const resolved = path.join(ownerHome, "Plow", "wikish");
+      // DeviceAgent stores canonicalize(ownerHome); macOS tmpdirs often
+      // start as /var/folders/… and realpath to /private/var/folders/….
+      const resolved = path.join(canonicalize(ownerHome), "Plow", "wikish");
       const root = tmp();
       // A staged binary, not `/bin/sh -c`: the Linux cage refuses an entrypoint
       // outside the approved workspace (bubblewrap never execs a live `/bin/sh`).
