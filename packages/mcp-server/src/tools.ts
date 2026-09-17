@@ -34,6 +34,7 @@ import {
   LIVE_WEB_ROUTING,
   MAX_CLICK_TIMEOUT_MS,
   MAX_FILE_BYTES,
+  SAFARI_HARD_BLOCK_ROUTING,
   impliesNetwork,
   providerFor,
   providerRefusal,
@@ -610,7 +611,9 @@ export const TOOLS: ToolSpec[] = [
     title: "Script an app on the user's Mac",
     description:
       "Run an AppleScript that controls one app on the user's own Mac through Latch — Mail, Finder, " +
-      "Calendar, Notes, Reminders, Messages, System Events — and return what it produces. Use this " +
+      "Calendar, Notes, Reminders, Messages, Safari, System Events — and return what it produces. " +
+      `When a plow_browser session is bot-walled, ${SAFARI_HARD_BLOCK_ROUTING} (the camoufox-browsing skill has the recipe). ` +
+      "Use this " +
       "for AppleScript rather than plow_run_command with osascript: some apps refuse commands " +
       "from inside the sandbox (-10004), and this tool runs outside it. Name the app the script " +
       "addresses in 'app', by the name it has in `tell application \"…\"`; it is resolved to an " +
@@ -990,7 +993,11 @@ export const TOOLS: ToolSpec[] = [
       "refused — use plow_browser_request to widen scope. Every result includes the current url and " +
       "page_count (watch it for popups; switch with use_page), and 'failed_requests' when the " +
       "page's own requests came back refused — a 401, 403 or 429 there is why an action that " +
-      "reported success changed nothing, so read it before retrying.",
+      "reported success changed nothing, so read it before retrying. " +
+      "A page that says you are blocked and offers nothing to solve — no CAPTCHA, no button, " +
+      "often a plain 200 with no failed_requests at all — is a hard block: the same URL in this " +
+      "browser will not change, and waiting will not help: " +
+      `${SAFARI_HARD_BLOCK_ROUTING}. The camoufox-browsing skill's Safari section has the recipe.`,
     inputSchema: {
       type: "object",
       required: ["session", "action"],
