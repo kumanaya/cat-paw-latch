@@ -214,15 +214,12 @@ describe("the built-in imessage skill", () => {
     ["the message body column", /\btext\b/],
     ["the typedstream body column", /attributedBody/],
     ["which side sent it", /is_from_me/],
-    ["how a group chat is told apart", /chat_identifier like 'chat%'/],
     ["a name resolved to handles through the contacts skill", /read the .?contacts.? skill\s+for their handles/i],
     ["a name matching several people going back to the owner", /more than one person, ask the owner which/i],
     ["a phone matched on all its digits, its country code taken as Messages does", /match a phone on all its digits[\s\S]*as Messages does/i],
     ["the Apple epoch offset", /978307200/],
-    ["the NSString extraction contract", /NSString/],
-    ["that the contract was validated, not guessed", /591\/591/],
-    ["that a where on text alone is never a search", /a .?where.? on .?text.? alone is never a search/i],
-    ["the search recipe's phrase placeholder inside a string literal", /values \('PHRASE_THE_OWNER_ASKED_FOR'\)/],
+    ["that a text-only query is never a search", /a .?text.?-only query reports real messages as absent/i],
+    ["reads going through the CLI rather than sqlite3", /never .?sqlite3.? against the store/i],
     ["a person reachable under more than one handle, searched by all of them", /more than one handle[\s\S]*every handle/i],
     // The rules, anchored to the sentence that states them.
     ["opening the owner's store read-only", /always .?-readonly.?, and never name the store in .?write_paths/i],
@@ -239,7 +236,7 @@ describe("the built-in imessage skill", () => {
     ["the success criterion for a send", /success criterion is .?is_sent = 1.? and .?error = 0.?/i],
     ["is_delivered not being part of that criterion", /is_delivered.? is not part of it/i],
     ["what a non-zero error means", /error = 22.?\s+is the\s+common one/i],
-    ["byte-identical argv for unattended reads", /byte-identical/i],
+    ["a read's always-allow rule keyed on the subcommand, not the full argv", /keyed on its subcommand, not\s+its full argv/i],
   ])("publishes %s", (_what, pattern) => {
     expect(imessageSkillFor("/Users/testowner").body).toMatch(pattern);
   });
@@ -250,6 +247,12 @@ describe("the built-in imessage skill", () => {
       expect(body).toContain(sql.split("\n")[0].trim());
     }
     expect(body).toContain(`'${IMESSAGE_HANDLE_PLACEHOLDER}'`);
+  });
+
+  it("names plow-messages for reads and carries no recentChats reference", () => {
+    const body = imessageSkillFor("/Users/testowner").body;
+    expect(body).toContain("plow-messages");
+    expect(body).not.toContain("recentChats");
   });
 
   it("publishes no send through plow_run_command, which Messages refuses (-10004)", () => {
