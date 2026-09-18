@@ -80,6 +80,7 @@ import { Connectors } from "./connectors.js";
 import { ConnectClient } from "./connectClient.js";
 import { CloudAgentsClient } from "./cloudAgents.js";
 import { CloudAgentState, CloudChatsClient, CloudLinesClient, tabShowsCloudAgents } from "./cloudAgentState.js";
+import { fetchAgentIndex } from "./agentIndex.js";
 import { cloudAgentsIpcResult } from "./cloudAgentsIpc.js";
 import { loggingFetch } from "./wireLog.js";
 import { WindowGate } from "./windowGate.js";
@@ -845,6 +846,10 @@ ipcMain.handle("cloud:remove", async (_e, agentId: string) => {
 ipcMain.handle("cloud:newAgentMessages", async (_e, providerId: unknown) => {
   return openSmsUrl(typeof providerId === "string" ? cloudAgents?.newAgentSmsUrl(providerId) : null);
 });
+// The deploy modal's wait: the id of the agent the owner's setup text created,
+// or null if none appeared in time. Resolves on its own — the renderer asks once.
+ipcMain.handle("cloud:awaitNewAgent", async (_e, providerId: unknown) =>
+  typeof providerId === "string" ? (await cloudAgents?.awaitNewAgent(providerId)) ?? null : null);
 ipcMain.handle("cloud:changeLine", async (_e, input: unknown) => {
   const raw = input && typeof input === "object" ? input as Record<string, unknown> : {};
   await cloudAgents?.changeLine({
@@ -2347,6 +2352,7 @@ app.whenReady().then(async () => {
     chats: new CloudChatsClient(cloudApi),
     providers: cloudApi,
     lines: new CloudLinesClient(cloudApi),
+    agentIndex: () => fetchAgentIndex(),
     home,
     onChange: () => notifyRenderer("connect:changed"),
   });
