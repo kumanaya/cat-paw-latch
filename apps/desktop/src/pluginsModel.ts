@@ -5,7 +5,7 @@
  * the tab is a list of what is stopping the agent, not an inventory (that is
  * Settings' Permissions section).
  */
-import { BROWSER_PLUGIN, type PluginManifest } from "@domo/device-core";
+import { BROWSER_PLUGIN, missingPluginAccounts, type PluginManifest } from "@domo/device-core";
 
 export type PluginStatus = "off" | "needs-setup" | "ready";
 
@@ -28,8 +28,9 @@ export interface UnmetRequirement {
 
 export interface PluginRow {
   name: string;
-  /** The row's heading. A CLI plugin's is its manifest name; the browser's
-   *  is fixed — "browser" would read as a technical name, not a feature. */
+  /** The row's heading — a technical name reads as jargon, not a feature. A
+   *  CLI plugin's is its manifest's `title` (its `name` when it has none);
+   *  the browser's is fixed. */
   title: string;
   kind: PluginKind;
   /** The plugin's skill's `description:` — the caller passes it through.
@@ -50,15 +51,14 @@ export interface PluginsInput {
 export function pluginRows(input: PluginsInput): PluginRow[] {
   const accounts = new Set(input.connectedAccounts);
   return input.plugins.map(({ manifest, enabled, description }) => {
-    const unmet: UnmetRequirement[] = manifest.requires.accounts
-      .filter((id) => !accounts.has(id))
+    const unmet: UnmetRequirement[] = missingPluginAccounts(manifest.requires, accounts)
       .map((id) => ({ id, title: "Account", detail: id, action: "Connect Google" }));
     // Off wins: a disabled plugin's unmet requirements are not the owner's
     // problem until they turn it back on.
     const status: PluginStatus = !enabled ? "off" : unmet.length > 0 ? "needs-setup" : "ready";
     return {
       name: manifest.name,
-      title: manifest.name,
+      title: manifest.title ?? manifest.name,
       kind: "CLI",
       description: description ?? null,
       status,

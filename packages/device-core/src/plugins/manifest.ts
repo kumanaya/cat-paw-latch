@@ -44,8 +44,15 @@ export interface PlatformBinary {
   executable?: string;
 }
 
+/** The accounts `requires` names that are not connected — the one readiness
+ *  rule, for the device's gate and the Plugins tab alike. */
+export function missingPluginAccounts(requires: PluginRequires, connected: ReadonlySet<string>): string[] {
+  return requires.accounts.filter((id) => !connected.has(id));
+}
+
 export interface PluginManifest {
   name: string; // ^[a-z][a-z0-9-]{0,31}$
+  title?: string; // what the owner reads on the Plugins tab; absent, the tab shows `name`
   version: string;
   command: string; // same charset as name; argv[0] agents type
   runtime: {
@@ -132,6 +139,8 @@ export function parseManifest(raw: string): PluginManifest {
 
   const name = typedString(m.name, "manifest name") ?? "";
   if (!SLUG.test(name)) fail("manifest name must be lowercase letters, digits and dashes");
+  const title = typedString(m.title, "manifest title");
+  if (title !== undefined && !title.trim()) fail("manifest title must not be blank");
   const command = typedString(m.command, "manifest command") ?? "";
   if (!SLUG.test(command)) fail("manifest command must be lowercase letters, digits and dashes");
   const version = typedString(m.version, "manifest version") ?? "";
@@ -242,6 +251,7 @@ export function parseManifest(raw: string): PluginManifest {
 
   return {
     name,
+    ...(title === undefined ? {} : { title }),
     version,
     command,
     runtime: { binaries },

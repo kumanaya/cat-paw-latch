@@ -776,6 +776,7 @@ describe.skipIf(process.platform !== "darwin")("sandboxGrants — the profile's 
     expect(grantsMac(base, out)).toEqual({ read: true, write: false });
     expect(grantsMac({ ...base, writePaths: [path.join(home, "Plow")] }, out)).toEqual({ read: true, write: true });
     expect(grantsMac(base, "/usr/bin/ls")).toEqual({ read: true, write: false });
+    expect(grantsMac(base, "/private/var/run/cupsd")).toEqual({ read: true, write: false });
     expect(grantsMac(base, "/private/var/db/x")).toEqual({ read: true, write: false });
     expect(grantsMac(base, "/Users/Shared/x")).toEqual({ read: false, write: false });
     expect(grantsMac(base, "/Users")).toEqual({ read: true, write: false });

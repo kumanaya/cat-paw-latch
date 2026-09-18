@@ -18,6 +18,7 @@ import {
 import {
   CloudAgentResource,
 } from "./cloudAgents.js";
+import type { AgentIndex } from "./agentIndex.js";
 import {
   ChatRecipients,
   activationChatLabel,
@@ -107,6 +108,9 @@ export interface CloudAgentsUiState {
   cloudProviders: CloudAgentProvider[] | null;
   /** A provider-list failure, and nothing else. */
   cloudProvidersError: string | null;
+  /** The Agent Index's descriptions, keyed on provider id. Empty until a read
+   * succeeds and after a failed one: a card without one shows its name. */
+  cloudAgentIndex: AgentIndex;
   /** Lines found on the owner's chats that no current agent occupies. */
   cloudFreeLines: CloudAgentLine[];
   /** An agent-list failure, and nothing else. */
@@ -163,9 +167,15 @@ export interface CloudAgentStateDeps {
   providers: CloudProvidersApi;
   /** Plow's pool numbers, used as display metadata for chat rows. */
   lines?: { list(credential: string): Promise<CloudLineOption[]> };
+  /** Describes the catalog. Optional: without it every card is name-only. */
+  agentIndex?: () => Promise<AgentIndex>;
   home: string;
   onChange?: () => void;
 }
+
+/** One pending `awaitNewAgent`: the provider deployed, the roster it started
+ * from, and its answer. */
+type NewAgentWait = { provider: string; known: Set<string>; finish(id: string | null): void };
 
 export class CloudAgentState {
   /** Keyed on the agent uid, which is stable for the agent's whole life. */
@@ -202,6 +212,9 @@ export class CloudAgentState {
   /** Live provider list; unavailable until the latest refresh succeeds. */
   private providers: CloudAgentProvider[] | null = null;
   private providersError: string | null = null;
+  private agentIndex: AgentIndex = {};
+  /** The pending `awaitNewAgent`, if any. One at a time. */
+  private newAgentWait: NewAgentWait | null = null;
   private managedPhone: string | null = null;
   /**
    * Bumped by `signedOut`. Every list result belongs
@@ -236,6 +249,7 @@ export class CloudAgentState {
         ? null
         : this.providers.map((provider) => ({ ...provider })),
       cloudProvidersError: this.providersError,
+      cloudAgentIndex: { ...this.agentIndex },
       cloudFreeLines: this.freeLines(),
       cloudAgentsError: this.agentsError,
       cloudChatsError: this.chatsError,
@@ -254,13 +268,15 @@ export class CloudAgentState {
    * All four run together and none can fail the others — a provider-list
    * failure does not hide the roster, a chat list that 403s still leaves the
    * roster on screen, and a line failure still leaves chats identified by
-   * number.
+   * number. The Agent Index is read beside them and never awaited: a
+   * third-party read does not hold up the roster.
    */
   async refresh(): Promise<void> {
     const credential = this.credential();
     if (!credential) return;
     const generation = this.generation;
     const read = ++this.viewReads;
+    void this.refreshAgentIndex(generation, read);
     let view = Promise.all([
       this.refreshProviders(generation, read),
       this.refreshChats(credential, generation, read),
@@ -305,6 +321,22 @@ export class CloudAgentState {
     }
   }
 
+  /** Describe the catalog from the Agent Index, publishing when it lands. It
+   * never fails the provider list: without it the cards show names only, which
+   * needs no banner. */
+  private async refreshAgentIndex(generation: number, read: number): Promise<void> {
+    if (!this.deps.agentIndex) return;
+    let index: AgentIndex = {};
+    try {
+      index = await this.deps.agentIndex();
+    } catch {
+      // Name-only cards; deploying does not depend on the description.
+    }
+    if (generation !== this.generation || read !== this.viewReads) return;
+    this.agentIndex = index;
+    this.publish();
+  }
+
   /** Ask Plow which line names identify the chats in the account. */
   private async refreshLines(credential: string, generation: number, read: number): Promise<void> {
     if (!this.deps.lines) return;
@@ -332,6 +364,49 @@ export class CloudAgentState {
   agentSmsUrl(agentId: string): string | null {
     const lineUid = this.rows.get(agentId)?.line?.uid;
     return this.lineDetails(lineUid ?? null).smsUrl;
+  }
+
+  /**
+   * Wait for an agent of `provider` that was not on the roster when the wait
+   * began: the one the owner's setup text just created. Matching the provider
+   * keeps an earlier, abandoned deploy's arrival from ending this wait. Any
+   * publish that sees it ends the
+   * wait — this one's re-read every `intervalMs`, the renderer's refresh when
+   * the owner comes back from Messages, a poll finishing. Answers null when
+   * `timeoutMs` passes, a newer wait starts, or this Mac signs out.
+   */
+  awaitNewAgent(provider: string, { intervalMs = 5_000, timeoutMs = 120_000 }: { intervalMs?: number; timeoutMs?: number } = {}): Promise<string | null> {
+    this.newAgentWait?.finish(null);
+    const generation = this.generation;
+    return new Promise((resolve) => {
+      let tick: ReturnType<typeof setTimeout> | undefined;
+      const wait: NewAgentWait = {
+        provider,
+        known: new Set(this.rows.keys()),
+        finish: (id) => {
+          clearTimeout(tick);
+          clearTimeout(timeout);
+          if (this.newAgentWait === wait) this.newAgentWait = null;
+          resolve(id);
+        },
+      };
+      // Re-armed only once the previous re-read lands: a slow agent list must
+      // not pile ticks onto the shared sequence() chain.
+      const schedule = (): void => {
+        tick = setTimeout(() => {
+          const credential = this.credential();
+          const read = credential ? this.sequence(() => this.refreshAgents(credential, generation)) : Promise.resolve();
+          void read.then(() => {
+            if (this.newAgentWait !== wait) return;
+            if (generation === this.generation) this.publish();
+            if (this.newAgentWait === wait) schedule();
+          });
+        }, intervalMs);
+      };
+      const timeout = setTimeout(() => wait.finish(null), timeoutMs);
+      this.newAgentWait = wait;
+      schedule();
+    });
   }
 
   async changeLine(input: { agentId: string; lineUid: string }): Promise<string | null> {
@@ -436,6 +511,7 @@ export class CloudAgentState {
    * to the account that just went away.
    */
   signedOut(): void {
+    this.newAgentWait?.finish(null);
     this.lines = null;
     this.generation += 1;
     this.tearingDown.clear();
@@ -705,6 +781,9 @@ export class CloudAgentState {
 
   private publish(): void {
     this.deps.onChange?.();
+    const wait = this.newAgentWait;
+    const fresh = wait && [...this.rows.values()].find((row) => row.provider === wait.provider && !wait.known.has(row.agentId));
+    if (fresh) wait.finish(fresh.agentId);
   }
 }
 

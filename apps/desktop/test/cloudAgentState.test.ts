@@ -11,13 +11,14 @@ import {
   CloudLinesClient,
 } from "../src/cloudAgentState.js";
 import { CloudAgentResource } from "../src/cloudAgents.js";
+import type { AgentIndex } from "../src/agentIndex.js";
 import {
   CloudAgentProvider,
   PlowApi,
   PlowApiError,
 } from "../src/plowApi.js";
 import { loadSettings, saveSettings } from "../src/settings.js";
-import { deferred } from "./deferred.js";
+import { Deferred, deferred } from "./deferred.js";
 
 const CREDENTIAL = "plow_session_123456789";
 
@@ -90,6 +91,7 @@ function build(options: {
   listProviders?: () => Promise<CloudAgentProvider[]>;
   remove?: (agentId: string) => Promise<void>;
   onChange?: () => void;
+  agentIndex?: () => Promise<AgentIndex>;
 } = {}) {
   const calls: string[] = [];
   const agents: CloudAgentsApi = {
@@ -141,6 +143,7 @@ function build(options: {
       },
     },
     onChange: options.onChange,
+    agentIndex: options.agentIndex,
   });
   return { state, calls, home, agents };
 }
@@ -655,5 +658,112 @@ describe("CloudAgentState text-to-start", () => {
     running.resolve(agent());
     await vi.waitFor(() => expect(state.state().cloudAgents[0].status).toBe("running"));
     expect(calls.filter((call) => call === "poll:agent_1")).toHaveLength(1);
+  });
+});
+
+describe("CloudAgentState deploy catalog", () => {
+  const LIFE = { blurb: "Runs a household.", builder: "Sam", users: 16, successRate: 88 };
+
+  it.each([
+    ["describes agents once the Index answers", (index: Deferred<AgentIndex>) => index.resolve({ "exe:life": LIFE }), { "exe:life": LIFE }],
+    ["keeps the provider list when the Index fails", (index: Deferred<AgentIndex>) => index.reject(new Error("offline")), {}],
+  ] as const)("%s, without holding up the roster", async (_case, settle, expected) => {
+    const index = deferred<AgentIndex>();
+    const onChange = vi.fn();
+    const { state } = build({ agentIndex: () => index.promise, onChange });
+    await state.refresh();
+    expect(state.state().cloudAgents).toHaveLength(1);
+    expect(state.state().cloudProviders).toHaveLength(1);
+    onChange.mockClear();
+    settle(index);
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalled());
+    expect(state.state().cloudAgentIndex).toEqual(expected);
+    expect(state.state().cloudProvidersError).toBeNull();
+  });
+});
+
+describe("CloudAgentState waiting for a deployed agent", () => {
+  const HERMES = "exe:hermes"; // agent()'s provider
+
+  function withArrival() {
+    let listed = [agent()];
+    const built = build({
+      listAgents: async () => listed,
+      // Settle like the real poll does, or pollToTerminal's refresh re-polls forever.
+      pollAgent: async (receipt, transition) => {
+        const settled = { ...receipt, status: "running" as const };
+        listed = listed.map((row) => (row.agentId === settled.agentId ? settled : row));
+        await transition?.(settled);
+        return settled;
+      },
+    });
+    const arrive = (provider = HERMES) => {
+      listed = [agent(), agent({ agentId: "agent_new", name: "New", provider, status: "provisioning" })];
+    };
+    return { ...built, arrive };
+  }
+
+  it.each([
+    ["the deployed provider's new agent", HERMES, "agent_new"],
+    // An earlier, abandoned deploy landing late must not end this one.
+    ["nothing for another provider's new agent", "exe:life", null],
+  ])("resolves with %s", async (_case, provider, expected) => {
+    const { state, arrive } = withArrival();
+    await state.refresh();
+    const waited = state.awaitNewAgent(HERMES, { intervalMs: 5, timeoutMs: 60 });
+    arrive(provider);
+    expect(await waited).toBe(expected);
+  });
+
+  it("resolves null when nothing appears before the timeout", async () => {
+    const { state } = withArrival();
+    await state.refresh();
+    expect(await state.awaitNewAgent(HERMES, { intervalMs: 5, timeoutMs: 30 })).toBeNull();
+  });
+
+  it("resolves as soon as any refresh sees the new agent", async () => {
+    const { state, arrive } = withArrival();
+    await state.refresh();
+    const waited = state.awaitNewAgent(HERMES, { intervalMs: 60_000, timeoutMs: 120_000 });
+    arrive();
+    await state.refresh();
+    expect(await waited).toBe("agent_new");
+  });
+
+  it.each([
+    ["a sign-out", (state: CloudAgentState) => state.signedOut()],
+    ["a newer wait", (state: CloudAgentState) => { void state.awaitNewAgent(HERMES, { intervalMs: 60_000, timeoutMs: 120_000 }); }],
+  ])("gives up with null on %s", async (_case, interrupt) => {
+    const { state } = withArrival();
+    await state.refresh();
+    const waited = state.awaitNewAgent(HERMES, { intervalMs: 60_000, timeoutMs: 120_000 });
+    interrupt(state);
+    expect(await waited).toBeNull();
+    state.signedOut(); // ends the newer wait, so no timer outlives the test
+  });
+
+  it("does not pile up re-reads when the agent list is slow", async () => {
+    const heldOpen = deferred<CloudAgentResource[]>();
+    let agentListImpl = async () => [agent()];
+    const { state, calls } = build({
+      listAgents: async () => agentListImpl(),
+    });
+
+    await state.refresh();
+    agentListImpl = async () => heldOpen.promise;
+    const waited = state.awaitNewAgent(HERMES, { intervalMs: 5, timeoutMs: 1000 });
+    await new Promise((r) => setTimeout(r, 60));
+
+    // Measure post-release burst: old code queues ~12 ticks behind the held read.
+    const before = calls.filter((c) => c === "listAgents").length;
+    agentListImpl = async () => [agent()];
+    heldOpen.resolve([agent()]);
+    await new Promise((r) => setTimeout(r, 0)); // Flush macrotask; queued thunks drain before it.
+
+    const burstSize = calls.filter((c) => c === "listAgents").length - before;
+    expect(burstSize).toBeLessThanOrEqual(1);
+
+    state.signedOut();
+    expect(await waited).toBeNull();
   });
 });

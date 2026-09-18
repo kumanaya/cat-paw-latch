@@ -86,7 +86,14 @@ const probeCapabilities = () => ({
   inventory: probeInventory,
   view: capabilitiesView({ inventory: probeInventory, automation: [], events: [], dismissals: {}, bannerSeenAt: null }),
 });
-ipcMain.handle("capabilities:get", async () => probeCapabilities());
+// Answered late on purpose: on a Mac where a target app is not answering
+// Apple events this read is a 3s probe timeout, and the Settings pane must be
+// on screen before it lands (#446). The assertion is below, at the tab switch.
+const CAPABILITIES_DELAY_MS = 1500;
+ipcMain.handle("capabilities:get", async () => {
+  await new Promise((r) => setTimeout(r, CAPABILITIES_DELAY_MS));
+  return probeCapabilities();
+});
 ipcMain.handle("capabilities:act", async () => probeCapabilities().view);
 ipcMain.handle("capabilities:dismiss", async () => probeCapabilities().view);
 ipcMain.handle("capabilities:bannerSeen", async () => probeCapabilities().view);
@@ -424,11 +431,13 @@ app.whenReady().then(async () => {
   // never reaches the renderer. There is no key field and no URL field any more:
   // the credential is minted by first-run login and the API origin is baked into
   // the build.
+  const switched = Date.now();
   await win.webContents.executeJavaScript(`window.__domoSelectTab && window.__domoSelectTab("settings")`);
-  // The permission inventory is drawn into the same pane, so wait for a row
-  // of it: the pane appears only once that read has landed, but waiting on the
-  // rows says so without depending on that ordering.
-  await waitFor(win, `document.querySelector(".panel.settings .cap-row")`, "the Settings pane");
+  // The pane paints before the permission inventory lands (that read is held
+  // back CAPABILITIES_DELAY_MS above), then the rows fill in.
+  await waitFor(win, `document.querySelector(".panel.settings")`, "the Settings pane");
+  const paintedAfterMs = Date.now() - switched;
+  await waitFor(win, `document.querySelector(".panel.settings .cap-row")`, "the permission rows");
   const settings = await win.webContents.executeJavaScript(`(${() => {
     return {
       hasAccountGroup: document.body.innerText.includes("Plow Account"),
@@ -519,6 +528,7 @@ app.whenReady().then(async () => {
       })(),
     };
   }})()`);
+  settings.paintedBeforeInventory = paintedAfterMs < CAPABILITIES_DELAY_MS;
 
   // Settings changed with first-run login, and every UI change gets an image.
   const settingsShot = process.env.SETTINGS_OUT ?? "/tmp/settings-account.png";
@@ -1466,12 +1476,12 @@ app.whenReady().then(async () => {
   // something asks Plow. Google is connected, so the tab asks and settles on
   // Ready with no requirement — not the reconnect prompt the owner saw.
   probeAccountsLoaded = false;
-  const gogRow = `[...document.querySelectorAll(".plugin-row")].find((r) => r.querySelector(".plugin-name span")?.textContent === "gog")`;
+  const gogRow = `[...document.querySelectorAll(".plugin-row")].find((r) => r.querySelector(".plugin-name span")?.textContent === "Gmail and Google Calendar")`;
   await win.webContents.executeJavaScript(`window.__domoSelectTab && window.__domoSelectTab("plugins")`);
   await waitFor(win, `(${gogRow})?.textContent.includes("Ready")`, "the Plugins tab to find Google connected");
   const plugins = await win.webContents.executeJavaScript(`(${() => {
     const rows = [...document.querySelectorAll(".plugin-row")];
-    const gog = rows.find((r) => r.querySelector(".plugin-name span")?.textContent === "gog");
+    const gog = rows.find((r) => r.querySelector(".plugin-name span")?.textContent === "Gmail and Google Calendar");
     return {
       names: rows.map((r) => r.querySelector(".plugin-name span")?.textContent),
       cliBadges: rows.every((r) => r.querySelector(".plugin-name .badge")?.textContent.trim() === "CLI"),
@@ -1686,6 +1696,7 @@ app.whenReady().then(async () => {
     settings.noPasswordField &&
     settings.noSuggestionsCheckbox &&
     settings.hasPermissionInventory &&
+    settings.paintedBeforeInventory &&
     settings.fdaNoInlineDragTile &&
     capabilities.hasFdaRow &&
     capabilities.fdaSaysNotGranted &&
@@ -1695,7 +1706,7 @@ app.whenReady().then(async () => {
     capabilities.noBanner &&
     blockLanding.namesASwitch === "settings" &&
     blockLanding.namesNoSwitch === "audit" &&
-    plugins.names.join("|") === "gog" &&
+    plugins.names.join("|") === "Gmail and Google Calendar" &&
     plugins.cliBadges &&
     plugins.describes &&
     plugins.saysReady &&
