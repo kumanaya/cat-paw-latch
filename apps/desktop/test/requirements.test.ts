@@ -11,9 +11,10 @@ import { actOnRequirement, type ActResult, type RequirementDeps } from "../src/r
 
 /** A Mac where Full Disk Access is (or is not) on, and Safari's write may
  *  fail. `mac` is what the acts leave behind. */
-function world(o: { fullDiskAccess?: boolean; safariFails?: string; connectFails?: string }) {
+function world(o: { fullDiskAccess?: boolean; safariFails?: string; connectFails?: string; platform?: NodeJS.Platform }) {
   const mac = { accounts: [] as string[], permissions: [] as string[], safari: false };
   const deps: RequirementDeps = {
+    platform: o.platform ?? "darwin",
     permission: async (key) => void mac.permissions.push(key),
     connectAccount: async (id) => {
       if (o.connectFails) return o.connectFails;
@@ -44,6 +45,13 @@ describe("actOnRequirement", () => {
       untouched,
     ],
     ["Safari with Full Disk Access", SAFARI_JAVASCRIPT, { fullDiskAccess: true }, { error: null }, { ...untouched, safari: true }],
+    [
+      "Safari on Windows",
+      SAFARI_JAVASCRIPT,
+      { fullDiskAccess: true, platform: "win32" },
+      { error: "Safari's JavaScript setting is only on macOS." },
+      untouched,
+    ],
     [
       "Safari's write failing",
       SAFARI_JAVASCRIPT,

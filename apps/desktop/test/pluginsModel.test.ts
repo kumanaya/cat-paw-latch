@@ -137,7 +137,7 @@ describe("the shipped plugins", () => {
 });
 
 describe("browserPluginRow", () => {
-  const base = { enabled: true, runtimePresent: true, safariJavaScript: true, fullDiskAccess: false, relaunchPending: [] as string[], description: "Browse websites…" };
+  const base = { enabled: true, runtimePresent: true, platform: "darwin" as NodeJS.Platform, safariJavaScript: true, fullDiskAccess: false, relaunchPending: [] as string[], description: "Browse websites…" };
   const fda = { id: "full_disk_access", title: "Full Disk Access", detail: "Drag Plow Latch into the list in System Settings.", action: "Grant Full Disk Access", waiting: "Waiting for you in System Settings…", done: "Granted" };
   const safari = { id: SAFARI_JAVASCRIPT, title: "Safari", detail: "Allow JavaScript from Apple Events — Safari relaunches", action: "Enable in Safari", waiting: "Turning it on. Safari relaunches.", done: "On" };
   // Never run by setup (no action), so no waiting line and no done word.
@@ -151,11 +151,23 @@ describe("browserPluginRow", () => {
     ["Full Disk Access granted this run waits on a relaunch", { ...base, safariJavaScript: false, relaunchPending: ["full_disk_access"] }, "needs-setup", [{ ...fda, detail: "Quit and reopen Plow Latch to finish.", action: "Relaunch Plow Latch", waiting: "", status: "relaunch" }, { ...safari, status: "open" }]],
     ["needs setup with no button when the runtime is missing", { ...base, runtimePresent: false }, "needs-setup", [{ ...safari, status: "met" }, { ...runtime, status: "open" }]],
     ["off keeps status off but still lists its requirements", { ...base, enabled: false, safariJavaScript: false }, "off", [{ ...fda, status: "open" }, { ...safari, status: "open" }]],
+    // Windows and Linux have no Safari: the bundled Camoufox browser needs no
+    // permission, so the row is ready with no requirements at all.
+    ["ready with no permission requirement on Windows", { ...base, platform: "win32", safariJavaScript: false, fullDiskAccess: false }, "ready", []],
+    ["ready with no permission requirement on Linux", { ...base, platform: "linux", safariJavaScript: false }, "ready", []],
+    ["lists only the runtime on Windows when it is missing", { ...base, platform: "win32", runtimePresent: false }, "needs-setup", [{ ...runtime, status: "open" }]],
   ] as const)("is %s", (_what, input, status, requirements) => {
     const row = browserPluginRow(input);
     expect(row).toMatchObject({ name: BROWSER_PLUGIN, title: "Browser use", kind: "Browser", status });
     // The words the owner reads, exactly — a swap of the two would otherwise pass.
     expect(row.requirements).toEqual(requirements);
+  });
+
+  it("names the browser per platform, never a Safari fallback off darwin", () => {
+    const mac = browserPluginRow({ ...base });
+    const pc = browserPluginRow({ ...base, platform: "win32" });
+    expect(mac.summary).toBe("Browse and fill in forms in a private browser, with Safari as a fallback.");
+    expect(pc.summary).toBe("Browse and fill in forms in a private browser.");
   });
 
   it.each([

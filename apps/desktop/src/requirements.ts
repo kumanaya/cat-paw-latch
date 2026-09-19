@@ -16,6 +16,10 @@ export interface RequirementDeps {
   /** The app's own probe — Safari's setting needs it to be written. */
   fullDiskAccess(): Promise<boolean>;
   enableSafari(): Promise<void>;
+  /** The host OS. Safari's "Allow JavaScript from Apple Events" only exists on
+   *  macOS, so the act refuses off darwin rather than reaching for
+   *  `/usr/bin/defaults`. Defaults to `process.platform`. */
+  platform?: NodeJS.Platform;
 }
 
 export interface ActResult {
@@ -29,6 +33,9 @@ export async function actOnRequirement(id: string, deps: RequirementDeps): Promi
   if (id.startsWith(ACCOUNT_PREFIX)) {
     return { error: await deps.connectAccount(id.slice(ACCOUNT_PREFIX.length)) };
   } else if (id === SAFARI_JAVASCRIPT) {
+    if ((deps.platform ?? process.platform) !== "darwin") {
+      return { error: "Safari's JavaScript setting is only on macOS." };
+    }
     if (!(await deps.fullDiskAccess())) return { error: "Safari's setting needs Full Disk Access first." };
     try {
       await deps.enableSafari();
