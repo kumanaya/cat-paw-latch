@@ -14,31 +14,51 @@
 // Error contract: a missing item is `null`, never a throw. Everything else
 // throws an Error whose `code` property is the Win32 error, so the caller can
 // tell "no usable logon session" (ERROR_NO_SUCH_LOGON_SESSION) from real
-// failures and fall back to another provider. Mirrors keychain.mm.
+// failures and fall back to another provider. Mirrors keychain.mm. A caller
+// bug is not a Win32 error and carries no code: a non-string argument throws
+// a TypeError, an oversized blob a RangeError.
 #include <napi.h>
 #include <windows.h>
 #include <wincred.h>
 
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace {
+
+// UTF-8 (JS) to UTF-16, the same conversion winfs.cc makes: a byte copy would
+// not fail, it would mojibake the target — Windows compares wide strings and
+// Credential Manager shows them, so a wrong name is a wrong name. The service
+// half is a frozen ASCII constant, but the account half is text this instance
+// minted (the vault key's per-vault account carries the branch name), so "our
+// inputs are ASCII" is an assumption the shape does not enforce.
+std::wstring Utf8ToWide(const std::string& s) {
+  if (s.empty()) return L"";
+  const int n =
+      MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, s.data(), static_cast<int>(s.size()), nullptr, 0);
+  if (n == 0) throw std::runtime_error("credential name is not valid UTF-8");
+  std::wstring out(static_cast<size_t>(n), L'\0');
+  MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
+  return out;
+}
 
 // Target naming: one namespace, caller-chosen leaves. The separator keeps a
 // service from colliding with an account that contains a slash the other way
 // round — both halves are ours and neither contains one, but the shape is
 // what a reader of Credential Manager sees, so it stays explicit.
 std::wstring TargetName(const std::string& service, const std::string& account) {
-  std::string joined = service + "/" + account;
-  return std::wstring(joined.begin(), joined.end());
+  return Utf8ToWide(service + "/" + account);
 }
 
-std::wstring ToWString(const Napi::Value& v) {
-  const std::string s = v.As<Napi::String>().Utf8Value();
-  return std::wstring(s.begin(), s.end());
+// An argument that is not a string is a caller bug, and the one failure here
+// that is not a Win32 error. Checked rather than assumed: `As<String>()` on a
+// number, or on an argument nobody passed, is not a conversion that fails
+// where the caller can see it. Same guard as credentialImport.mm's.
+std::string ToString(const Napi::Value& v, const char* what) {
+  if (!v.IsString()) throw Napi::TypeError::New(v.Env(), std::string(what) + " must be a string");
+  return v.As<Napi::String>().Utf8Value();
 }
-
-std::string ToString(const Napi::Value& v) { return v.As<Napi::String>().Utf8Value(); }
 
 Napi::Error WinError(Napi::Env env, DWORD code, const char* what) {
   Napi::Error err =
@@ -50,7 +70,7 @@ Napi::Error WinError(Napi::Env env, DWORD code, const char* what) {
 // get(service, account) -> string | null
 Napi::Value Get(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  const std::wstring target = TargetName(ToString(info[0]), ToString(info[1]));
+  const std::wstring target = TargetName(ToString(info[0], "service"), ToString(info[1], "account"));
   PCREDENTIALW cred = nullptr;
   if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &cred)) {
     const DWORD code = GetLastError();
@@ -66,8 +86,16 @@ Napi::Value Get(const Napi::CallbackInfo& info) {
 // credential with the same target, so there is no add/update split.
 Napi::Value Set(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  const std::wstring target = TargetName(ToString(info[0]), ToString(info[1]));
-  const std::string value = ToString(info[2]);
+  const std::wstring target = TargetName(ToString(info[0], "service"), ToString(info[1], "account"));
+  const std::string value = ToString(info[2], "value");
+  // CredWrite refuses a blob over CRED_MAX_CREDENTIAL_BLOB_SIZE with
+  // ERROR_INVALID_PARAMETER, but by then the cast below has already wrapped a
+  // size that large. Refuse it here, in the unit the caller used.
+  if (value.size() > CRED_MAX_CREDENTIAL_BLOB_SIZE) {
+    throw Napi::RangeError::New(
+        env, "credential value is " + std::to_string(value.size()) + " bytes, over CRED_MAX_CREDENTIAL_BLOB_SIZE (" +
+                 std::to_string(CRED_MAX_CREDENTIAL_BLOB_SIZE) + ")");
+  }
   CREDENTIALW cred{};
   cred.Flags = 0;
   cred.Type = CRED_TYPE_GENERIC;
@@ -89,7 +117,7 @@ Napi::Value Set(const Napi::CallbackInfo& info) {
 // caller falls back to safeStorage or the key file.
 Napi::Value Probe(const Napi::CallbackInfo& info) {
   Napi::Env env = info.Env();
-  const std::wstring target = TargetName(ToString(info[0]), "__probe__");
+  const std::wstring target = TargetName(ToString(info[0], "service"), "__probe__");
   PCREDENTIALW cred = nullptr;
   if (CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &cred)) {
     CredFree(cred);
