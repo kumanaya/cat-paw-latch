@@ -167,4 +167,35 @@ describe("windows login-item path", () => {
     expect(setLaunchAtLogin(true, api, true)).toEqual({ supported: true, openAtLogin: true });
     expect(run.writes).toEqual([{ on: true, path: "C:\\Latch\\PlowLatch.exe" }]);
   });
+
+  it("clears the HKCU Run fallback on OFF, even though Electron already reports false", () => {
+    // The fallback had written the Run value; Electron's own bit is false now,
+    // so a get-after-set cannot tell whether OUR value is still there. Turning
+    // the switch off must delete it, or `get` reads it back as true forever.
+    let electronBit = false;
+    let runValue = true;
+    const writes: boolean[] = [];
+    const api = createPlatformLoginItems({
+      platform: "win32",
+      execPath: "C:\\Latch\\PlowLatch.exe",
+      env: {},
+      home: "C:\\Users\\u",
+      electron: {
+        get: () => ({ openAtLogin: electronBit }),
+        set: (settings) => {
+          electronBit = settings.openAtLogin;
+        },
+      },
+      windowsRun: {
+        get: () => runValue,
+        set: (on) => {
+          writes.push(on);
+          runValue = on;
+        },
+      },
+    });
+    expect(setLaunchAtLogin(true, api, false)).toEqual({ supported: true, openAtLogin: false });
+    expect(writes).toEqual([false]);
+    expect(runValue).toBe(false);
+  });
 });

@@ -134,41 +134,51 @@ export function pluginRows(input: PluginsInput): PluginRow[] {
 export const SAFARI_JAVASCRIPT = "safari-javascript-from-apple-events";
 export const BROWSER_RUNTIME = "browser-runtime";
 
-/** The browser is a plugin without a manifest — the Camoufox tools and the
- *  Safari fallback as one row the owner can turn off. Its one actionable
- *  requirement is Safari's "Allow JavaScript from Apple Events", which the
- *  app performs for them (safariJavaScript.ts) and which needs Full Disk
- *  Access only to WRITE that setting — so Full Disk Access only shows up
- *  while Safari's setting is still off. The runtime ships in every packaged
- *  build, so its absence is a from-source fact with no button. */
+/** The browser is a plugin without a manifest — the Camoufox tools and, on
+ *  macOS, the Safari fallback — as one row the owner can turn off. On macOS
+ *  its one actionable requirement is Safari's "Allow JavaScript from Apple
+ *  Events", which the app performs for them (safariJavaScript.ts) and which
+ *  needs Full Disk Access only to WRITE that setting — so Full Disk Access
+ *  only shows up while Safari's setting is still off. Windows and Linux have
+ *  no Safari: the bundled Camoufox browser is the whole browser, so the row
+ *  carries no permission requirement there and never claims a Safari switch
+ *  the owner cannot flip. The runtime ships in every packaged build, so its
+ *  absence is a from-source fact with no button. */
 export function browserPluginRow(input: {
   enabled: boolean;
   runtimePresent: boolean;
+  /** The host OS: Safari and its Full Disk Access prerequisite exist only on
+   *  darwin. */
+  platform: NodeJS.Platform;
   safariJavaScript: boolean;
   fullDiskAccess: boolean;
   relaunchPending: string[];
   description: string | null;
 }): PluginRow {
   const requirements: Requirement[] = [];
-  if (!input.safariJavaScript) {
-    requirements.push(permissionRequirement("full_disk_access", input.fullDiskAccess, input.relaunchPending.includes("full_disk_access")));
+  if (input.platform === "darwin") {
+    if (!input.safariJavaScript) {
+      requirements.push(permissionRequirement("full_disk_access", input.fullDiskAccess, input.relaunchPending.includes("full_disk_access")));
+    }
+    requirements.push({
+      id: SAFARI_JAVASCRIPT,
+      title: "Safari",
+      detail: "Allow JavaScript from Apple Events — Safari relaunches",
+      action: "Enable in Safari",
+      waiting: "Turning it on. Safari relaunches.",
+      done: "On",
+      status: input.safariJavaScript ? "met" : "open",
+    });
   }
-  requirements.push({
-    id: SAFARI_JAVASCRIPT,
-    title: "Safari",
-    detail: "Allow JavaScript from Apple Events — Safari relaunches",
-    action: "Enable in Safari",
-    waiting: "Turning it on. Safari relaunches.",
-    done: "On",
-    status: input.safariJavaScript ? "met" : "open",
-  });
   if (!input.runtimePresent) {
     requirements.push({ id: BROWSER_RUNTIME, title: "Browser runtime", detail: "Not in this build — from source, run just fetch-browser", action: null, waiting: "", done: "", status: "open" });
   }
   return {
     name: BROWSER_PLUGIN,
     title: "Browser use",
-    summary: "Browse and fill in forms in a private browser, with Safari as a fallback.",
+    summary: input.platform === "darwin"
+      ? "Browse and fill in forms in a private browser, with Safari as a fallback."
+      : "Browse and fill in forms in a private browser.",
     kind: "Browser",
     description: input.description,
     status: rowStatus(input.enabled, requirements),

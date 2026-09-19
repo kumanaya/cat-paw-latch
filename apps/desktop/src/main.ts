@@ -74,13 +74,15 @@ import { enableSafariJavaScript, Runner, safariJavaScriptEnabled } from "./safar
 import { launchAtLoginState, setLaunchAtLogin } from "./loginItem.js";
 import { createPlatformLoginItems } from "./loginItemPlatform.js";
 import { windowsRunSeam } from "./windowsRunKey.js";
-import { KeepAwake } from "./keepAwake.js";
+import { KeepAwake, type PowerSourceObserver } from "./keepAwake.js";
 import { createSleepBlocker } from "./sleepBlocker.js";
+import { sysfsPowerSource } from "./powerSource.js";
 import { devIconScript } from "./devIcon.js";
 import { migrateLegacyHome } from "./migrateHome.js";
 import { buildMinter } from "./providerWiring.js";
 import { resolveInstancePaths } from "./paths.js";
 import { resolveTrayIconPath, trayIconSize } from "./trayIcon.js";
+import { resolveAppIconPath } from "./appIcon.js";
 import { resolveForkBannerPath } from "./forkBanner.js";
 import { ImportStaging, passwordsAppCanHandOff } from "./importStaging.js";
 import { loadSettings, saveSettings, useCredentialCodec, credentialStorage, WindowBounds } from "./settings.js";
@@ -200,6 +202,23 @@ console.log(
 const devIconPath = path.join(dirname, "..", "..", "..", "artwork", "domo-desktop-icon.png");
 if (!app.isPackaged) {
   app.dock?.setIcon(devIconPath);
+}
+// Windows and Linux take a window's taskbar icon from the `icon` option, not
+// the bundle (appIcon.ts says why), so every window below is built with this.
+// The packaged app ships it as an extraResource; a from-source run reads the
+// repo artwork. Harmless on macOS, which ignores it.
+const windowIconPath = resolveAppIconPath({
+  isPackaged: app.isPackaged,
+  dirname,
+  resourcesPath: process.resourcesPath,
+});
+// Windows groups a window with its shortcut, taskbar and notifications by the
+// AppUserModelID. The installer stamps electron-builder's appId on the
+// shortcut, so a packaged run must use that exact string or the window is a
+// stranger to its own shortcut. A from-source run gets a distinct id so it
+// never masquerades as the packaged install.
+if (process.platform === "win32") {
+  app.setAppUserModelId(app.isPackaged ? "co.plow.domo-desktop" : "co.plow.domo-desktop.dev");
 }
 
 /**
@@ -456,6 +475,7 @@ function openApprovalWindow(
       resizable: false,
       fullscreenable: false,
       title: "Plow Latch — Approve",
+      icon: windowIconPath,
       webPreferences: {
         preload: path.join(dirname, "preload.cjs"),
         contextIsolation: true,
@@ -551,6 +571,7 @@ function createMainWindow(): void {
     resizable: true,
     title: "Plow Latch",
     titleBarStyle: "hiddenInset",
+    icon: windowIconPath,
     webPreferences: {
       preload: path.join(dirname, "preload.cjs"),
       contextIsolation: true,
@@ -1704,6 +1725,7 @@ async function pluginsNow(): Promise<{ rows: PluginRow[]; grants: GrantItem[] }>
   rows.push(browserPluginRow({
     enabled: !disabled.has(BROWSER_PLUGIN),
     runtimePresent: device !== null && device.browserSessions !== null,
+    platform: process.platform,
     safariJavaScript: process.platform !== "darwin" || (await safariJavaScriptEnabled(unsandboxedRunner)),
     fullDiskAccess: granted.includes("full_disk_access"),
     relaunchPending,
@@ -1765,6 +1787,7 @@ ipcMain.handle("requirements:act", async (e, rawId: unknown) => {
     connectAccount: async () => (await connectors?.connect())?.message || null,
     fullDiskAccess: () => probeHostFullDiskAccess(os.homedir()),
     enableSafari: () => enableSafariJavaScript(unsandboxedRunner),
+    platform: process.platform,
   });
   const now = await pluginsNow();
   if (now.rows.some((r) => r.requirements.some((q) => q.id === id && q.status !== "open"))) returnToCaller(e.sender);
@@ -1993,12 +2016,14 @@ app.on("before-quit", () => fdaGrantFlow.stop());
 // Launch at Login. loginItem.ts owns the packaged-only rules; the platform
 // seam writes Electron login items on macOS, the same API with this exe's
 // path on Windows, and an XDG autostart file on Linux (APPIMAGE, never the
-// squashfs mount).
+// squashfs mount). The home passed here is the USER's, not the instance home:
+// Linux resolves `~/.config/autostart` from it, and the instance home would
+// nest the file where no desktop environment ever reads it.
 const loginItems = createPlatformLoginItems({
   platform: process.platform,
   execPath: process.execPath,
   env: process.env,
-  home,
+  home: os.homedir(),
   electron: {
     get: () => app.getLoginItemSettings(),
     set: (settings) => app.setLoginItemSettings(settings),
@@ -2087,6 +2112,7 @@ function openOnboardingWindow(): void {
     title: "Plow Latch — Set Up",
     titleBarStyle: "hiddenInset",
     backgroundColor: "#111110",
+    icon: windowIconPath,
     webPreferences: {
       preload: path.join(dirname, "preload.cjs"),
       contextIsolation: true,
@@ -2673,21 +2699,28 @@ app.whenReady().then(async () => {
       keepAwake?.blockerLost(id);
     },
   });
+  // Electron gives macOS and Windows a real `isOnBatteryPower` and
+  // `on-ac`/`on-battery`; on Linux both are stubbed, so a laptop there would
+  // read as permanently on AC and never release the blocker on battery.
+  // sysfs is the Linux source (powerSource.ts).
+  const power: PowerSourceObserver = process.platform === "linux"
+    ? sysfsPowerSource()
+    : {
+        current: () => (powerMonitor.isOnBatteryPower() ? "battery" : "ac"),
+        subscribe: (callback) => {
+          const onAc = () => callback("ac");
+          const onBattery = () => callback("battery");
+          powerMonitor.on("on-ac", onAc);
+          powerMonitor.on("on-battery", onBattery);
+          return () => {
+            powerMonitor.off("on-ac", onAc);
+            powerMonitor.off("on-battery", onBattery);
+          };
+        },
+      };
   const awake = new KeepAwake({
     blocker,
-    power: {
-      current: () => (powerMonitor.isOnBatteryPower() ? "battery" : "ac"),
-      subscribe: (callback) => {
-        const onAc = () => callback("ac");
-        const onBattery = () => callback("battery");
-        powerMonitor.on("on-ac", onAc);
-        powerMonitor.on("on-battery", onBattery);
-        return () => {
-          powerMonitor.off("on-ac", onAc);
-          powerMonitor.off("on-battery", onBattery);
-        };
-      },
-    },
+    power,
     load: () => loadSettings(home).keepAwakeWhileRunning,
     save: (enabled) => {
       const settings = loadSettings(home);

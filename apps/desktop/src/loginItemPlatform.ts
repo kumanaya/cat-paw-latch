@@ -106,6 +106,11 @@ export interface PlatformLoginItemDeps {
   platform: NodeJS.Platform;
   execPath: string;
   env: NodeJS.ProcessEnv;
+  /** The USER's home directory — the base of `~/.config/autostart`, NOT the
+   *  instance home (`appData/Plow-Latch[-<branch>]`). Passing the instance
+   *  home nests the autostart file under the app's own folder, where no
+   *  desktop environment looks, and the switch appears to work while doing
+   *  nothing. Only Linux reads it. */
   home: string;
   electron: ElectronLoginItems;
   fs?: LoginItemFs;
@@ -170,8 +175,18 @@ export function windowsLoginItems(deps: {
     },
     set: ({ openAtLogin }) => {
       deps.electron.set(electronLoginSettings(openAtLogin, deps.execPath));
-      if (deps.electron.get().openAtLogin === openAtLogin) return;
-      deps.windowsRun?.set(openAtLogin, deps.execPath);
+      if (openAtLogin) {
+        // Enable: Electron's own get-after-set is the authority; only a
+        // refusal falls through to the Run key.
+        if (deps.electron.get().openAtLogin) return;
+        deps.windowsRun?.set(true, deps.execPath);
+        return;
+      }
+      // Disable: Electron reports `false` for a successful removal AND for a
+      // bit it never held, so a get-after-set can never tell us whether OUR
+      // Run value is still there. Delete it unconditionally — reg's "value
+      // not found" is swallowed by the seam.
+      deps.windowsRun?.set(false, deps.execPath);
     },
   };
 }
