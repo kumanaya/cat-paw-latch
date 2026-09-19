@@ -145,11 +145,11 @@ export interface OnboardingDeps {
   deviceName: string;
   /**
    * Turn the availability defaults on — Keep Awake, and Launch at Login where
-   * the build can. Called once per home, on reaching the Availability screen,
-   * so the switches it shows are on because they ARE on; the marker
-   * (`Settings.launchAtLoginDefaulted`) records that it ran. It writes
-   * settings itself (Keep Awake persists its opt-in), so it runs between two
-   * loads here, never inside one.
+   * the build can. Called at sign-in, which every setup (a re-setup after
+   * sign-out included) passes exactly once and a relaunch mid-setup resumes
+   * past — so the Availability screen opens with both on because they ARE on,
+   * and a switch turned off there stays off. It writes settings itself (Keep
+   * Awake persists its opt-in), so it runs after sign-in's own write.
    */
   applyAvailabilityDefault?: () => void;
   onChange?: () => void;
@@ -219,12 +219,6 @@ export class Onboarding {
       const settings = this.settings();
       settings.telemetryEnabled = this.telemetryEnabled;
       this.save(settings);
-      if (!settings.launchAtLoginDefaulted) {
-        this.deps.applyAvailabilityDefault?.();
-        const defaulted = this.settings();
-        defaulted.launchAtLoginDefaulted = true;
-        this.save(defaulted);
-      }
       this.step = "availability";
       return this.publish();
     }
@@ -602,6 +596,7 @@ export class Onboarding {
     // lines the account's own chats run on, which is the only source that
     // cannot be wrong.
     this.save(settings);
+    this.deps.applyAvailabilityDefault?.();
 
     // The activation is spent and dropped. Everything here is derived from
     // the save above; none of it needs the socket to be up.

@@ -337,14 +337,9 @@ describe("wizard steps around the existing verification flow", () => {
     expect(build().state().step).toBe("done");
   });
 
-  it("lands the availability default once, on reaching the screen, and keeps what it wrote", async () => {
-    const settings = loadSettings(home);
-    settings.relayCredential = DEVICE_TOKEN;
-    saveSettings(home, settings);
-    expect(loadSettings(home).launchAtLoginDefaulted).toBe(false);
-
+  it("turns the availability defaults on once per setup, at sign-in, and keeps what it wrote", async () => {
     // The production dep persists Keep Awake's opt-in itself. The write must
-    // survive the step's own settings write — the first cut clobbered it.
+    // survive setup's own settings writes after it — the first cut clobbered it.
     let applied = 0;
     const applyAvailabilityDefault = () => {
       applied += 1;
@@ -352,23 +347,32 @@ describe("wizard steps around the existing verification flow", () => {
       live.keepAwakeWhileRunning = true;
       saveSettings(home, live);
     };
-    let onboarding = build({ applyAvailabilityDefault });
+    plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
+    const onboarding = build({ applyAvailabilityDefault });
+    await onboarding.advance();
+    await settle();
+    expect(onboarding.state().step).toBe("privacy");
+    expect(applied).toBe(1);
+    await onboarding.advance();
     onboarding.setTelemetryEnabled(false);
     expect((await onboarding.advance()).step).toBe("availability");
-    expect(applied).toBe(1);
-    expect(loadSettings(home)).toMatchObject({
-      keepAwakeWhileRunning: true,
-      telemetryEnabled: false,
-      launchAtLoginDefaulted: true,
-    });
+    expect(loadSettings(home)).toMatchObject({ keepAwakeWhileRunning: true, telemetryEnabled: false });
 
-    // A second pass (Back, Continue) is silent, and so is a re-setup over the
-    // same home — sign-out keeps the marker, so a choice the user made stays.
+    // Back then Continue, and a relaunch mid-setup, are the same setup: a
+    // switch turned off on the screen stays off.
     await onboarding.back();
     expect((await onboarding.advance()).step).toBe("availability");
-    onboarding = build({ applyAvailabilityDefault });
-    await onboarding.advance();
+    expect((await build({ applyAvailabilityDefault }).advance()).step).toBe("availability");
     expect(applied).toBe(1);
+
+    // Sign out and set up again: a new setup, so the switches open on again.
+    const signedOut = loadSettings(home);
+    signedOut.relayCredential = "";
+    saveSettings(home, signedOut);
+    expect(onboarding.reset().step).toBe("welcome");
+    await onboarding.advance();
+    await settle();
+    expect(applied).toBe(2);
   });
 
 });
