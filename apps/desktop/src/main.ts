@@ -1624,6 +1624,13 @@ function connectedAccountIds(): string[] {
   return (connectors?.state().google.accounts.length ?? 0) > 0 ? ["google"] : [];
 }
 
+/** Connector state owns its own failure/late-success explanation; setup only
+ * associates that explanation with the corresponding model requirement. */
+function connectorAccountNotices(): Record<string, { message: string; noteKind: "neutral" | "error" }> {
+  const state = connectors?.state();
+  return state?.message ? { google: { message: state.message, noteKind: state.noteKind } } : {};
+}
+
 /** The whole tab, fresh: what is staged, what each plugin still needs, and
  *  the one ordered list of it setup walks. A permission is met when Settings'
  *  own Permissions section reads it granted — one answer, so the two tabs
@@ -1648,6 +1655,7 @@ async function pluginsNow(): Promise<{ rows: PluginRow[]; grants: GrantItem[] }>
       description: device?.pluginDescription(p.manifest.name) ?? null,
     })),
     connectedAccounts: connectedAccountIds(),
+    accountNotices: connectorAccountNotices(),
     grantedPermissions: granted,
     relaunchPending,
   });

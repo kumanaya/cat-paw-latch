@@ -7,7 +7,7 @@ import { latestOnly, singleFlight, whenAnswered } from "./onboardingAction.js";
 import { loadDoneAgent } from "./onboardingDone.js";
 import { failedOnboardingState, resolveOnboardingState } from "./onboardingFallback.js";
 import { presetFor, rowView, verdictWord } from "./gatekeeperRows.js";
-import { accessPrimary, runGrants } from "./onboardingGrants.js";
+import { accessPrimary, clearMissed, runGrants } from "./onboardingGrants.js";
 import { startAfterDocumentPaint } from "./welcomeEntrance.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -564,6 +564,7 @@ const onPluginStep = () => state?.step === "plugins" || state?.step === "access"
  * undo a switch), and so is one that lands after setup left both steps. */
 const showPlugins = latestOnly((next) => {
   if (!onPluginStep()) return;
+  missed = clearMissed(missed, next.grants);
   pluginsState = next;
   render();
 });
@@ -573,19 +574,37 @@ async function refreshPlugins() {
 }
 
 /** Access's one button: the list's flows in order; a grant that did not land
- * stops the run on its row. */
+ * stops the run on its row. The renderer's shared single-flight gate owns
+ * every requirement action, including met-row repeats. */
+const actRequirement = singleFlight(() => running !== null);
+
+function runRequirement(id) {
+  return actRequirement(async () => {
+    running = id;
+    render();
+    try {
+      return await whenAnswered(window.domo.requirementsAct(id), showPlugins);
+    } finally {
+      running = null;
+      render();
+    }
+  });
+}
+
 async function startGrants() {
   missed = null; // the run's first redraw must not still show the last miss
   missed = await runGrants({
-    act: (id) => whenAnswered(window.domo.requirementsAct(id), showPlugins),
+    act: runRequirement,
     getState: () => pluginsState,
     stillHere: () => state?.step === "access",
-    setRunning: (id) => {
-      running = id;
-      render();
-    },
   }, skipped);
   render();
+}
+
+/** A met requirement can offer another action without restarting Access's
+ * open-grant runner. Its id and label both come from the model. */
+async function repeatGrant(id) {
+  await runRequirement(id).catch(() => null);
 }
 
 async function refreshAvailability() {
@@ -752,11 +771,16 @@ function grantRow(grant) {
   let line = null;
   let control = null;
   if (grant.status === "met") {
+    const repeat = grant.repeatAction
+      ? button(grant.repeatAction, "link-button", () => void repeatGrant(grant.id))
+      : null;
+    if (repeat) repeat.disabled = running !== null;
     control = el("span", { class: "item-chip" }, [
       icon("checkmark", { strokeWidth: "1.7" }),
       document.createTextNode(grant.done),
+      repeat,
     ]);
-    if (missed?.id === grant.id && missed.error) line = statusLine("error", missed.error);
+    if (grant.notice) line = statusLine(grant.notice.noteKind, grant.notice.message);
   } else if (grant.status === "relaunch") {
     line = statusLine("done", "Granted: relaunch to finish");
   } else if (running === grant.id) {
