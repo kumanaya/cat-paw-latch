@@ -12,10 +12,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { loadSettings, saveSettings, Settings } from "../src/settings.js";
+import { keyInfo, keyPrefixOf } from "./keyInfo.js";
 import {
   isSignedIn,
   readAgentPurpose,
   readInference,
+  retireUnretiredSession,
   revokeAndSignOut,
   setAgentPurpose,
   setApprovalMode,
@@ -132,12 +134,13 @@ describe("the persisted file keeps its guarantees", () => {
 });
 
 describe("signing out retires the credential server-side, best effort", () => {
-  const homeSignedIn = () =>
+  const homeSignedIn = (overrides: Partial<Settings> = {}) =>
     homeWith({
       relayCredential: PLOW_CREDENTIAL,
       accountUid: "u_someone",
       mcpUrl: "https://api.plow.co/v1/relay/devices/u_someone/mcp",
       approvalMode: "adversarial",
+      ...overrides,
     });
 
   it("asks Plow to revoke, using the credential being retired", async () => {
@@ -159,6 +162,8 @@ describe("signing out retires the credential server-side, best effort", () => {
     // already gone by the time we ask — see the quit test below for why.
     expect(onDiskWhenAsked).toBe("");
     expect(stored(home).relayCredential).toBe("");
+    // A revoke that succeeded needs no later retry.
+    expect(stored(home).unretiredKeyPrefixes).toEqual([]);
   });
 
   it("the credential is off disk BEFORE the revoke is even asked", async () => {
@@ -179,6 +184,8 @@ describe("signing out retires the credential server-side, best effort", () => {
 
     expect(onDiskWhenAsked).toBe("");
     expectSignedOutWithAdversarial(home);
+    // Same write as the local erase — a quit mid-revoke keeps it.
+    expect(stored(home).unretiredKeyPrefixes).toEqual([keyPrefixOf(PLOW_CREDENTIAL)]);
   });
 
   it.each([
@@ -188,7 +195,8 @@ describe("signing out retires the credential server-side, best effort", () => {
     // Offline, API down, route not deployed — the case that matters most,
     // because a Mac that cannot reach Plow is the one whose owner most wants
     // the local copy gone.
-    const home = homeSignedIn();
+    // An earlier offline sign-out's session may still hold the device.
+    const home = homeSignedIn({ unretiredKeyPrefixes: ["earlier1"] });
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     expect(await revokeAndSignOut(home, fail)).toBe(false);
@@ -199,6 +207,8 @@ describe("signing out retires the credential server-side, best effort", () => {
       "[settings] session revoke failed; already signed out locally",
     );
     expect(warning.mock.calls.flat().join(" ")).not.toContain(PLOW_CREDENTIAL);
+    // A failed revoke adds to the record, so the next sign-in retires both.
+    expect(stored(home).unretiredKeyPrefixes).toEqual(["earlier1", keyPrefixOf(PLOW_CREDENTIAL)]);
   });
 
   it("does not call out at all when there is nothing to revoke", async () => {
@@ -209,6 +219,54 @@ describe("signing out retires the credential server-side, best effort", () => {
     expect(stored(home).relayCredential).toBe("");
   });
 
+});
+
+describe("retireUnretiredSession clears the session an offline sign-out could not reach", () => {
+  const PREFIX = keyPrefixOf(PLOW_CREDENTIAL);
+
+  function fakeApi(keys: ReturnType<typeof keyInfo>[]) {
+    const revoked: number[] = [];
+    const api = {
+      listApiKeys: vi.fn(async () => keys),
+      revokeApiKey: vi.fn(async (_credential: string, id: number) => {
+        revoked.push(id);
+        return { status: "revoked", id };
+      }),
+    };
+    return { api, revoked };
+  }
+
+  it.each([
+    { name: "every active key holding a pending prefix, among others", pending: ["earlier1", PREFIX],
+      keys: [keyInfo({ id: 10, key_prefix: "other001" }), keyInfo({ id: 15, key_prefix: "earlier1" }), keyInfo({ id: 20, key_prefix: PREFIX })],
+      expectRevoked: [15, 20], expectListed: true, expectKept: [] },
+    { name: "only an inactive or other-prefix key", pending: [PREFIX],
+      keys: [keyInfo({ id: 10, key_prefix: PREFIX, is_active: false }), keyInfo({ id: 30, key_prefix: "other002" })],
+      expectRevoked: [], expectListed: true, expectKept: [] },
+    { name: "a prefix this account's listing doesn't know (signed into another account)", pending: [PREFIX],
+      keys: [keyInfo({ id: 30, key_prefix: "other002" })],
+      expectRevoked: [], expectListed: true, expectKept: [PREFIX] },
+    { name: "no pending session recorded at all", pending: [], keys: [], expectRevoked: [], expectListed: false, expectKept: [] },
+  ])("$name", async ({ pending, keys, expectRevoked, expectListed, expectKept }) => {
+    const home = homeWith({ relayCredential: PLOW_CREDENTIAL, unretiredKeyPrefixes: pending });
+    const { api, revoked } = fakeApi(keys);
+
+    await retireUnretiredSession(home, api);
+
+    expect(revoked).toEqual(expectRevoked);
+    expect(api.listApiKeys).toHaveBeenCalledTimes(expectListed ? 1 : 0);
+    expect(stored(home).unretiredKeyPrefixes).toEqual(expectKept);
+  });
+
+  it("keeps the record when listing fails, and lets the rejection propagate", async () => {
+    const home = homeWith({ relayCredential: PLOW_CREDENTIAL, unretiredKeyPrefixes: [PREFIX] });
+    const api = { listApiKeys: vi.fn(async () => { throw new Error("offline"); }), revokeApiKey: vi.fn() };
+
+    await expect(retireUnretiredSession(home, api)).rejects.toThrow("offline");
+
+    expect(api.revokeApiKey).not.toHaveBeenCalled();
+    expect(stored(home).unretiredKeyPrefixes).toEqual([PREFIX]);
+  });
 });
 
 describe("a second sign-out is a no-op, not a second sign-out", () => {

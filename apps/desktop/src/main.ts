@@ -101,6 +101,7 @@ import {
   readAgentPurpose,
   readInference,
   setAgentPurpose,
+  retireUnretiredSession,
   revokeAndSignOut,
   setApprovalMode,
   signOutOfPlow,
@@ -709,7 +710,8 @@ async function signOutThisMac(): Promise<void> {
   await startRelay();
   if (!(await revoking)) {
     onboarding?.showMessage(
-      "Signed out on this Mac. Plow could not be reached to revoke the session — revoke it in Plow's account settings.",
+      "Signed out on this Mac. Plow could not be reached to revoke the session — " +
+        "Plow Latch revokes it the next time this Mac signs in, or revoke it now in Plow's account settings.",
     );
   }
 }
@@ -2068,9 +2070,13 @@ async function startRelay(): Promise<void> {
     credential,
     deviceId,
     beforeConnect: async () => {
+      // Logged, so a 409 here lands in plow-wire.log.
+      const api = new PlowApi(apiBaseUrl, loggingFetch(home));
       let registered;
       try {
-        registered = await new PlowApi(apiBaseUrl).registerRelayDevice(credential, deviceId, hostName());
+        // Clears a session an earlier offline sign-out couldn't reach.
+        await retireUnretiredSession(home, api);
+        registered = await api.registerRelayDevice(credential, deviceId, hostName());
       } catch (error) {
         if (!(error instanceof PlowApiError) || error.kind !== "unauthorized") throw error;
         if (loadSettings(home).relayCredential.trim() !== credential) return;
