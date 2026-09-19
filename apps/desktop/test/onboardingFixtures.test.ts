@@ -32,6 +32,7 @@ describe("onboarding visual fixtures", () => {
       "gatekeeper-stopped",
       "gatekeeper-work",
     ]);
-    for (const f of withGatekeeper) expect(f.gatekeeper.presets, f.name).toEqual(gatekeeperPresets());
+    const presets = gatekeeperPresets();
+    for (const f of withGatekeeper) expect(f.gatekeeper.presets, f.name).toEqual(presets);
   });
 });
