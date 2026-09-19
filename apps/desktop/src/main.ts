@@ -97,6 +97,7 @@ import {
   ApprovalQueue,
   Decided,
   decideIntent,
+  isApprovalDecision,
   ReviewHint,
   storedRuleMayGrant,
 } from "./reviewPolicy.js";
@@ -481,10 +482,13 @@ function openApprovalWindow(
     // rather than a rejected invoke in the renderer. Resolving twice is
     // already one. Both exits below remove it.
     ipcMain.handle("approval:ready", async () => markReady());
-    const onDecision = (_e: unknown, id: string, decision: ApprovalDecision) => {
+    const onDecision = (_e: unknown, id: unknown, decision: unknown) => {
       if (id !== approvalId(request)) return;
       ipcMain.removeListener("approval:decide", onDecision);
-      finish(decision);
+      // The renderer's value, so checked here rather than believed: `deny` is
+      // the one answer nothing is gained by forging, and the only one this
+      // adapter may invent when a payload arrives that no dialog can produce.
+      finish(isApprovalDecision(decision) ? decision : "deny");
     };
     ipcMain.on("approval:decide", onDecision);
     // When the adversarial agent responds, tell the window which button to

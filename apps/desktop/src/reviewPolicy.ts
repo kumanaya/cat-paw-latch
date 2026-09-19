@@ -26,6 +26,27 @@ import { DEFAULT_APPROVAL_MODE, Settings } from "./settings.js";
 export type ApprovalDecision = "allow_once" | "always_allow" | "deny";
 
 /**
+ * Is this one of the three answers a dialog can give?
+ *
+ * Needed at the boundary, not here: `approval:decide` arrives over IPC from the
+ * renderer, where `ApprovalDecision` is a claim about the payload rather than a
+ * check on it. Everything downstream treats "not deny" as "go", so a value the
+ * dialog never offers must not reach it as one — and neither the renderer nor
+ * this file may pick the next value by accident.
+ */
+export function isApprovalDecision(value: unknown): value is ApprovalDecision {
+  return value === "allow_once" || value === "always_allow" || value === "deny";
+}
+
+/**
+ * The dialog answered with something that is not a decision: no button in it
+ * sends this. Denied, and recorded under its own source, because a value that
+ * no dialog can produce means a bug or a renderer that has been tampered with —
+ * worth telling apart in the audit log from the owner pressing Deny.
+ */
+export const DENIAL_SOURCE_UNRECOGNIZED_ANSWER = "unrecognized_answer";
+
+/**
  * What the reviewer has to say to the human, when a human is being asked.
  *
  * **Display-only, both halves.** `decision` highlights a button and `reason`
@@ -184,8 +205,12 @@ export interface DecideDeps {
   /**
    * Show the human the approval dialog, optionally with the reviewer's say.
    * Not serialized by the caller: `decideIntent` runs it through `queue`.
+   *
+   * `unknown`, because on the Electron path this is what came off the renderer's
+   * IPC call and neither side validated it: the answer is checked where it is
+   * used, not typed here.
    */
-  openApproval: (hint: Promise<ReviewHint> | null) => Promise<ApprovalDecision>;
+  openApproval: (hint: Promise<ReviewHint> | null) => Promise<unknown>;
   /** The one queue every dialog on this Mac goes through. */
   queue: ApprovalQueue;
   /**
@@ -352,7 +377,14 @@ export async function decideIntent(intent: Intent, deps: DecideDeps): Promise<De
     preempt: async () =>
       (await deps.ruleAnswers()) ? { decision: "always_allow", source: "rule", ruleStored: true } : null,
     show: async () => {
-      const decision = await deps.openApproval(hint);
+      const answer = await deps.openApproval(hint);
+      // Fail closed on an answer that is not one of the three: downstream, "not
+      // deny" is "run", so an unrecognized value must never arrive as one, and
+      // an unknown one must not be read as the owner's denial either.
+      if (!isApprovalDecision(answer)) {
+        return { decision: "deny", source: DENIAL_SOURCE_UNRECOGNIZED_ANSWER };
+      }
+      const decision = answer;
       if (decision === "always_allow") {
         // Stored, then every request still waiting is asked whether the new
         // rule covers it — before this dialog's own answer goes back, so

@@ -1211,3 +1211,46 @@ describe("the ~/Plow playground carve-out", () => {
     expect(openApproval).toHaveBeenCalledTimes(dialogs);
   });
 });
+
+/**
+ * The dialog's answer arrives off the renderer, so what the type says about it
+ * is a claim and not a check. Downstream, "not deny" means run — which is why
+ * an answer no button can produce may reach neither branch: not the run that
+ * `always_allow` gets, and not the audit line that says the owner said no.
+ */
+describe("an answer the dialog cannot give is not consent", () => {
+  function answer(value: unknown) {
+    const storeRule = vi.fn();
+    const result = decideIntent(intent(), {
+      settings: settings({ approvalMode: "ask", relayCredential: PLOW_CREDENTIAL }),
+      apiBaseUrl: "https://api.plow.co",
+      plowRoot: PLOW_ROOT,
+      auditEntries: () => [],
+      queue: new ApprovalQueue(),
+      ruleAnswers: async () => false,
+      storeRule,
+      record: () => {},
+      review: async () => ({ verdict: "allow" as const, reason: "looks fine" }),
+      openApproval: async () => value,
+    });
+    return { result, storeRule };
+  }
+
+  it.each([
+    ["a string that is not one of the three", "ALLOW"],
+    ["a number", 1],
+    ["nothing at all", undefined],
+  ] as const)("denies %s, and stores no rule", async (_name, value) => {
+    const { result, storeRule } = answer(value);
+    expect(await result).toEqual({ decision: "deny", source: "unrecognized_answer" });
+    // Nothing an unknown value carries may become a standing rule either.
+    expect(storeRule).not.toHaveBeenCalled();
+  });
+
+  it("is not reported as the owner's decision", async () => {
+    const { result } = answer("ALLOW");
+    const decision = await result;
+    expect(decidedByLabel(decision.source)).toBe("Unrecognized answer (denied)");
+    expect(decidedByLabel(decision.source)).not.toBe(decidedByLabel("ask"));
+  });
+});
