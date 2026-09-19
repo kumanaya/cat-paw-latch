@@ -123,6 +123,8 @@ function build(extra: Partial<OnboardingDeps> = {}): Onboarding {
       }
     },
     deviceName: "Plow Latch (test)",
+    applyPluginDefault: async () => {},
+    accessNeeded: async () => false,
     now: () => clock,
     // No real timers: the poll loop's wait advances the same fake clock the
     // deadline is measured against, so a five-minute give-up takes microseconds
@@ -247,16 +249,15 @@ describe("wizard steps around the existing verification flow", () => {
     onboarding.reset();
   });
 
-  it("offers Back from Availability and Connect but not from Verified, Data or Done", async () => {
+  it("offers Back from Access and Availability but not from Verified, Plugins or Done", async () => {
     plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
     let notifications = 0;
-    const onboarding = build(
-      {
-        onChange: () => {
-          notifications += 1;
-        },
+    const onboarding = build({
+      accessNeeded: async () => true,
+      onChange: () => {
+        notifications += 1;
       },
-    );
+    });
 
     await onboarding.advance();
     await settle();
@@ -265,27 +266,143 @@ describe("wizard steps around the existing verification flow", () => {
     expect((await onboarding.back()).step).toBe("privacy");
     expect(notifications).toBe(0);
 
-    expect((await onboarding.advance()).step).toBe("data");
+    expect((await onboarding.advance()).step).toBe("plugins");
     notifications = 0;
-    expect((await onboarding.back()).step).toBe("data");
+    expect((await onboarding.back()).step).toBe("plugins");
     expect(notifications).toBe(0);
 
+    expect((await onboarding.advance()).step).toBe("access");
+    notifications = 0;
+    expect((await onboarding.back()).step).toBe("plugins");
+    expect(notifications).toBe(1);
+
+    // Back from Availability also lands on Plugins, not on Access.
+    expect((await onboarding.advance()).step).toBe("access");
     expect((await onboarding.advance()).step).toBe("availability");
     notifications = 0;
-    expect((await onboarding.back()).step).toBe("data");
+    expect((await onboarding.back()).step).toBe("plugins");
     expect(notifications).toBe(1);
 
-    await onboarding.advance();
-    expect((await onboarding.advance()).step).toBe("connect");
-    notifications = 0;
-    expect((await onboarding.back()).step).toBe("availability");
-    expect(notifications).toBe(1);
-
+    expect((await onboarding.advance()).step).toBe("access");
     await onboarding.advance();
     await onboarding.advance();
     notifications = 0;
     expect((await onboarding.back()).step).toBe("done");
     expect(notifications).toBe(0);
+  });
+
+  it("defaults the plugins once, entering from Privacy — a switch flipped back on survives a relaunch", async () => {
+    plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
+    const applyPluginDefault = async () => {
+      const live = loadSettings(home);
+      live.disabledPlugins = ["cant-work-yet"];
+      saveSettings(home, live);
+    };
+    const onboarding = build({ applyPluginDefault });
+
+    await onboarding.advance();
+    await settle();
+    expect(onboarding.state().step).toBe("privacy");
+
+    expect((await onboarding.advance()).step).toBe("plugins");
+    expect(loadSettings(home).disabledPlugins).toEqual(["cant-work-yet"]);
+
+    // The owner turns the defaulted-off plugin back on.
+    const live = loadSettings(home);
+    live.disabledPlugins = [];
+    saveSettings(home, live);
+
+    // A relaunch resumes directly on Plugins — Privacy is never re-entered —
+    // so the default must not run again and flip it back off.
+    const relaunched = build({ applyPluginDefault });
+    expect(relaunched.state().step).toBe("plugins");
+    expect(loadSettings(home).disabledPlugins).toEqual([]);
+  });
+
+  it("keeps the owner on Privacy when the plugin default throws, and retries it on the next advance", async () => {
+    plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
+    let applied = 0;
+    const applyPluginDefault = async () => {
+      applied += 1;
+      if (applied === 1) throw new Error("boom");
+    };
+    const onboarding = build({ applyPluginDefault });
+
+    await onboarding.advance();
+    await settle();
+    expect(onboarding.state().step).toBe("privacy");
+
+    const failed = await onboarding.advance();
+    expect(failed.step).toBe("privacy");
+    expect(failed.busy).toBe(false);
+    expect(failed.message).toBe("Something went wrong. Try again.");
+    expect(applied).toBe(1);
+
+    const retried = await onboarding.advance();
+    expect(retried.step).toBe("plugins");
+    expect(applied).toBe(2);
+  });
+
+  it.each<{
+    name: string;
+    /** Runs before build() — settings a fresh Onboarding must open onto. */
+    before?: () => void;
+    deps: (pending: Promise<void>) => Partial<OnboardingDeps>;
+    enter: (onboarding: Onboarding) => Promise<void>;
+    after?: () => void;
+  }>([
+    {
+      name: "accessNeeded",
+      before: () => {
+        const settings = loadSettings(home);
+        settings.relayCredential = DEVICE_TOKEN;
+        saveSettings(home, settings);
+      },
+      deps: (pending) => ({ accessNeeded: async () => { await pending; return true; } }),
+      enter: async (onboarding) => {
+        // Guards against going vacuous again: if this isn't "plugins", advance()
+        // below takes a different branch entirely and never touches accessNeeded.
+        expect(onboarding.state().step).toBe("plugins");
+        onboarding.setTelemetryEnabled(false);
+      },
+      after: () => {
+        // The pending telemetry choice from the signed-out session was never written.
+        expect(loadSettings(home).telemetryEnabled).toBe(true);
+      },
+    },
+    {
+      name: "applyPluginDefault",
+      deps: (pending) => ({ applyPluginDefault: () => pending }),
+      enter: async (onboarding) => {
+        plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
+        await onboarding.advance();
+        await settle();
+        expect(onboarding.state().step).toBe("privacy");
+      },
+    },
+  ])("does not resume past reset() lands during $name", async ({ before, deps, enter, after }) => {
+    before?.();
+    let release: () => void = () => {};
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const onboarding = build(deps(pending));
+    await enter(onboarding);
+
+    const advancing = onboarding.advance();
+    expect(onboarding.state().busy).toBe(true);
+
+    // Sign-out lands while the dep is still in flight.
+    signOutOfPlow(home);
+    expect(onboarding.reset().step).toBe("welcome");
+
+    release();
+    const settled = await advancing;
+
+    // The reset is left alone — not overwritten with wherever the dep resumes.
+    expect(settled.step).toBe("welcome");
+    expect(onboarding.state().step).toBe("welcome");
+    after?.();
   });
 
   it("does not publish an ignored telemetry choice", () => {
@@ -301,7 +418,7 @@ describe("wizard steps around the existing verification flow", () => {
     expect(notifications).toBe(0);
   });
 
-  it("holds a redeemed login on Privacy until Continue moves to data", async () => {
+  it("holds a redeemed login on Privacy until Continue moves to plugins", async () => {
     plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
     const onboarding = build();
     await onboarding.advance();
@@ -312,39 +429,34 @@ describe("wizard steps around the existing verification flow", () => {
     expect(loadSettings(home).relayCredential).toBe(SESSION_TOKEN);
     expect(loadSettings(home).setupComplete).toBe(false);
 
-    expect((await onboarding.advance()).step).toBe("data");
+    expect((await onboarding.advance()).step).toBe("plugins");
   });
 
-  it("writes telemetry on leaving data and completion only on leaving connect", async () => {
+  it("writes telemetry on leaving plugins and completion only on leaving availability", async () => {
     const settings = loadSettings(home);
     settings.relayCredential = DEVICE_TOKEN;
     saveSettings(home, settings);
     const onboarding = build();
 
-    expect(onboarding.state()).toMatchObject({ step: "data", telemetryEnabled: true });
+    expect(onboarding.state()).toMatchObject({ step: "plugins", telemetryEnabled: true });
     expect(onboarding.setTelemetryEnabled(false).telemetryEnabled).toBe(false);
     expect(loadSettings(home)).toMatchObject({ telemetryEnabled: true, setupComplete: false });
 
+    // The builder's accessNeeded answers false: nothing to grant skips Access.
     expect((await onboarding.advance()).step).toBe("availability");
     expect(loadSettings(home)).toMatchObject({ telemetryEnabled: false, setupComplete: false });
-    // The persisted gate deliberately resumes incomplete setup at Data, so a
-    // returning install still makes the telemetry choice before Connect.
-    expect(build().state().step).toBe("data");
+    // The persisted gate deliberately resumes incomplete setup at Plugins, so a
+    // returning install still makes the telemetry choice before Availability.
+    expect(build().state().step).toBe("plugins");
 
-    expect((await onboarding.advance()).step).toBe("connect");
     expect((await onboarding.advance()).step).toBe("done");
     expect(loadSettings(home)).toMatchObject({ telemetryEnabled: false, setupComplete: true });
     expect(build().state().step).toBe("done");
   });
 
-  it("lands the availability default once, on reaching the screen, and keeps what it wrote", async () => {
-    const settings = loadSettings(home);
-    settings.relayCredential = DEVICE_TOKEN;
-    saveSettings(home, settings);
-    expect(loadSettings(home).launchAtLoginDefaulted).toBe(false);
-
+  it("turns the availability defaults on once per setup, at sign-in, and keeps what it wrote", async () => {
     // The production dep persists Keep Awake's opt-in itself. The write must
-    // survive the step's own settings write — the first cut clobbered it.
+    // survive setup's own settings writes after it — the first cut clobbered it.
     let applied = 0;
     const applyAvailabilityDefault = () => {
       applied += 1;
@@ -352,23 +464,32 @@ describe("wizard steps around the existing verification flow", () => {
       live.keepAwakeWhileRunning = true;
       saveSettings(home, live);
     };
-    let onboarding = build({ applyAvailabilityDefault });
+    plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
+    const onboarding = build({ applyAvailabilityDefault });
+    await onboarding.advance();
+    await settle();
+    expect(onboarding.state().step).toBe("privacy");
+    expect(applied).toBe(1);
+    await onboarding.advance();
     onboarding.setTelemetryEnabled(false);
     expect((await onboarding.advance()).step).toBe("availability");
-    expect(applied).toBe(1);
-    expect(loadSettings(home)).toMatchObject({
-      keepAwakeWhileRunning: true,
-      telemetryEnabled: false,
-      launchAtLoginDefaulted: true,
-    });
+    expect(loadSettings(home)).toMatchObject({ keepAwakeWhileRunning: true, telemetryEnabled: false });
 
-    // A second pass (Back, Continue) is silent, and so is a re-setup over the
-    // same home — sign-out keeps the marker, so a choice the user made stays.
+    // Back then Continue, and a relaunch mid-setup, are the same setup: a
+    // switch turned off on the screen stays off.
     await onboarding.back();
     expect((await onboarding.advance()).step).toBe("availability");
-    onboarding = build({ applyAvailabilityDefault });
-    await onboarding.advance();
+    expect((await build({ applyAvailabilityDefault }).advance()).step).toBe("availability");
     expect(applied).toBe(1);
+
+    // Sign out and set up again: a new setup, so the switches open on again.
+    const signedOut = loadSettings(home);
+    signedOut.relayCredential = "";
+    saveSettings(home, signedOut);
+    expect(onboarding.reset().step).toBe("welcome");
+    await onboarding.advance();
+    await settle();
+    expect(applied).toBe(2);
   });
 
 });
@@ -402,7 +523,7 @@ describe("activation — the path a brand-new user takes", () => {
       { token: SESSION_TOKEN, deviceId: "device-1", hostname: "test-mac" },
     ]);
     expect(loadSettings(home).mcpUrl).toBe(DEVICE_MCP_URL);
-    expect((await onboarding.advance()).step).toBe("data");
+    expect((await onboarding.advance()).step).toBe("plugins");
   });
 
   it("polls without waiting to be told to — a hand-typed message still gets in", async () => {
@@ -776,14 +897,14 @@ describe("signing out", () => {
     expect(JSON.stringify(state)).not.toContain(SESSION_TOKEN);
   });
 
-  it("stays on the data screen if a credential is somehow still there", () => {
+  it("stays on the plugins screen if a credential is somehow still there", () => {
     // reset() re-derives from settings rather than assuming; a reset with a
     // live credential must not throw the user back to activation.
     const onboarding = build();
     const settings = loadSettings(home);
     settings.relayCredential = DEVICE_TOKEN;
     saveSettings(home, settings);
-    expect(onboarding.reset().step).toBe("data");
+    expect(onboarding.reset().step).toBe("plugins");
   });
 });
 
@@ -862,10 +983,10 @@ describe("the activation credential handoff", () => {
     expect(mode).toBe(0o600);
   });
 
-  it("opens on data when this Mac already holds an incomplete credential", async () => {
+  it("opens on plugins when this Mac already holds an incomplete credential", async () => {
     await signIn();
 
-    expect(build().state().step).toBe("data");
+    expect(build().state().step).toBe("plugins");
   });
 });
 
@@ -876,7 +997,7 @@ describe("the activation credential handoff", () => {
  * that had just been left.
  */
 describe("signing out", () => {
-  /** A Mac signed in the ordinary way, sitting on the data screen. */
+  /** A Mac signed in the ordinary way, sitting on the plugins screen. */
   async function signedIn(): Promise<Onboarding> {
     plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
     const onboarding = build();
@@ -884,7 +1005,7 @@ describe("signing out", () => {
     await settle();
     expect(onboarding.state().step).toBe("privacy");
     await onboarding.advance();
-    expect(onboarding.state().step).toBe("data");
+    expect(onboarding.state().step).toBe("plugins");
     // Any activation minted from here on is a fresh code nobody has texted yet.
     plow.redeems = [{ status: "pending" }];
     return onboarding;
@@ -994,8 +1115,8 @@ describe("while startRelay is dialling", () => {
     release();
     await settle();
 
-    expect(advanced.step).toBe("data");
-    expect(onboarding.state().step).toBe("data");
+    expect(advanced.step).toBe("plugins");
+    expect(onboarding.state().step).toBe("plugins");
   });
 
   it("is not overwritten by the post-login state", async () => {
