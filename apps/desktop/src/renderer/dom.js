@@ -53,9 +53,6 @@ const ICONS = {
          ["path", { d: "M6 15H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" }]],
   checkmark: [["path", { d: "M20 6L9 17l-5-5" }]],
   messages: [["path", { d: "M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" }]],
-  hardDrive: [["rect", { x: "3", y: "5", width: "18", height: "14", rx: "2" }],
-              ["path", { d: "M3 13h18" }], ["circle", { cx: "7.5", cy: "16", r: "1" }],
-              ["path", { d: "M11 16h6" }]],
   // The Import sheet's arrow-into-tray.
   intake: [["path", { d: "M12 3v11" }], ["path", { d: "m7.5 10.5 4.5 4.5 4.5-4.5" }],
            ["path", { d: "M4 17v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" }]],
@@ -65,7 +62,7 @@ const ICONS = {
   arrowUp: [["path", { d: "M12 2.5 L20.5 11.5 H15.5 V21 H8.5 V11.5 H3.5 Z" }]],
   // The Capabilities banner's warning triangle.
   warning: [["path", { d: "M12 3.5 L21.5 20 H2.5 Z" }], ["path", { d: "M12 9.5v4.5" }], ["path", { d: "M12 17h.01" }]],
-  // The Capabilities tab's nudge: the same arrow with a wider head and a
+  // The Permissions section's nudge: the same arrow with a wider head and a
   // longer tail of the same width, so it reads at 14px.
   nudgeArrow: [["path", { d: "M12 0.5 L23 12 H15.5 V23.5 H8.5 V12 H1 Z" }]],
   hand: [["path", { d: "M9 12V5a1.4 1.4 0 0 1 2.8 0v5.5" }],
@@ -98,4 +95,15 @@ export function icon(name, opts = {}) {
     svg.appendChild(node);
   }
   return svg;
+}
+
+/** The on/off switch (switch.css) around a checkbox `box`: the input stays
+ *  the control — check it, disable it, listen to it — and the track and knob
+ *  draw its state. `attrs` go on the label (a title, say). */
+export function switchEl(box, attrs) {
+  return el("label", { class: "switch", attrs }, [
+    box,
+    el("span", { class: "track", attrs: { "aria-hidden": "true" } }),
+    el("span", { class: "knob", attrs: { "aria-hidden": "true" } }),
+  ]);
 }

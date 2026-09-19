@@ -527,8 +527,10 @@ function stagedPluginBinary(binary, platform) {
  * staged executable present, with a size, for each arch in `arches` — under
  * the platform's own staged name — and, where a machine checker is handed in,
  * be that arch's machine. A manifest that pins nothing for the platform being
- * packed is refused outright: another OS's payload must never pass as this
- * one's.
+ * packed is skipped, not refused: a macOS-only plugin (wiki) must not block
+ * a Windows or Linux pack. A plugin that DOES pin this platform is refused
+ * if its staged bytes are missing or the wrong arch — another OS's payload
+ * must never pass as this one's.
  */
 function assertBundledPlugins({ resourcesDir, platform, arches, archKind, archOf, wantMachine }) {
   const bundled = path.join(__dirname, "..", "plugins");
@@ -541,10 +543,10 @@ function assertBundledPlugins({ resourcesDir, platform, arches, archKind, archOf
     for (const binary of manifest.runtime.binaries) {
       const pinned = platform === "darwin" || (binary.platforms ?? {})[platform] !== undefined;
       if (!pinned) {
-        throw new Error(
-          `[afterPack] the ${name} plugin pins no ${platform} binary for ${binary.name} — ` +
-            `a ${platform} pack cannot ship it`,
-        );
+        // A macOS-only plugin (wiki today) must not block a Windows or Linux
+        // pack: the top-level url/sha256 are darwin's, and a missing platforms
+        // block means this OS does not ship it. Skip it rather than refuse.
+        continue;
       }
       const file = stagedPluginBinary(binary, platform);
       // Every arch missing at once is one refusal naming the joined list, the

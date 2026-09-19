@@ -2,8 +2,9 @@
  * Stage every bundled plugin (apps/desktop/plugins/<name>) into
  * vendor/plugins/<name>, both arches of THIS host platform, through the SAME
  * staging code the installer uses. Needs `just build` first: it imports
- * device-core's dist. A manifest that pins nothing for this platform is
- * refused by name — a Windows pack must never carry a macOS payload.
+ * device-core's dist. `--all` skips a plugin that pins nothing for this
+ * host (wiki is darwin-only); a named plugin is still refused by name — a
+ * Windows pack must never carry a macOS payload it asked for.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -29,9 +30,17 @@ const names = arg === "--all" ? bundledPlugins : [arg];
 for (const name of names) {
   const src = path.join(bundled, name);
   const dest = path.join(vendor, name);
+  const manifest = parseManifest(fs.readFileSync(path.join(src, "latch-plugin.json"), "utf8"));
+  const host = process.platform;
+  const pinsHost = manifest.runtime.binaries.every(
+    (b) => host === "darwin" || b.platforms[host] !== undefined,
+  );
+  if (!pinsHost && arg === "--all") {
+    console.log(`[plugins] skipping ${name}: no ${host} pin`);
+    continue;
+  }
   fs.rmSync(dest, { recursive: true, force: true });
   fs.cpSync(src, dest, { recursive: true });
-  const manifest = parseManifest(fs.readFileSync(path.join(dest, "latch-plugin.json"), "utf8"));
   console.log(`[plugins] staging ${name} ${manifest.version} for ${process.platform}`);
   for (const arch of ["arm64", "x64"]) {
     await stageBinaries(manifest, dest, arch, downloads, fetchBytes, process.platform);

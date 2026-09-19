@@ -91,7 +91,7 @@ describe("hostInventory", () => {
   });
 
   it("asks about the targets the built-in skills drive", () => {
-    // One table with the Capabilities tab's Automation rows, so what the
+    // One table with the Permissions section's Automation rows, so what the
     // agent is told after a block is what the owner sees.
     expect(AUTOMATION_TARGETS).toEqual(AUTOMATION_APPS.map((a) => a.name));
     expect(AUTOMATION_TARGETS).toContain("Mail");
@@ -191,6 +191,23 @@ describe("hostInventory", () => {
     });
     expect(inv.sandbox).toEqual({ status: "failed", detail: "no sandboxed executor on this host" });
     expect(inv.child_attribution.status).toBe("not_applicable");
+  });
+});
+
+describe("DeviceAgent.hostInventory", () => {
+  // The Plugins tab reads the inventory on every refresh and asks only about
+  // the Automation pairs a staged plugin declares — never the whole sweep,
+  // where one app that does not answer Apple events costs a probe timeout.
+  it.each<[string, readonly string[] | undefined, readonly string[]]>([
+    ["every target by default", undefined, AUTOMATION_TARGETS],
+    ["only the targets asked about", ["Messages"], ["Messages"]],
+    ["none when none are asked about", [], []],
+  ])("reports %s", async (_name, automationTargets, reported) => {
+    const home = tempDir();
+    const probes = scriptedProbes({ automation: { Messages: "granted" } });
+    const device = new DeviceAgent(home, "Test Mac", new HeadlessPolicy({ intent: "allow_once" }), null, home, null, [], null, probes);
+    const inv = await device.hostInventory({ automationTargets });
+    expect(inv.automation.map((a) => a.target)).toEqual(reported);
   });
 });
 

@@ -156,6 +156,11 @@ extraResources:
   # so setupTray can load it at runtime on every platform.
   - from: ../../artwork/domo-desktop-icon.png
     to: tray-icon.png
+  # The window/taskbar icon (appIcon.ts): Windows and Linux draw a window's
+  # taskbar icon from BrowserWindow.icon, so the app ships the artwork beside
+  # the asar for main.ts to point at.
+  - from: ../../artwork/domo-desktop-icon.png
+    to: app-icon.png
   # Settings' last-section fork notice (forkBanner.ts). Bundled, never fetched.
   - from: ../../artwork/banner.png
     to: fork-banner.png
@@ -234,7 +239,7 @@ mac:
   notarize: true
   extendInfo:
     NSAppleEventsUsageDescription: "Plow Latch sends the Messages and automation commands you approve on this Mac."
-    # The consent dialogs the Capabilities tab raises on purpose
+    # The consent dialogs the Permissions section raises on purpose
     # (@domo/native-permissions, in the app's own process) are shown only to
     # a caller whose bundle carries these; without them macOS refuses the
     # request instead of asking. A from-source run gets them from

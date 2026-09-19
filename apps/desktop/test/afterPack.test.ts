@@ -25,7 +25,7 @@ const PAYLOADS = ["camoufox"];
  * hook does: from disk, not a fixture list, so a new plugin's manifest is
  * covered here without a matching edit to this file. */
 const PLUGINS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "plugins");
-const PLUGINS: { name: string; binaries: { name: string }[] }[] = fs
+const PLUGINS: { name: string; binaries: { name: string; platforms?: Record<string, unknown> }[] }[] = fs
   .readdirSync(PLUGINS_DIR)
   .filter((name) => fs.existsSync(path.join(PLUGINS_DIR, name, "latch-plugin.json")))
   .map((name) => ({
@@ -33,6 +33,12 @@ const PLUGINS: { name: string; binaries: { name: string }[] }[] = fs
     binaries: JSON.parse(fs.readFileSync(path.join(PLUGINS_DIR, name, "latch-plugin.json"), "utf8")).runtime
       .binaries,
   }));
+
+const pluginPins = (
+  plugin: (typeof PLUGINS)[number],
+  platform: string,
+): boolean =>
+  plugin.binaries.every((b) => platform === "darwin" || b.platforms?.[platform] !== undefined);
 
 const IDENTITY = "Developer ID Application: Nobody (TEAMID)";
 
@@ -382,7 +388,7 @@ describe("the Windows pack gate", () => {
     fs.writeFileSync(browser, winPeHeader(machine));
     // Plugins as production stages them on Windows: `<binary>.exe` under
     // runtime/<arch>/bin — the name stageBinaries writes there.
-    for (const { name, binaries } of PLUGINS) {
+    for (const { name, binaries } of PLUGINS.filter((p) => pluginPins(p, "win32"))) {
       for (const { name: binary } of binaries) {
         const file = path.join(winResources(), "plugins", name, "runtime", arch, "bin", `${binary}.exe`);
         fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -440,7 +446,7 @@ describe("the Windows pack gate", () => {
     packWinAddons();
     packWinBrowserAndPlugins();
     const arch = process.arch === "arm64" ? "arm64" : "x64";
-    const plugin = PLUGINS[0]!;
+    const plugin = PLUGINS.find((p) => pluginPins(p, "win32"))!;
     const binary = plugin.binaries[0]!.name;
     const file = path.join(winResources(), "plugins", plugin.name, "runtime", arch, "bin", `${binary}.exe`);
     fs.rmSync(file);
@@ -535,7 +541,7 @@ describe("the Linux pack gate", () => {
     const arch = process.arch === "arm64" ? "arm64" : "x64";
     // Plugins as production stages them on Linux: the manifest's declared
     // binary name, extension-free, under runtime/<arch>/bin.
-    for (const { name, binaries } of PLUGINS) {
+    for (const { name, binaries } of PLUGINS.filter((p) => pluginPins(p, "linux"))) {
       for (const { name: binary } of binaries) {
         const file = path.join(linuxResources(), "plugins", name, "runtime", arch, "bin", binary);
         fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -556,7 +562,7 @@ describe("the Linux pack gate", () => {
     packLinuxBrowser();
     packLinuxPlugins();
     const arch = process.arch === "arm64" ? "arm64" : "x64";
-    const plugin = PLUGINS[0]!;
+    const plugin = PLUGINS.find((p) => pluginPins(p, "linux"))!;
     const binary = plugin.binaries[0]!.name;
     const file = path.join(linuxResources(), "plugins", plugin.name, "runtime", arch, "bin", binary);
     fs.rmSync(file);
