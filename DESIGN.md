@@ -393,7 +393,7 @@ touches another application's data.
 
 Full Disk Access and the folder gates have no request API and no query API;
 the first access *is* the request. So the grants are asked for **while the
-owner is at the Mac**. Setup's "Data & permissions" step offers Full Disk
+owner is at the Mac**. Setup's "Grant access" step offers Full Disk
 Access through the drag-to-grant flow; after that the **Permissions section**
 (`apps/desktop/src/capabilitiesModel.ts`) is the one home for every switch:
 Full Disk Access (and, until it is granted AND a sandboxed child inherits
@@ -1059,7 +1059,7 @@ hold while on AC only — the lid still sleeps it). The tray keeps the app
 resident when its window closes.
 
 Setup tells the user this on its own screen, "Keep this Mac reachable",
-between Data and Connect, and turns both on for them at sign-in
+after Grant access, and turns both on for them at sign-in
 (`Onboarding.finishWithSession()` → the injected `applyAvailabilityDefault`),
 which every setup passes exactly once — a re-setup after sign-out included —
 so the screen always opens with both on, and a switch turned off there stays

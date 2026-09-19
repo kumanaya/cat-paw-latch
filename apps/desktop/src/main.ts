@@ -62,8 +62,9 @@ import { AuditIndex, AuditQuery } from "./auditIndex.js";
 import { appBundleName, appBundlePath, decodeTileImage } from "./permissionFlow.js";
 import { FdaGrantFlow, GrantTarget } from "./fdaGrantFlow.js";
 import { AUTOMATION_APPS, automationApp, osascriptRunner, reconcile, requestAutomation } from "./automation.js";
-import { capabilitiesView, CapabilitiesView, isGroup, paneFor, PERMISSION_TITLES } from "./capabilitiesModel.js";
-import { browserPluginRow, pluginRows } from "./pluginsModel.js";
+import { capabilitiesView, CapabilitiesView, FullDiskState, FullDiskWatch, isGroup, paneFor, permissionTitle } from "./capabilitiesModel.js";
+import { browserPluginRow, grantList, pluginRows, type GrantItem, type PluginRow } from "./pluginsModel.js";
+import { actOnRequirement } from "./requirements.js";
 import { enableSafariJavaScript, Runner, safariJavaScriptEnabled } from "./safariJavaScript.js";
 import { launchAtLoginState, LoginItemApi, setLaunchAtLogin } from "./loginItem.js";
 import { KeepAwake } from "./keepAwake.js";
@@ -239,6 +240,10 @@ let connectors: Connectors | null = null;
 /** What `loadPlugins` found at startup — the Plugins tab's inventory, and the
  *  list the owner's off switch selects from. Empty until whenReady. */
 let stagedPlugins: readonly StagedPlugin[] = [];
+/** Full Disk Access over this run (capabilitiesModel.ts): whether a grant a
+ *  child cannot use yet is waiting on a relaunch or broken. Made in
+ *  whenReady; fed by every read that sees it. */
+let fullDisk: FullDiskWatch | null = null;
 let connectClient: ConnectClient | null = null;
 let cloudAgents: CloudAgentState | null = null;
 let onboardingWindow: BrowserWindow | null = null;
@@ -780,19 +785,12 @@ ipcMain.handle("onboarding:open", async () => openOnboardingWindow());
  * `discord` and `website` are Settings' Support section; `account` is the
  * Plow web console, Settings' View Account button. It follows the build's API
  * origin so a `DOMO_API_BASE_URL` run opens the environment it signed into.
- *
- * `fullDiskSettings` is the one non-web entry: System Settings' Full Disk
- * Access pane. macOS has no API an app can call to request that permission —
- * sending the person to the switch IS the whole grant flow (see
- * device-core's hostGate/fullDiskAccess.ts), so the deep link belongs in this table like any other
- * page the app may open.
  */
 const EXTERNAL_URLS: Readonly<Record<string, string>> = Object.freeze({
   account: `${apiBaseUrl}/app/`,
   claude: "https://claude.ai/new?modal=add-custom-connector#settings/customize-connectors",
   discord: "https://watchmepivot.com/discord",
   website: "https://watchmepivot.com/",
-  fullDiskSettings: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
 });
 
 ipcMain.handle("external:open", async (_e, key: string) => {
@@ -1409,6 +1407,13 @@ function automationRows(inventory: HostInventory | null): { app: (typeof AUTOMAT
   return rows;
 }
 
+/** Full Disk Access as this run's one watch reads it: granted to the app, and
+ *  whether a sandboxed child inherits it too. Settings, the Plugins tab and
+ *  the grant panel all derive it this same way. */
+function fullDiskStateOf(inv: HostInventory): FullDiskState | undefined {
+  return fullDisk?.observe(inv.full_disk_access.granted, inv.full_disk_access.granted && inv.child_attribution.status === "ok");
+}
+
 /** The whole tab, fresh: inventory, Automation rows, the audit log's blocks,
  *  and the owner's "not now"s. */
 async function capabilitiesNow(inventory?: HostInventory | null): Promise<CapabilitiesView> {
@@ -1416,6 +1421,7 @@ async function capabilitiesNow(inventory?: HostInventory | null): Promise<Capabi
   const settings = loadSettings(home);
   return capabilitiesView({
     inventory: inv,
+    fullDisk: inv ? fullDiskStateOf(inv) : undefined,
     automation: automationRows(inv),
     // The log as the live index holds it — not read off disk again.
     events: device ? ensureAuditIndex().events() : [],
@@ -1438,10 +1444,18 @@ function grantTargetFor(key: string): GrantTarget | null {
   const pane = paneFor(key);
   if (!pane) return null;
   const app = key.startsWith("automation:") ? automationApp(key.slice("automation:".length)) : null;
-  const label = app ? `Automation for ${app.name}` : (PERMISSION_TITLES[key] ?? key);
+  const label = permissionTitle(key);
   const probes = device?.hostProbes ?? null;
   const probe = async (): Promise<boolean> => {
-    if (key === "full_disk_access") return probeFullDiskAccess();
+    // Done once a child can use it, or once it came back on during this run
+    // (fresh, or a remove-and-re-add), which a relaunch finishes. Held all
+    // run but not inherited, the panel stays up for the row's remove-and-re-add.
+    if (key === "full_disk_access") {
+      const app = await probeFullDiskAccess();
+      const inherited = app && (await device!.hostInventory({ automationTargets: [] })).child_attribution.status === "ok";
+      const state = fullDisk!.observe(app, inherited);
+      return state === "granted" || state === "relaunch";
+    }
     if (!probes) return false;
     if (app) return (await probes.automationStatus(app.bundleId)) === "granted";
     if (key === "accessibility" || key === "contacts" || key === "calendars" || key === "screen_recording") {
@@ -1453,34 +1467,34 @@ function grantTargetFor(key: string): GrantTarget | null {
 }
 
 /**
- * A row's one action. What it is was decided by the model (the button's
- * label said so); this is the doing: the panel flow beside the right pane,
- * macOS's own dialog raised on purpose (a service, or an Automation pair
- * through the gated osascript probe), or a folder touched so macOS asks.
- * Every one of these is behind a click on this Mac — the one condition
- * under which this app raises a consent dialog.
+ * A row's one action, run to the end of its flow. What it is was decided by
+ * the model (the button's label said so); this is the doing: the panel flow
+ * beside the right pane, macOS's own dialog raised on purpose (a service, or
+ * an Automation pair through the gated osascript probe), or a folder touched
+ * so macOS asks. Every one of these is behind a click on this Mac — the one
+ * condition under which this app raises a consent dialog. Whether the switch
+ * is on afterwards is the caller's fresh read.
  */
-ipcMain.handle("capabilities:act", async (_e, rawKey: unknown) => {
-  const key = typeof rawKey === "string" ? rawKey : "";
-  const view = await capabilitiesNow();
+async function actOnPermission(key: string): Promise<void> {
+  const app = key.startsWith("automation:") ? automationApp(key.slice("automation:".length)) : null;
+  const view = await capabilitiesNow(device ? await device.hostInventory({ automationTargets: app ? [app.name] : [] }) : null);
   const row = view.sections.flatMap((s) => s.rows).find((r) => r.key === key);
-  if (!row || !device) return view;
+  if (!row || !device) return;
+  const inPanel = async (): Promise<void> => {
+    const target = grantTargetFor(key);
+    if (target) await fdaGrantFlow.start(target);
+  };
   switch (row.action) {
     case "grant":
     case "open": {
       const pane = paneFor(key);
       // A pane the panel can do nothing beside (Screen Recording, Automation) is just
       // opened; the owner finds the switch themselves.
-      if (pane && pane.panel === false) {
-        await shell.openExternal(pane.url);
-        break;
-      }
-      const target = grantTargetFor(key);
-      if (target) await fdaGrantFlow.start(target);
+      if (pane && pane.panel === false) await shell.openExternal(pane.url);
+      else await inPanel();
       break;
     }
     case "request": {
-      const app = key.startsWith("automation:") ? automationApp(key.slice("automation:".length)) : null;
       if (app) {
         const status = await requestAutomation(app.bundleId, osascriptRunner());
         if (status === "granted" || status === "denied" || status === "not_asked") {
@@ -1491,41 +1505,54 @@ ipcMain.handle("capabilities:act", async (_e, rawKey: unknown) => {
         const status = await device.hostProbes.requestPermission(key as RequestablePermission);
         // Refused before, or no usage string in this build: macOS answered
         // without asking, and only the pane can change that now.
-        if (status === "denied") {
-          const target = grantTargetFor(key);
-          if (target) await fdaGrantFlow.start(target);
-        }
+        if (status === "denied") await inPanel();
       }
       break;
     }
     case "ask": {
       const folder = CONSENT_FOLDERS.find((f) => f.permission === key);
-      if (folder) {
-        const [result] = await requestFolderAccess(os.homedir(), { folders: [folder] });
-        if (result && result.status !== "missing") {
-          const settings = loadSettings(home);
-          saveSettings(home, {
-            ...settings,
-            folderConsent: {
-              ...(settings.folderConsent ?? {}),
-              [key]: result.status === "granted" ? "granted" : result.status === "denied" ? "denied" : "not_asked",
-            },
-            folderConsentAt: { ...(settings.folderConsentAt ?? {}), [key]: new Date().toISOString() },
-          });
-        }
-        // macOS refused without asking — a Don't Allow it remembers — and
-        // only the pane can undo that: float the panel beside it.
-        if (result?.status === "denied") {
-          const target = grantTargetFor(key);
-          if (target) await fdaGrantFlow.start(target);
-        }
+      if (!folder) break;
+      const [result] = await requestFolderAccess(os.homedir(), { folders: [folder] });
+      if (result && result.status !== "missing") {
+        const settings = loadSettings(home);
+        saveSettings(home, {
+          ...settings,
+          folderConsent: {
+            ...(settings.folderConsent ?? {}),
+            [key]: result.status === "granted" ? "granted" : result.status === "denied" ? "denied" : "not_asked",
+          },
+          folderConsentAt: { ...(settings.folderConsentAt ?? {}), [key]: new Date().toISOString() },
+        });
       }
+      // macOS refused without asking — a Don't Allow it remembers — and
+      // only the pane can undo that: float the panel beside it.
+      if (result?.status === "denied") await inPanel();
       break;
     }
-    default:
-      break;
   }
-  return capabilitiesNow();
+}
+
+/**
+ * Bring the window that asked back to the front once its grant lands — the
+ * owner was last in System Settings, a browser or Safari. This app's port of
+ * PermissionFlow's `closePanel(returnToPreviousApp:)`: upstream returns when
+ * its panel closes, this returns only on a grant, so an owner still working
+ * in a bare pane or mid sign-in is not pulled away from it.
+ */
+function returnToCaller(sender: Electron.WebContents): void {
+  const win = BrowserWindow.fromWebContents(sender);
+  if (!win || win.isDestroyed()) return;
+  app.focus({ steal: true });
+  win.show();
+  win.focus();
+}
+
+ipcMain.handle("capabilities:act", async (e, rawKey: unknown) => {
+  const key = typeof rawKey === "string" ? rawKey : "";
+  await actOnPermission(key);
+  const view = await capabilitiesNow();
+  if (view.sections.flatMap((s) => s.rows).find((r) => r.key === key)?.status === "granted") returnToCaller(e.sender);
+  return view;
 });
 // "Not now" on a row: off the badge until a block newer than this lands.
 ipcMain.handle("capabilities:dismiss", async (_e, rawKey: unknown) => {
@@ -1566,9 +1593,23 @@ function connectedAccountIds(): string[] {
   return (connectors?.state().google.accounts.length ?? 0) > 0 ? ["google"] : [];
 }
 
-/** The whole tab, fresh: what is staged, and what each plugin still needs. */
-async function pluginsNow(): Promise<{ rows: ReturnType<typeof pluginRows>; error: string | null }> {
+/** The whole tab, fresh: what is staged, what each plugin still needs, and
+ *  the one ordered list of it setup walks. A permission is met when Settings'
+ *  own Permissions section reads it granted — one answer, so the two tabs
+ *  cannot disagree. The inventory asks only about the Automation pairs a
+ *  staged plugin declares: this runs on every refresh, and the full sweep
+ *  waits out a probe timeout on any app not answering Apple events. */
+async function pluginsNow(): Promise<{ rows: PluginRow[]; grants: GrantItem[] }> {
   const disabled = new Set(loadSettings(home).disabledPlugins ?? []);
+  const automationTargets = stagedPlugins
+    .flatMap((p) => p.manifest.requires.permissions)
+    .filter((key) => key.startsWith("automation:"))
+    .map((key) => automationApp(key.slice("automation:".length))!.name);
+  const inventory = device ? await device.hostInventory({ automationTargets }) : null;
+  const view = await capabilitiesNow(inventory);
+  const granted = view.sections.flatMap((s) => s.rows).filter((r) => r.status === "granted").map((r) => r.key);
+  const fullDiskState = inventory ? fullDiskStateOf(inventory) : undefined;
+  const relaunchPending = fullDiskState === "relaunch" ? ["full_disk_access"] : [];
   const rows = pluginRows({
     plugins: stagedPlugins.map((p) => ({
       manifest: p.manifest,
@@ -1576,50 +1617,62 @@ async function pluginsNow(): Promise<{ rows: ReturnType<typeof pluginRows>; erro
       description: device?.pluginDescription(p.manifest.name) ?? null,
     })),
     connectedAccounts: connectedAccountIds(),
+    grantedPermissions: granted,
+    relaunchPending,
   });
   rows.push(browserPluginRow({
     enabled: !disabled.has(BROWSER_PLUGIN),
     runtimePresent: device !== null && device.browserSessions !== null,
     safariJavaScript: process.platform === "darwin" ? await safariJavaScriptEnabled(unsandboxedRunner) : false,
+    fullDiskAccess: granted.includes("full_disk_access"),
+    relaunchPending,
     description: device?.skills.skill(BROWSING_SKILL.name)?.description ?? BROWSING_SKILL.description,
   }));
-  return { rows, error: null };
+  return { rows, grants: grantList(rows) };
 }
 
 ipcMain.handle("plugins:get", async () => pluginsNow());
 
-/** The owner's off switch: the disabled NAMES persist (a later plugin is on
+/** The owner's off switches: the disabled NAMES persist (a later plugin is on
  *  by default), and the device is told in the same breath, so the skill and
  *  the exec gate follow without a relaunch. */
+async function updateDisabledPlugins(change: (disabled: Set<string>) => void): Promise<void> {
+  const settings = loadSettings(home);
+  const disabled = new Set(settings.disabledPlugins ?? []);
+  change(disabled);
+  saveSettings(home, { ...settings, disabledPlugins: [...disabled] });
+  await device?.setDisabledPlugins([...disabled]);
+}
+
 ipcMain.handle("plugins:setEnabled", async (_e, name: string, on: boolean) => {
   if (stagedPlugins.some((p) => p.manifest.name === name) || name === BROWSER_PLUGIN) {
-    const settings = loadSettings(home);
-    const disabled = new Set(settings.disabledPlugins ?? []);
-    if (on) disabled.delete(name);
-    else disabled.add(name);
-    saveSettings(home, { ...settings, disabledPlugins: [...disabled] });
-    await device?.setDisabledPlugins([...disabled]);
+    await updateDisabledPlugins((disabled) => (on ? disabled.delete(name) : disabled.add(name)));
   }
   return pluginsNow();
 });
 
-/** The Browser row's one action: enable Safari's "Allow JavaScript from
- *  Apple Events". An account row's button keeps the existing
- *  "connectors:connect" flow instead — there is nothing else for this one
- *  to do. */
-ipcMain.handle("plugins:enableSafari", async () => {
-  if (!(await probeFullDiskAccess())) {
-    return {
-      ...(await pluginsNow()),
-      error: "Safari's setting needs this app to have Full Disk Access (Settings › Permissions)",
-    };
-  }
-  try {
-    await enableSafariJavaScript(unsandboxedRunner);
-    return pluginsNow();
-  } catch (error) {
-    return { ...(await pluginsNow()), error: error instanceof Error ? error.message : String(error) };
-  }
+/** A plugin requirement's button, by id: the act runs to its flow's end, a
+ *  requirement the fresh tab reads met — or waiting only on a relaunch —
+ *  brings the owner back here, and the answer is that tab with the act's
+ *  error line. Settings' rows share its permission half through
+ *  capabilities:act. */
+ipcMain.handle("requirements:act", async (e, rawId: unknown) => {
+  const id = typeof rawId === "string" ? rawId : "";
+  const { error } = await actOnRequirement(id, {
+    permission: actOnPermission,
+    connectAccount: async () => (await connectors?.connect())?.message || null,
+    fullDiskAccess: probeFullDiskAccess,
+    enableSafari: () => enableSafariJavaScript(unsandboxedRunner),
+  });
+  const now = await pluginsNow();
+  if (now.rows.some((r) => r.requirements.some((q) => q.id === id && q.status !== "open"))) returnToCaller(e.sender);
+  return { ...now, error };
+});
+// A relaunch-pending requirement's button, and setup's "Relaunch to finish":
+// the same relaunch the simulated updater's install does.
+ipcMain.handle("app:relaunch", () => {
+  app.relaunch();
+  app.quit();
 });
 // The floating panel's poll: has the switch it points at landed?
 ipcMain.handle("grant:state", async () => {
@@ -1819,24 +1872,17 @@ ipcMain.on("fullDisk:panelHold", (_e, on: boolean) => fdaGrantFlow.setHold(on ==
 ipcMain.on("fullDisk:panelHeight", (_e, height: unknown) => {
   if (typeof height === "number" && Number.isFinite(height)) fdaGrantFlow.setHeight(height);
 });
-// The grant flow itself: opens the pane and floats the drag panel next to it,
-// following the System Settings window (fdaGrantFlow.ts owns the lifecycle —
-// this handler only starts it). The helper binary is optional by design: no
-// Swift toolchain at build time just means the panel doesn't follow.
+// The grant flow itself: opens a switch's pane and floats the drag panel next
+// to it, following the System Settings window (fdaGrantFlow.ts owns the
+// lifecycle; grantTargetFor names the switch). The helper binary is optional
+// by design: no Swift toolchain at build time just means the panel doesn't
+// follow.
 const fdaGrantFlow = new FdaGrantFlow({
   rendererDir,
   preloadPath: path.join(dirname, "preload.cjs"),
   helperPath: fdaHelperPath,
-  fullDisk: {
-    key: "full_disk_access",
-    label: "Full Disk Access",
-    pane: EXTERNAL_URLS.fullDiskSettings,
-    acceptsDrop: true,
-    probe: () => probeFullDiskAccess(),
-  },
   openSettings: (pane) => shell.openExternal(pane),
 });
-ipcMain.handle("fullDisk:grantFlow", async () => fdaGrantFlow.start());
 // The panel's own close button (PermissionFlow's xmark) — the panel is
 // non-focusable and cannot close itself.
 ipcMain.on("fullDisk:dismiss", () => fdaGrantFlow.stop());
@@ -2199,6 +2245,8 @@ app.whenReady().then(async () => {
   }
   // What the Plugins tab lists, and what its off switch selects from.
   stagedPlugins = plugins;
+  // Before any window exists to read the Plugins tab.
+  fullDisk = new FullDiskWatch(await probeFullDiskAccess());
   // Packaged: the browser runtime lives in Contents/Resources/browser-runtime
   // (extraResources). In dev the resolver falls back to the repo's vendor/.
   device = new DeviceAgent(
@@ -2340,6 +2388,22 @@ app.whenReady().then(async () => {
     applyAvailabilityDefault: () => {
       keepAwake?.setEnabled(true);
       setLaunchAtLogin(app.isPackaged, loginItems, true);
+    },
+    // The Plugins screen opens with on only what already works: every staged
+    // plugin still needing setup joins the owner's off switches. A re-setup
+    // can get here before main has read the connected accounts, so read them
+    // first — or a connected Google account still turns Gmail off.
+    applyPluginDefault: async () => {
+      await connectors?.refresh();
+      const { rows } = await pluginsNow();
+      const off = rows.filter((r) => r.status === "needs-setup").map((r) => r.name);
+      if (off.length) await updateDisabledPlugins((disabled) => off.forEach((name) => disabled.add(name)));
+    },
+    // A relaunched setup resumes on Plugins before the relay's connector
+    // poll: read the accounts first, or a connected Google needs connecting.
+    accessNeeded: async () => {
+      await connectors?.refresh();
+      return (await pluginsNow()).grants.some((g) => g.status !== "met");
     },
   });
   const cloudApi = new PlowApi(apiBaseUrl, loggingFetch(home));

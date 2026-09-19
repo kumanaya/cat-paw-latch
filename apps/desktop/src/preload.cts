@@ -83,19 +83,26 @@ contextBridge.exposeInMainWorld("domo", {
   // Settings' Permissions section (capabilitiesModel.ts): every switch with
   // its status and what it stopped, and the banner — one whole-state
   // shape per read, like every other pane. `act` does the row's one thing
-  // (the panel flow, a request, a folder touch) and answers with the fresh
-  // state; `dismiss` and `bannerSeen` record the owner's "not now".
+  // (the panel flow, a request, a folder touch), waits for it to end, and
+  // answers with the fresh state; `dismiss` and `bannerSeen` record the
+  // owner's "not now".
   capabilitiesGet: () => ipcRenderer.invoke("capabilities:get"),
   capabilitiesAct: (key: string) => ipcRenderer.invoke("capabilities:act", key),
   capabilitiesDismiss: (key: string) => ipcRenderer.invoke("capabilities:dismiss", key),
   capabilitiesBannerSeen: () => ipcRenderer.invoke("capabilities:bannerSeen"),
-  // The Plugins tab (pluginsModel.ts): one whole-state shape per read;
-  // `setEnabled` is the owner's off switch and answers with the fresh state.
+  // The Plugins tab (pluginsModel.ts): one whole-state shape per read, with
+  // `grants`, the ordered list setup walks; `setEnabled` is the owner's off
+  // switch and answers with the fresh state.
   pluginsGet: () => ipcRenderer.invoke("plugins:get"),
   pluginsSetEnabled: (name: string, on: boolean) => ipcRenderer.invoke("plugins:setEnabled", name, on),
-  // The Browser row's one action: enable Safari's JavaScript setting. Other
-  // rows still use connectorsConnect.
-  pluginsEnableSafari: () => ipcRenderer.invoke("plugins:enableSafari"),
+  // Any requirement's button, by id (requirements.ts): the panel, macOS's
+  // dialog, Google sign-in or Safari's setting, awaited to the flow's end.
+  // Answers with the fresh Plugins state, and `error` when the act could not
+  // be done.
+  requirementsAct: (id: string) => ipcRenderer.invoke("requirements:act", id),
+  // Quit and reopen: what finishes a grant only a fresh process inherits
+  // (a requirement whose status is "relaunch").
+  appRelaunch: () => ipcRenderer.invoke("app:relaunch"),
   // A block by this Mac lands the tray item and the notification on its
   // switch (Settings), or on the Audit tab's Blocked view when it named none.
   onShowCapabilities: (cb: () => void) => ipcRenderer.on("ui:showCapabilities", cb),
@@ -117,11 +124,6 @@ contextBridge.exposeInMainWorld("domo", {
   // The drag session ended (dropped or cancelled): the tile, hidden while its
   // image rode with the cursor, comes back.
   onFullDiskDragEnd: (cb: () => void) => ipcRenderer.on("fullDisk:dragEnd", cb),
-  // Start the Full Disk Access grant flow: main opens the pane and floats the
-  // drag panel next to System Settings (fdaGrantFlow.ts owns the whole
-  // lifecycle). Setup's "Data & permissions" step uses this; the
-  // Permissions section goes through `capabilitiesAct`.
-  fullDiskGrantFlow: () => ipcRenderer.invoke("fullDisk:grantFlow"),
   // The floating panel's close button; main owns the panel's lifecycle.
   fullDiskDismiss: () => ipcRenderer.send("fullDisk:dismiss"),
   // Mid-gesture guard: while the pointer is down on the drag tile, the panel

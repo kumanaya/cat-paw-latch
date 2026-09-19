@@ -2051,6 +2051,8 @@ function permissionsPane() {
   const act = async (key, button) => {
     button.disabled = true;
     const was = button.textContent;
+    // The act waits for its flow to end — the panel, a dialog, the owner in
+    // System Settings — so the button waits with it.
     button.textContent = "Waiting…";
     try {
       draw(await window.domo.capabilitiesAct(key));
@@ -2121,9 +2123,8 @@ function permissionsPane() {
   /* The Google connector in a switch row's clothes, so Connected Accounts
      reads like This Mac: the brand mark where a row keeps its icon, the
      bold name and a line under it, and an external-link button on the
-     right — connecting opens Google's consent page in the browser. The
-     setup wizard keeps its own card (connectorsCard.js); the state and the
-     actions are the same. Connected accounts list under the row. */
+     right — connecting opens Google's consent page in the browser.
+     Connected accounts list under the row. */
   /* Google's four-colour G, as on their own app icon: a white rounded tile
      with the standard sign-in mark. Built with createElementNS like every
      glyph in dom.js — nothing here goes through innerHTML. */
@@ -2305,43 +2306,27 @@ async function renderPlugins() {
   };
   const reload = async () => draw(await window.domo.pluginsGet());
 
-  /** A requirement's button, while it is doing its one thing. */
-  const busy = async (button, label, act) => {
-    button.disabled = true;
-    const was = button.textContent;
-    button.textContent = label;
-    try {
-      await act();
-      await reload();
-    } catch {
-      button.disabled = false;
-      button.textContent = was;
-    }
-  };
-
   // A row with no action (e.g. the Browser row's missing runtime) shows
-  // just the sub text; one with an action gets a button whose click routes
-  // to the Browser row's own flow or the existing account-connect flow.
-  const unmetRow = (u, r) => {
-    const isBrowser = r.kind === "Browser";
+  // just the sub text; one with an action gets a button that runs that
+  // requirement by id, whatever kind it is, and waits for its flow to end.
+  // The answer is the fresh tab, with the act's error line when it has one.
+  // A grant waiting on a relaunch has nothing left to act on: its button
+  // relaunches the app.
+  const unmetRow = (u) => {
     const action = u.action
       ? el("button", { class: "btn attention", text: u.action, attrs: { type: "button" } })
       : null;
-    if (action) {
-      action.addEventListener("click", () =>
-        isBrowser
-          ? busy(action, "Enabling…", async () => {
-              // A failed write's error line is drawn BEFORE throwing —
-              // busy()'s catch only resets this button, which draw() has by
-              // then replaced; success leaves the redraw to busy()'s reload.
-              const v = await window.domo.pluginsEnableSafari();
-              if (v.error) {
-                draw(v);
-                throw new Error(v.error);
-              }
-            })
-          : busy(action, "Connecting…", () => window.domo.connectorsConnect()));
-    }
+    action?.addEventListener("click", async () => {
+      action.disabled = true;
+      if (u.status === "relaunch") return window.domo.appRelaunch();
+      action.textContent = "Waiting…";
+      try {
+        draw(await window.domo.requirementsAct(u.id));
+      } catch {
+        action.disabled = false;
+        action.textContent = u.action;
+      }
+    });
     return el("div", { class: "cap-row plugin-req" }, [
       el("span", { class: "status-dot off" }),
       el("div", {}, [
@@ -2377,9 +2362,13 @@ async function renderPlugins() {
       badge(s.tone, s.word),
       switchEl(box, { title: "Turn this plugin on or off" }),
     ]);
+    // Every requirement, met or not, is on the row now — off hides them all
+    // (the owner's problem again only once they turn the plugin back on);
+    // otherwise only the ones still outstanding show.
+    const unmet = r.status !== "off" ? r.requirements.filter((q) => q.status !== "met") : [];
     return el("div", { class: "cap-group open" }, [
       head,
-      r.unmet.length ? el("div", { class: "cap-group-rows" }, r.unmet.map((u) => unmetRow(u, r))) : null,
+      unmet.length ? el("div", { class: "cap-group-rows" }, unmet.map(unmetRow)) : null,
     ]);
   };
 

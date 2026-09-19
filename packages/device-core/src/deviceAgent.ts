@@ -14,7 +14,6 @@
 import { AlwaysAllowRule, capabilityDisplay, Intent, intentIsExpired, JSONValue, jv, overlapsRoot } from "@domo/protocol";
 import { PROVIDERS, providerFor, providerRefusal, type Provider } from "./providers/registry.js";
 import { pluginFor, type StagedPlugin } from "./plugins/registry.js";
-import { missingPluginAccounts } from "./plugins/manifest.js";
 import { classifyArgv, ruleArgv } from "./plugins/argvRules.js";
 import { resolveEnv } from "./plugins/env.js";
 import { MintError, type MintedAccounts, type Minter } from "./providers/mint.js";
@@ -55,6 +54,7 @@ import {
   hostInventory,
   HostInventory,
   HostProbes,
+  InventoryDeps,
   isHostGate,
   nodeProbes,
   stderrHint,
@@ -553,10 +553,14 @@ export class DeviceAgent {
    * The sandbox rows go through the REAL executor with a throwaway profile:
    * a read-only run, no network, no writes, so it is also reapable — and
    * `/usr/bin/true` exits at once regardless.
+   *
+   * `automationTargets` narrows the Automation sweep for a caller that needs
+   * only some pairs (the Plugins tab); everything else is always probed.
    */
-  async hostInventory(): Promise<HostInventory> {
+  async hostInventory(scope: Pick<InventoryDeps, "automationTargets"> = {}): Promise<HostInventory> {
     const vaultDir = this.vaultDir;
     return hostInventory({
+      ...scope,
       probes: this.hostProbes,
       ownerHome: this.ownerHome,
       runSandboxed:
@@ -887,7 +891,7 @@ export class DeviceAgent {
   private offReason(staged: StagedPlugin): string | null {
     const { name, command, requires } = staged.manifest;
     if (this.disabledPlugins.has(name)) return `${command} is turned off on this Mac`;
-    const [missing] = missingPluginAccounts(requires, this.connectedAccounts);
+    const missing = requires.accounts.find((id) => !this.connectedAccounts.has(id));
     if (missing === undefined) return null;
     return `${command} needs a connected ${missing} account — the owner connects one in Plow Latch's Plugins tab`;
   }
