@@ -39,6 +39,13 @@ window.domo = {
   onboardingNewCode: currentState,
   onboardingSetTelemetry: async (enabled) =>
     publish({ ...current, telemetryEnabled: enabled === true }),
+  gatekeeperPresets: async () => selected.gatekeeper?.presets ?? null,
+  // "pending" holds every row on Checking.
+  gatekeeperPreview: (_preset, index) => {
+    const results = selected.gatekeeper?.results;
+    if (results === "pending" || !results) return new Promise(() => {});
+    return Promise.resolve(results[index]);
+  },
   pluginsGet: plugins,
   pluginsSetEnabled: plugins,
   requirementsAct: async () => ({ ...selected.plugins, error: null }),

@@ -87,6 +87,7 @@ import { loggingFetch } from "./wireLog.js";
 import { WindowGate } from "./windowGate.js";
 import { SimulatedScenario, SimulatedUpdater, UpdateController } from "./updates.js";
 import { adversarialReview } from "./adversarialAgent.js";
+import { gatekeeperPresets, previewRow } from "./gatekeeperPreview.js";
 import {
   ApprovalDecision,
   ApprovalQueue,
@@ -895,12 +896,26 @@ function agentsTabState(): Record<string, unknown> | null {
 // leaves the window rendered but inert. See the note in onboarding.ts.
 ipcMain.handle("onboarding:get", async () => onboarding?.state() ?? null);
 ipcMain.handle("onboarding:begin", async () => onboarding?.begin());
-ipcMain.handle("onboarding:advance", async () => onboarding?.advance());
+ipcMain.handle("onboarding:advance", async (_e, draft: unknown) => onboarding?.advance(draft));
 ipcMain.handle("onboarding:back", async () => onboarding?.back());
 ipcMain.handle("onboarding:setTelemetry", async (_e, on: unknown) =>
   onboarding?.setTelemetryEnabled(on),
 );
 ipcMain.handle("onboarding:newCode", async () => onboarding?.newActivationCode());
+ipcMain.handle("onboarding:gatekeeperPresets", async () => gatekeeperPresets());
+// One live review of one example row against the owner's draft instructions.
+// Not an operation: no audit line, no telemetry, no rule. The credential stays
+// here; the renderer names a preset and a row and gets only the verdict back.
+ipcMain.handle(
+  "onboarding:gatekeeperPreview",
+  async (_e, preset: unknown, index: unknown, draft: unknown) =>
+    previewRow(preset, index, draft, {
+      review: adversarialReview,
+      settings: loadSettings(home),
+      apiBaseUrl,
+      now: new Date(),
+    }),
+);
 /**
  * Open Messages with the activation text drafted.
  *

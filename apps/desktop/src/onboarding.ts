@@ -15,16 +15,18 @@
  */
 import { ActivationChat, PlowApi, PlowApiError } from "./plowApi.js";
 import { chatPeople, chatRowTitle, usableChatDisplayName } from "./chatRows.js";
+import { PRESET_TEXT } from "./gatekeeperPreview.js";
 import { loadSettings, saveSettings, Settings } from "./settings.js";
 
 /**
  * The verification sub-steps retain their existing mechanics. A successful
  * login moves straight to Privacy, which doubles as the confirmation screen
- * before the post-login plugin choice.
+ * before the gatekeeper's instructions and the post-login plugin choice.
  */
 export type OnboardingStep =
   | "welcome"
   | "privacy"
+  | "gatekeeper"
   | "activate"
   | "waiting"
   | "plugins"
@@ -134,6 +136,9 @@ export interface OnboardingState {
   activationStale: boolean;
   /** The plugins screen's pending choice. It is persisted only on Continue. */
   telemetryEnabled: boolean;
+  /** The gatekeeper's instructions the step opens on. The owner's draft is
+   * saved (trimmed) only on Continue from that step. */
+  purpose: string;
 }
 
 export interface OnboardingDeps {
@@ -184,11 +189,18 @@ export class Onboarding {
   private pendingMintId = 0;
   private mints = 0;
   private telemetryEnabled: boolean;
+  private purpose: string;
 
   constructor(private readonly deps: OnboardingDeps) {
     const settings = this.settings();
     this.telemetryEnabled = settings.telemetryEnabled;
+    this.purpose = this.storedPurpose(settings);
     this.step = this.initialStep(settings);
+  }
+
+  /** A first setup starts from the Home instructions; a re-setup from what is stored. */
+  private storedPurpose(settings: Settings): string {
+    return settings.agentPurpose.trim() || PRESET_TEXT.home;
   }
 
   state(): OnboardingState {
@@ -200,11 +212,14 @@ export class Onboarding {
       activation: this.activation,
       activationStale: this.activationStale,
       telemetryEnabled: this.telemetryEnabled,
+      purpose: this.purpose,
     };
   }
 
-  /** Advance the presentational steps and commit the plugins-screen choice. */
-  async advance(): Promise<OnboardingState> {
+  /** Advance the presentational steps, commit the plugins-screen choice, and
+   * save the gatekeeper's `draft` on the way out of that step — the only step
+   * that reads it. It comes from the renderer, so it is checked here. */
+  async advance(draft?: unknown): Promise<OnboardingState> {
     if (this.busy) return this.state();
     if (this.step === "welcome") {
       // Returning from verification keeps the live activation and its watcher.
@@ -222,8 +237,16 @@ export class Onboarding {
         await this.deps.applyPluginDefault();
         // A reset() (sign-out) can land during this await; don't overwrite it.
         if (this.step !== "privacy") return;
-        this.step = "plugins";
+        this.step = "gatekeeper";
       });
+    }
+    if (this.step === "gatekeeper") {
+      const settings = this.settings();
+      settings.agentPurpose = (typeof draft === "string" ? draft : this.purpose).trim();
+      this.save(settings);
+      this.purpose = settings.agentPurpose;
+      this.step = "plugins";
+      return this.publish();
     }
     if (this.step === "plugins") {
       return this.run(async () => {
@@ -259,6 +282,7 @@ export class Onboarding {
     if (this.busy) return this.state();
     if (this.step === "activate" || this.step === "waiting") this.step = "welcome";
     else if (this.step === "access" || this.step === "availability") this.step = "plugins";
+    else if (this.step === "plugins") this.step = "gatekeeper";
     else return this.state();
     return this.publish();
   }
@@ -544,6 +568,7 @@ export class Onboarding {
     this.busy = false;
     const settings = this.settings();
     this.telemetryEnabled = settings.telemetryEnabled;
+    this.purpose = this.storedPurpose(settings);
     this.step = this.initialStep(settings);
     return this.publish();
   }

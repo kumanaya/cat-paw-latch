@@ -146,7 +146,12 @@ from, the audit log stores, and the adversarial reviewer evaluates.
   capability bounds, and the owner's own `agentPurpose` text, which rides in
   the system message. Nothing else does — no goal text, and no audit history:
   `reviewPolicy.ts` passes `history: []` deliberately, and `buildPrompt`
-  explains why. WHETHER it runs is decided in precedence order by
+  explains why. Setup's Gatekeeper step posts the same shape for five fixed
+  example requests with the owner's DRAFT instructions as the purpose, to
+  preview verdicts; their example paths use a fixed placeholder home, so no
+  local account name leaves the Mac. A preview is not an operation and records
+  nothing — no audit line, no telemetry, no rule.
+  WHETHER the reviewer runs is decided in precedence order by
   `packages/device-core/src/policyEngine.ts`: a stored always-allow rule
   short-circuits Ask and Approve, while global AI Reviewer and Deny modes decide
   every request. What *is*
