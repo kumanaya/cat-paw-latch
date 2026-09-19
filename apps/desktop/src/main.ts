@@ -91,6 +91,7 @@ import { Connectors } from "./connectors.js";
 import { ConnectClient } from "./connectClient.js";
 import { CloudAgentsClient } from "./cloudAgents.js";
 import { CloudAgentState, CloudChatsClient, CloudLinesClient, tabShowsCloudAgents } from "./cloudAgentState.js";
+import { fetchAgentIndex } from "./agentIndex.js";
 import { cloudAgentsIpcResult } from "./cloudAgentsIpc.js";
 import { loggingFetch } from "./wireLog.js";
 import { WindowGate } from "./windowGate.js";
@@ -911,6 +912,10 @@ ipcMain.handle("cloud:remove", async (_e, agentId: string) => {
 ipcMain.handle("cloud:newAgentMessages", async (_e, providerId: unknown) => {
   return openSmsUrl(typeof providerId === "string" ? cloudAgents?.newAgentSmsUrl(providerId) : null);
 });
+// The deploy modal's wait: the id of the agent the owner's setup text created,
+// or null if none appeared in time. Resolves on its own — the renderer asks once.
+ipcMain.handle("cloud:awaitNewAgent", async (_e, providerId: unknown) =>
+  typeof providerId === "string" ? (await cloudAgents?.awaitNewAgent(providerId)) ?? null : null);
 ipcMain.handle("cloud:changeLine", async (_e, input: unknown) => {
   const raw = input && typeof input === "object" ? input as Record<string, unknown> : {};
   await cloudAgents?.changeLine({
@@ -1452,28 +1457,27 @@ async function capabilityIcons(view: CapabilitiesView): Promise<Record<string, s
 }
 
 /**
- * Automation consent for every app the tab offers, read passively through
- * the helper and reconciled with the memo: a conclusive answer is written
- * back, so a pair the owner turned off in System Settings shows denied and
- * STAYS denied after the target app quits (macOS declines to say for a quit
- * app). Adopted from the apple-events branch.
+ * Automation consent for every app the tab offers, taken from the inventory's
+ * own sweep (never probed a second time — on a target that does not answer
+ * Apple events each sweep costs the probe timeout) and reconciled with the
+ * memo: a conclusive answer is written back, so a pair the owner turned off in
+ * System Settings shows denied and STAYS denied after the target app quits
+ * (macOS declines to say for a quit app). Adopted from the apple-events branch.
  */
-async function automationRows(): Promise<{ app: (typeof AUTOMATION_APPS)[number]; status: AutomationStatus }[]> {
+function automationRows(inventory: HostInventory | null): { app: (typeof AUTOMATION_APPS)[number]; status: AutomationStatus }[] {
   const settings = loadSettings(home);
   const memo = { ...(settings.automation ?? {}) };
   let changed = false;
-  const rows = await Promise.all(
-    AUTOMATION_APPS.map(async (app) => {
-      const live = device ? await device.hostProbes.automationStatus(app.bundleId) : ("unknown" as const);
-      const r = reconcile(live, memo[app.bundleId]);
-      if (r.changed) {
-        changed = true;
-        if (r.memo === undefined) delete memo[app.bundleId];
-        else memo[app.bundleId] = r.memo as "granted" | "denied" | "not_asked";
-      }
-      return { app, status: r.status };
-    }),
-  );
+  const rows = AUTOMATION_APPS.map((app) => {
+    const live = inventory?.automation.find((a) => a.target === app.name)?.status ?? ("unknown" as const);
+    const r = reconcile(live, memo[app.bundleId]);
+    if (r.changed) {
+      changed = true;
+      if (r.memo === undefined) delete memo[app.bundleId];
+      else memo[app.bundleId] = r.memo as "granted" | "denied" | "not_asked";
+    }
+    return { app, status: r.status };
+  });
   if (changed) saveSettings(home, { ...loadSettings(home), automation: memo });
   return rows;
 }
@@ -1485,7 +1489,7 @@ async function capabilitiesNow(inventory?: HostInventory | null): Promise<Capabi
   const settings = loadSettings(home);
   return capabilitiesView({
     inventory: inv,
-    automation: await automationRows(),
+    automation: automationRows(inv),
     // The log as the live index holds it — not read off disk again.
     events: device ? ensureAuditIndex().events() : [],
     dismissals: settings.capabilityDismissals ?? {},
@@ -1637,6 +1641,13 @@ const unsandboxedRunner: Runner = async (argv) => {
   }
 };
 
+/** Connector ids with an account connected — what a manifest's
+ *  `requires.accounts` names. One connector today, and it is connected exactly
+ *  when an account is. */
+function connectedAccountIds(): string[] {
+  return (connectors?.state().google.accounts.length ?? 0) > 0 ? ["google"] : [];
+}
+
 /** The whole tab, fresh: what is staged, and what each plugin still needs. */
 async function pluginsNow(): Promise<{ rows: ReturnType<typeof pluginRows>; error: string | null }> {
   const disabled = new Set(loadSettings(home).disabledPlugins ?? []);
@@ -1646,8 +1657,7 @@ async function pluginsNow(): Promise<{ rows: ReturnType<typeof pluginRows>; erro
       enabled: !disabled.has(p.manifest.name),
       description: device?.pluginDescription(p.manifest.name) ?? null,
     })),
-    // One connector today, and it is connected exactly when an account is.
-    connectedAccounts: (connectors?.state().google.accounts.length ?? 0) > 0 ? ["google"] : [],
+    connectedAccounts: connectedAccountIds(),
   });
   rows.push(browserPluginRow({
     enabled: !disabled.has(BROWSER_PLUGIN),
@@ -2120,6 +2130,9 @@ async function startRelay(): Promise<void> {
       // Transitions only — the client can restate an unchanged status.
       if (isConnected !== connected) {
         telemetry?.track(isConnected ? "relay_connected" : "relay_disconnected");
+        // Main holds no accounts until it asks Plow, and the device gates
+        // plugins on them — so every (re)connect asks, window open or not.
+        if (isConnected) void connectors?.poll();
       }
       connected = isConnected;
       notifyRenderer("status:changed");
@@ -2441,6 +2454,27 @@ app.whenReady().then(async () => {
     version: app.getVersion(),
     deferredStateDir: path.join(device.home, "device", "deferred"),
   });
+  // Before the relay starts: its first connect refreshes these, and a plugin
+  // that needs an account is off on the device until one is known.
+  connectors = new Connectors({
+    api: new PlowApi(apiBaseUrl),
+    credential: () => loadSettings(home).relayCredential,
+    openExternal: (url) => shell.openExternal(url),
+    recordAudit: (event, fields) => device?.audit.record(event, fields),
+    onChange: () => {
+      const state = connectors?.state();
+      device?.setConnectedAccounts(connectedAccountIds());
+      onboardingWindow?.webContents.send("connectors:changed", state);
+      mainWindow?.webContents.send("connectors:changed", state);
+    },
+  });
+  // Keep asking while connected: an account connected or disconnected outside
+  // this app (Plow hands agents a connect link), or a refresh that failed, must
+  // not leave a plugin that needs one in the wrong state until the next
+  // reconnect. The poll is quiet and publishes only a changed list.
+  setInterval(() => {
+    if (connected) void connectors?.poll();
+  }, 60_000);
   await startRelay();
 
   onboarding = new Onboarding({
@@ -2454,17 +2488,6 @@ app.whenReady().then(async () => {
     applyAvailabilityDefault: () => {
       keepAwake?.setEnabled(true);
       setLaunchAtLogin(app.isPackaged, loginItems, true);
-    },
-  });
-  connectors = new Connectors({
-    api: new PlowApi(apiBaseUrl),
-    credential: () => loadSettings(home).relayCredential,
-    openExternal: (url) => shell.openExternal(url),
-    recordAudit: (event, fields) => device?.audit.record(event, fields),
-    onChange: () => {
-      const state = connectors?.state();
-      onboardingWindow?.webContents.send("connectors:changed", state);
-      mainWindow?.webContents.send("connectors:changed", state);
     },
   });
   const cloudApi = new PlowApi(apiBaseUrl, loggingFetch(home));
@@ -2491,6 +2514,7 @@ app.whenReady().then(async () => {
     chats: new CloudChatsClient(cloudApi),
     providers: cloudApi,
     lines: new CloudLinesClient(cloudApi),
+    agentIndex: () => fetchAgentIndex(),
     home,
     onChange: () => notifyRenderer("connect:changed"),
   });
