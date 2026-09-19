@@ -1101,7 +1101,7 @@ function syncStaticModal(s, redraw) {
         el("div", { class: "field" }, [el("label", { text: "Name this connection" }), staticModal.nameInput]),
         el("p", {
           class: "faint conn-note",
-          text: "The token is shown once. Revoke it from MCP clients on this pane.",
+          text: "The token is shown once. Revoke it from Other Agents and Clients on this pane.",
         }),
         note,
         el("div", { class: "row conn-actions" }, [cancel, el("div", { class: "spacer" }), createBtn]),
@@ -1424,8 +1424,8 @@ function cloudChatsErrorBanner(message, needsReactivation) {
   ]);
 }
 
-function rosterName(row, fallback) {
-  return row?.name?.trim() || fallback;
+function rosterName(row) {
+  return row?.name?.trim() || "Unnamed MCP client";
 }
 
 function rosterDate(value) {
@@ -1460,20 +1460,12 @@ function rosterChatGrant(chatUids, chatAccess) {
 }
 
 function rosterPermissionCopy(row) {
-  const permissions = [];
-  if (row?.permissions?.canReadAndReply === true) {
-    permissions.push(
-      `Reads and replies in ${rosterChatGrant(row.chatUids, row.chatAccess)}`,
-    );
-  }
-  if (row?.permissions?.canReachMac === true) {
-    permissions.push("Can reach this Desktop");
-  }
-  if (row?.permissions?.canSpendInference === true) permissions.push("Can spend inference");
-  if (!permissions.length) {
-    permissions.push(row ? "No agent permissions granted." : "No granted permissions known.");
-  }
-  return permissions;
+  return [
+    row.permissions.canReadAndReply
+      ? `Reads and replies in ${rosterChatGrant(row.chatUids, row.chatAccess)}`
+      : null,
+    row.permissions.canSpendInference ? "Can spend inference" : null,
+  ].filter(Boolean);
 }
 
 function entityMark(name, client = false) {
@@ -1484,12 +1476,9 @@ function entityMark(name, client = false) {
   return el("span", { class: `entity-mark${client ? " client" : ""}`, text });
 }
 
-function rosterBadge(row) {
-  if (row.isThisMac) return badge("blue", "This Desktop");
-  if (row.kind === "Plow web login") return badge("zinc", "Web login");
-  if (row.kind === "Admin — full access") return badge("amber", "Admin *:*");
-  if (row.kind === "Session") return badge("zinc", "Session");
-  return null;
+/** An agent's Agent Index logo — a PNG data URL main checked — or null to draw its initial. */
+function logoMark(logo) {
+  return logo ? el("span", { class: "entity-mark logo" }, [el("img", { attrs: { src: logo, alt: "" } })]) : null;
 }
 
 function closeRosterConfirm(shell) {
@@ -1497,18 +1486,8 @@ function closeRosterConfirm(shell) {
 }
 
 function openRosterConfirm(row, trigger, redraw) {
-  const name = rosterName(row, "Unnamed session");
-  const destructive = "Revoke";
-  let title = `Revoke ${name}?`;
-  let copy = "Any client or session using this credential will stop working.";
-  if (row.isThisMac) {
-    title = "Sign this Desktop out?";
-    copy = "Revoking this credential immediately signs this Desktop out and stops agents from reaching it.";
-  } else if (row.kind === "Plow web login") {
-    copy = "Revoking this session signs you out of the Plow website.";
-  }
   const cancel = el("button", { class: "btn", text: "Cancel" });
-  const confirm = el("button", { class: "btn danger", text: destructive });
+  const confirm = el("button", { class: "btn danger", text: "Revoke" });
   const note = el("p", { class: "faint modal-note", text: "" });
   let shell = null;
   const dismiss = () => closeRosterConfirm(shell);
@@ -1525,22 +1504,20 @@ function openRosterConfirm(row, trigger, redraw) {
     }
   });
   shell = openModal(trigger, {
-    className: row.isThisMac ? "roster-confirm roster-confirm-loud" : "roster-confirm",
+    className: "roster-confirm",
     focus: cancel,
     onDismiss: dismiss,
     children: [
-      el("div", { class: "group-title", text: title }),
-      el("p", { class: row.isThisMac ? "warn conn-note" : "conn-note", text: copy }),
+      el("div", { class: "group-title", text: `Revoke ${rosterName(row)}?` }),
+      el("p", { class: "conn-note", text: "Any client using this credential will stop working." }),
       note,
       el("div", { class: "row conn-actions" }, [cancel, el("div", { class: "spacer" }), confirm]),
     ],
   });
 }
 
-function rosterActions(row, section, redraw) {
-  const fallback =
-    section === "mcp" ? "Unnamed MCP client" : "Unnamed session";
-  const name = rosterName(row, fallback);
+function rosterActions(row, redraw) {
+  const name = rosterName(row);
   const more = el("button", {
     class: "btn more",
     text: "⋯",
@@ -1618,7 +1595,7 @@ function cloudEntityRow(agent, state, redraw) {
   message?.addEventListener("click", () => window.domo.cloudOpenMessages(agent.agentId));
   const actions = [message].filter(Boolean);
   const row = el("div", { class: "entity-row cloud-agent-row", attrs: { "data-cloud-agent-id": agent.agentId } }, [
-    entityMark(name),
+    logoMark(state.cloudAgentIndex?.[agent.provider]?.logo) ?? entityMark(name),
     main,
     actions.length ? el("div", { class: "entity-actions" }, actions) : null,
   ]);
@@ -1631,37 +1608,29 @@ function cloudEntityRow(agent, state, redraw) {
   return row;
 }
 
-function sessionEntityRow(row, section, redraw) {
-  const fallback = section === "mcp" ? "Unnamed MCP client" : "Unnamed session";
-  const name = rosterName(row, fallback);
+function clientEntityRow(row, redraw) {
+  const name = rosterName(row);
   const context = [
-    section === "mcp" ? "MCP client" : row.kind,
-    // Which Mac this credential works from, when it is bound to one. The main
-    // process hands down a label and never the device uid, and it goes in as
-    // text — a device name is a string somebody else chose.
-    row.deviceLabel ? `Bound to ${row.deviceLabel}` : null,
+    "MCP client",
+    // Which Mac this credential works from. The main process hands down a
+    // label and never the device uid, and it goes in as text — a device name
+    // is a string somebody else chose.
+    row.deviceLabel ? `Bound to ${row.deviceLabel}` : "Works from any Mac",
     row.createdAt ? `Created ${rosterDate(row.createdAt) ?? "date unknown"}` : "Created date unknown",
     row.lastSeenAt ? `Last used ${rosterAgo(row.lastSeenAt) ?? "date unknown"}` : "Never used",
   ].filter(Boolean).join(" · ");
-  const permissions = rosterPermissionCopy(row);
-  if (row.kind === "Plow web login") permissions.push("Revoking signs you out of the Plow website");
-  if (row.isThisMac) permissions.push("Revoking signs this Desktop out");
   return el("div", { class: "entity-row" }, [
     entityMark(name, true),
     el("div", { class: "entity-main" }, [
       el("div", { class: "entity-top" }, [
         el("span", { class: "entity-name", text: name }),
-        rosterBadge(row),
       ]),
       el("div", { class: "entity-context", text: context }),
-      el("div", { class: "entity-perms" }, permissions.map((text) =>
-        el("span", {
-          class: text.startsWith("Revoking") ? "signout-warning" : "",
-          text,
-        }),
+      el("div", { class: "entity-perms" }, rosterPermissionCopy(row).map((text) =>
+        el("span", { text }),
       )),
     ]),
-    el("div", { class: "entity-actions" }, rosterActions(row, section, redraw)),
+    el("div", { class: "entity-actions" }, rosterActions(row, redraw)),
   ]);
 }
 
@@ -1689,7 +1658,7 @@ function openDeployModal(trigger, s, redraw) {
   const grid = el("div", { class: "deploy-grid" }, cards.map((card) => {
     const button = el("button", { class: "deploy-card", attrs: { type: "button", "aria-pressed": "false" } }, [
       el("span", { class: "deploy-card-top" }, [
-        el("span", { class: "entity-mark", text: card.initial }),
+        logoMark(card.logo) ?? el("span", { class: "entity-mark", text: card.initial }),
         el("span", { class: "deploy-card-name", text: card.name }),
       ]),
       card.blurb ? el("span", { class: "deploy-card-blurb", text: card.blurb }) : null,
@@ -1803,7 +1772,7 @@ function cloudSection(s, redraw) {
   if (refreshError) notices.push(refreshError);
   if (s.cloudActionError) notices.push(cloudErrorBanner(s.cloudActionError, "That change did not finish"));
   return el("section", { class: "list-section" }, [
-    sectionHeader("Agents", rows.length, "agent", add),
+    sectionHeader("Plow Agents", rows.length, "agent", add),
     ...(providerView.mode === "blocked" ? [cloudErrorBanner(providerView.message, providerView.heading)] : []),
     ...notices,
     el("div", { class: "entity-list compact-list" }, rows.length
@@ -1812,35 +1781,22 @@ function cloudSection(s, redraw) {
   ]);
 }
 
-function sessionSection(title, rows, section, s, redraw) {
-  const action = section === "mcp"
-    ? (() => {
-        const add = el("button", { class: "btn small", text: "Connect MCP client" });
-        add.addEventListener("click", () => openMcpModal(add, s, redraw));
-        return add;
-      })()
-    : null;
-  const unit = section === "mcp" ? "client" : "active session";
-  const children = rows.map((row) => sessionEntityRow(row, section, redraw));
-  if (section === "other" && s.roster.revokedHidden > 0) {
-    const count = s.roster.revokedHidden;
-    children.push(el("div", {
-      class: "revoked-summary",
-      text: `${count} revoked session${count === 1 ? "" : "s"} hidden`,
-    }));
-  }
+function clientSection(s, redraw) {
+  const add = el("button", { class: "btn small", text: "Connect MCP client" });
+  add.addEventListener("click", () => openMcpModal(add, s, redraw));
+  const rows = s.roster.map((row) => clientEntityRow(row, redraw));
   return el("section", { class: "list-section" }, [
-    sectionHeader(title, rows.length, unit, action),
-    el("div", { class: "entity-list compact-list" }, children.length
-      ? children
-      : [el("div", { class: "empty entity-empty", text: `No ${title.toLowerCase()}.` })]),
+    sectionHeader("Other Agents and Clients", rows.length, "client", add),
+    el("div", { class: "entity-list compact-list" }, rows.length
+      ? rows
+      : [el("div", { class: "empty entity-empty", text: "No other agents or clients." })]),
   ]);
 }
 
 function rosterNotice(s) {
   if (!s.rosterError && !s.actionError) return null;
   return el("div", { class: "roster-notices" }, [
-    s.rosterError ? cloudErrorBanner(s.rosterError, "Sessions could not be refreshed") : null,
+    s.rosterError ? cloudErrorBanner(s.rosterError, "Clients could not be refreshed") : null,
     s.actionError ? cloudErrorBanner(s.actionError, "Plow could not confirm that change") : null,
   ]);
 }
@@ -1857,8 +1813,7 @@ async function renderAgents() {
     panel.replaceChildren(...[
       rosterNotice(s),
       cloudSection(s, refreshConnect),
-      sessionSection("MCP clients", s.roster?.mcp ?? [], "mcp", s, refreshConnect),
-      sessionSection("Other sessions", s.roster?.other ?? [], "other", s, refreshConnect),
+      clientSection(s, refreshConnect),
     ].filter(Boolean));
     syncCloudModal(s, refreshConnect);
     syncMcpModal(s, refreshConnect);
@@ -2103,7 +2058,9 @@ function permissionsPane() {
   const act = async (key, button) => {
     button.disabled = true;
     const was = button.textContent;
-    button.textContent = "Asking the system…";
+    // The act waits for its flow to end — the panel, a dialog, the owner in
+    // System Settings — so the button waits with it.
+    button.textContent = "Waiting…";
     try {
       draw(await window.domo.capabilitiesAct(key));
     } catch {
@@ -2173,9 +2130,8 @@ function permissionsPane() {
   /* The Google connector in a switch row's clothes, so Connected Accounts
      reads like This Mac: the brand mark where a row keeps its icon, the
      bold name and a line under it, and an external-link button on the
-     right — connecting opens Google's consent page in the browser. The
-     setup wizard keeps its own card (connectorsCard.js); the state and the
-     actions are the same. Connected accounts list under the row. */
+     right — connecting opens Google's consent page in the browser.
+     Connected accounts list under the row. */
   /* Google's four-colour G, as on their own app icon: a white rounded tile
      with the standard sign-in mark. Built with createElementNS like every
      glyph in dom.js — nothing here goes through innerHTML. */
@@ -2357,43 +2313,27 @@ async function renderPlugins() {
   };
   const reload = async () => draw(await window.domo.pluginsGet());
 
-  /** A requirement's button, while it is doing its one thing. */
-  const busy = async (button, label, act) => {
-    button.disabled = true;
-    const was = button.textContent;
-    button.textContent = label;
-    try {
-      await act();
-      await reload();
-    } catch {
-      button.disabled = false;
-      button.textContent = was;
-    }
-  };
-
   // A row with no action (e.g. the Browser row's missing runtime) shows
-  // just the sub text; one with an action gets a button whose click routes
-  // to the Browser row's own flow or the existing account-connect flow.
-  const unmetRow = (u, r) => {
-    const isBrowser = r.kind === "Browser";
+  // just the sub text; one with an action gets a button that runs that
+  // requirement by id, whatever kind it is, and waits for its flow to end.
+  // The answer is the fresh tab, with the act's error line when it has one.
+  // A grant waiting on a relaunch has nothing left to act on: its button
+  // relaunches the app.
+  const unmetRow = (u) => {
     const action = u.action
       ? el("button", { class: "btn attention", text: u.action, attrs: { type: "button" } })
       : null;
-    if (action) {
-      action.addEventListener("click", () =>
-        isBrowser
-          ? busy(action, "Enabling…", async () => {
-              // A failed write's error line is drawn BEFORE throwing —
-              // busy()'s catch only resets this button, which draw() has by
-              // then replaced; success leaves the redraw to busy()'s reload.
-              const v = await window.domo.pluginsEnableSafari();
-              if (v.error) {
-                draw(v);
-                throw new Error(v.error);
-              }
-            })
-          : busy(action, "Connecting…", () => window.domo.connectorsConnect()));
-    }
+    action?.addEventListener("click", async () => {
+      action.disabled = true;
+      if (u.status === "relaunch") return window.domo.appRelaunch();
+      action.textContent = "Waiting…";
+      try {
+        draw(await window.domo.requirementsAct(u.id));
+      } catch {
+        action.disabled = false;
+        action.textContent = u.action;
+      }
+    });
     return el("div", { class: "cap-row plugin-req" }, [
       el("span", { class: "status-dot off" }),
       el("div", {}, [
@@ -2429,9 +2369,13 @@ async function renderPlugins() {
       badge(s.tone, s.word),
       switchEl(box, { title: "Turn this plugin on or off" }),
     ]);
+    // Every requirement, met or not, is on the row now — off hides them all
+    // (the owner's problem again only once they turn the plugin back on);
+    // otherwise only the ones still outstanding show.
+    const unmet = r.status !== "off" ? r.requirements.filter((q) => q.status !== "met") : [];
     return el("div", { class: "cap-group open" }, [
       head,
-      r.unmet.length ? el("div", { class: "cap-group-rows" }, r.unmet.map((u) => unmetRow(u, r))) : null,
+      unmet.length ? el("div", { class: "cap-group-rows" }, unmet.map(unmetRow)) : null,
     ]);
   };
 

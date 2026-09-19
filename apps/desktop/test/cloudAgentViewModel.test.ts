@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { cloudProviderPickerViewModel, deployCards } from "../src/cloudAgentViewModel.js";
+import type { AgentIndexEntry } from "../src/agentIndex.js";
+import { cloudProviderPickerViewModel, DEPLOY_CARD_LIMIT, deployCards } from "../src/cloudAgentViewModel.js";
 
 describe("cloudProviderPickerViewModel", () => {
   it.each([
@@ -51,15 +52,21 @@ describe("cloudProviderPickerViewModel", () => {
 
 describe("deployCards", () => {
   const provider = (id: string, name: string) => ({ id, name, phrase: `Start ${name}` });
-  const entry = (users: number, extra: Partial<{ blurb: string | null; builder: string | null; successRate: number | null }> = {}) =>
-    ({ blurb: "Does a thing.", builder: "Sam", successRate: 88, users, ...extra });
+  const entry = (users: number, extra: Partial<Omit<AgentIndexEntry, "users">> = {}) =>
+    ({ blurb: "Does a thing.", builder: "Sam", successRate: 88, logo: null, verified: true, rank: 0, users, ...extra });
 
-  it("orders by people, then name, with undescribed agents last", () => {
-    const cards = deployCards(
-      [provider("hermes", "Hermes"), provider("b", "Bravo"), provider("a", "Alpha"), provider("life", "Life")],
-      { life: entry(16), a: entry(2), b: entry(2) },
-    );
-    expect(cards.map((card) => card.name)).toEqual(["Life", "Alpha", "Bravo", "Hermes"]);
+  it(`shows the Index's top ${DEPLOY_CARD_LIMIT} verified agents in its own rank, not by people`, () => {
+    const ranked = ["G", "A", "F", "B", "E", "C", "D"]; // the Index's order
+    const index = Object.fromEntries(ranked.map((name, rank) => [name, entry(rank, { rank })]));
+    index.X = entry(99, { verified: false, rank: -1 });
+    const cards = deployCards([..."ABCDEFGX", "hermes"].map((name) => provider(name, name)), index);
+    expect(cards.map((card) => card.name)).toEqual(ranked.slice(0, DEPLOY_CARD_LIMIT));
+  });
+
+  // The Index is down or not read yet: a deploy never waits on it.
+  it("lists every provider by name when none is verified in the Index", () => {
+    const cards = deployCards([provider("b", "Bravo"), provider("a", "Alpha"), provider("x", "X")], { x: entry(9, { verified: false }) });
+    expect(cards.map((card) => card.name)).toEqual(["Alpha", "Bravo", "X"]);
   });
 
   it.each([
@@ -75,7 +82,7 @@ describe("deployCards", () => {
 
   it("gives an undescribed agent its name only", () => {
     expect(deployCards([provider("hermes", " hermes")], {})).toEqual([
-      { id: "hermes", name: " hermes", initial: "H", blurb: null, byline: "No description yet" },
+      { id: "hermes", name: " hermes", initial: "H", logo: null, blurb: null, byline: "No description yet" },
     ]);
   });
 

@@ -56,6 +56,7 @@ import {
   hostInventory,
   HostInventory,
   HostProbes,
+  InventoryDeps,
   isHostGate,
   nodeProbes,
   sandboxKindFor,
@@ -574,8 +575,11 @@ export class DeviceAgent {
    * The sandbox rows go through the REAL executor with a throwaway profile:
    * a read-only run, no network, no writes, so it is also reapable — and
    * `/usr/bin/true` exits at once regardless.
+   *
+   * `automationTargets` narrows the Automation sweep for a caller that needs
+   * only some pairs (the Plugins tab); everything else is always probed.
    */
-  async hostInventory(): Promise<HostInventory> {
+  async hostInventory(scope: Pick<InventoryDeps, "automationTargets"> = {}): Promise<HostInventory> {
     const vaultDir = this.vaultDir;
     // The sandbox self-check runs a trivial command through the REAL
     // executor: `/usr/bin/true` under seatbelt on macOS, `cmd /c exit 0`
@@ -607,6 +611,7 @@ export class DeviceAgent {
           }
         : null;
     return hostInventory({
+      ...scope,
       probes: this.hostProbes,
       ownerHome: this.ownerHome,
       runSandboxed: sandboxed,
@@ -945,7 +950,7 @@ export class DeviceAgent {
   private offReason(staged: StagedPlugin): string | null {
     const { name, command, requires } = staged.manifest;
     if (this.disabledPlugins.has(name)) return `${command} is turned off on this Mac`;
-    const [missing] = missingPluginAccounts(requires, this.connectedAccounts);
+    const missing = requires.accounts.find((id) => !this.connectedAccounts.has(id));
     if (missing === undefined) return null;
     return `${command} needs a connected ${missing} account — the owner connects one in Plow Latch's Plugins tab`;
   }

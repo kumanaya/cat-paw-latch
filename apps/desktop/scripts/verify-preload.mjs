@@ -19,7 +19,7 @@ import {
 import { loadSettings, saveSettings } from "../dist/settings.js";
 import { launchAtLoginState, setLaunchAtLogin } from "../dist/loginItem.js";
 import { capabilitiesView } from "../dist/capabilitiesModel.js";
-import { pluginRows } from "../dist/pluginsModel.js";
+import { grantList, pluginRows } from "../dist/pluginsModel.js";
 import { parseManifest } from "@domo/device-core";
 
 const dir = path.dirname(fileURLToPath(import.meta.url));
@@ -101,23 +101,28 @@ ipcMain.handle("grant:state", async () => ({ key: "full_disk_access", label: "Fu
 // The Plugins tab renders from the REAL view model (pluginsModel.ts) over the
 // SHIPPED gog manifest, read off disk: what the tab tells the owner is what the
 // file declares. Like main, it knows the Google accounts only once a connector
-// refresh has asked. The off switch answers with the fresh state, as main does.
+// refresh has asked. The off switch and a requirement's button answer with the
+// fresh state, as main does; the button's act lands nothing here.
 const probePlugins = { gog: true };
 const probeStaged = [{
   manifest: parseManifest(fs.readFileSync(path.join(dir, "../plugins/gog/latch-plugin.json"), "utf8")),
   description: "Gmail and Calendar, through gog.",
 }];
-const probePluginRows = () => ({
-  rows: pluginRows({
+const probePluginRows = () => {
+  const rows = pluginRows({
     plugins: probeStaged.map((p) => ({ ...p, enabled: probePlugins[p.manifest.name] })),
     connectedAccounts: probeAccountsLoaded && connectorProbe.google.accounts.length ? ["google"] : [],
-  }),
-});
+    grantedPermissions: [],
+    relaunchPending: [],
+  });
+  return { rows, grants: grantList(rows) };
+};
 ipcMain.handle("plugins:get", async () => probePluginRows());
 ipcMain.handle("plugins:setEnabled", async (_e, name, on) => {
   probePlugins[name] = on === true;
   return probePluginRows();
 });
+ipcMain.handle("requirements:act", async () => ({ ...probePluginRows(), error: null }));
 // The drag-to-authorize tile's display data: a fake bundle name and a 1px
 // icon, so the tile renders in the probe without a real .app behind it.
 ipcMain.handle("fullDisk:dragInfo", async () => ({
@@ -125,9 +130,6 @@ ipcMain.handle("fullDisk:dragInfo", async () => ({
   iconDataUrl:
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
 }));
-// The grant flow is main-process behavior (panel + tracker); the bridge call
-// just has to resolve.
-ipcMain.handle("fullDisk:grantFlow", async () => {});
 // Launch at Login: the REAL rules from loginItem.js over a fake OS bit.
 // Packaged-looking at first so the toggle renders live; flipped unsupported
 // mid-run to prove the status refresh re-reads it and the note appears.
@@ -168,23 +170,16 @@ const cloudAgent = {
   failureReason: null,
   createdAt: "2026-08-24T18:00:00.000Z",
 };
-const rosterProbe = {
-  mcp: [{
-    id: 202,
-    name: "Claude Code",
-    kind: "Agent",
-    createdAt: "2026-08-23T18:00:00.000Z",
-    lastSeenAt: "2026-08-25T17:50:00.000Z",
-    chatUids: ["*"],
-    chatAccess: "all",
-    permissions: { canReadAndReply: true, canReachMac: true, canSpendInference: true },
-    deviceLabel: "this Desktop",
-    isActive: true,
-    isThisMac: false,
-  }],
-  other: [],
-  revokedHidden: 0,
-};
+const rosterProbe = [{
+  id: 202,
+  name: "Claude Code",
+  createdAt: "2026-08-23T18:00:00.000Z",
+  lastSeenAt: "2026-08-25T17:50:00.000Z",
+  chatUids: ["*"],
+  chatAccess: "all",
+  permissions: { canReadAndReply: true, canSpendInference: true },
+  deviceLabel: "this Desktop",
+}];
 let cloudProbe = {
   cloudAgents: [cloudAgent],
   cloudProviders: [
@@ -686,8 +681,8 @@ app.whenReady().then(async () => {
   }})()`);
 
   await win.webContents.executeJavaScript(`window.__domoSelectTab("agents")`);
-  await waitFor(win, `document.querySelectorAll("#view .panel.agents .list-section").length === 3`,
-    "the three-section Agents pane");
+  await waitFor(win, `document.querySelectorAll("#view .panel.agents .list-section").length === 2`,
+    "the two-section Agents pane");
   await win.webContents.executeJavaScript(
     `[...document.querySelectorAll("#view button")].find((b) => b.textContent.trim() === "Connect MCP client").click()`,
   );
@@ -707,7 +702,7 @@ app.whenReady().then(async () => {
       // The move itself: its own tab, FIRST in the bar, under the new key.
       agentsTabFirst: tabs[0] === "agents",
       tabOrder: tabs,
-      hasAgentsPane: document.querySelectorAll("#view .panel.agents .list-section").length === 3,
+      hasAgentsPane: document.querySelectorAll("#view .panel.agents .list-section").length === 2,
       showsTitle: text.includes("Connect an MCP client"),
       noConnectTab: !document.querySelector('#seg button[data-tab="connect"]'),
       // The client shortcut. Exactly one: a card exists only for a client whose
@@ -728,7 +723,7 @@ app.whenReady().then(async () => {
 
   const cloudRoster = await win.webContents.executeJavaScript(`(${() => {
     const group = [...document.querySelectorAll("#view .panel.agents .list-section")]
-      .find((item) => item.querySelector("h2")?.textContent.trim() === "Agents");
+      .find((item) => item.querySelector("h2")?.textContent.trim() === "Plow Agents");
     const row = group?.querySelector(".cloud-agent-row");
     return {
       noCredentialIdentity: !group?.textContent.includes("session") &&
@@ -751,7 +746,7 @@ app.whenReady().then(async () => {
   // is main-process only and must not be anywhere on the screen.
   const mcpRoster = await win.webContents.executeJavaScript(`(${() => {
     const group = [...document.querySelectorAll("#view .panel.agents .list-section")]
-      .find((item) => item.querySelector("h2")?.textContent.trim() === "MCP clients");
+      .find((item) => item.querySelector("h2")?.textContent.trim() === "Other Agents and Clients");
     const context = group?.querySelector(".entity-row .entity-context")?.textContent ?? "";
     return {
       namesBoundDevice: context.includes("Bound to this Desktop"),
@@ -1510,7 +1505,7 @@ app.whenReady().then(async () => {
     const req = document.querySelector(".plugin-req");
     return {
       saysNeedsSetup: (${gogRow})?.textContent.includes("Needs setup"),
-      namesRequirement: req?.querySelector(".cap-name")?.textContent === "Account",
+      namesRequirement: req?.querySelector(".cap-name")?.textContent === "Google account",
       offersTheFix: req?.querySelector("button.btn")?.textContent.trim() === "Connect Google",
     };
   })()`);
