@@ -152,6 +152,8 @@ export interface OnboardingDeps {
   applyPluginDefault: () => Promise<void>;
   /** Whether any switched-on plugin still has something to grant; false skips Access. */
   accessNeeded: () => Promise<boolean>;
+  /** Load account-backed grants before a checkpointed launch exposes Access. */
+  prepareAccess?: () => Promise<void>;
   /**
    * Turn the availability defaults on — Keep Awake, and Launch at Login where
    * the build can. Called at sign-in, which every setup (a re-setup after
@@ -216,6 +218,12 @@ export class Onboarding {
     };
   }
 
+  /** Finish the external inventory needed by a checkpointed opening step. */
+  async prepareInitialStep(): Promise<OnboardingState> {
+    if (this.step === "access") await this.deps.prepareAccess?.();
+    return this.state();
+  }
+
   /** Advance the presentational steps, commit the plugins-screen choice, and
    * save the gatekeeper's `draft` on the way out of that step — the only step
    * that reads it. It comes from the renderer, so it is checked here. */
@@ -264,13 +272,14 @@ export class Onboarding {
       });
     }
     if (this.step === "access") {
+      this.clearResumeStep();
       this.step = "availability";
       return this.publish();
     }
     if (this.step === "availability") {
       const settings = this.settings();
       settings.setupComplete = true;
-      this.save(settings);
+      this.clearResumeStep(settings);
       this.step = "done";
       return this.publish();
     }
@@ -281,10 +290,22 @@ export class Onboarding {
   async back(): Promise<OnboardingState> {
     if (this.busy) return this.state();
     if (this.step === "activate" || this.step === "waiting") this.step = "welcome";
-    else if (this.step === "access" || this.step === "availability") this.step = "plugins";
+    else if (this.step === "access") {
+      this.clearResumeStep();
+      this.step = "plugins";
+    } else if (this.step === "availability") this.step = "plugins";
     else if (this.step === "plugins") this.step = "gatekeeper";
     else return this.state();
     return this.publish();
+  }
+
+  /** Persist the one setup location whose own grant flow requires a relaunch. */
+  prepareRelaunch(): OnboardingState {
+    if (this.step !== "access") return this.state();
+    const settings = this.settings();
+    settings.onboardingResumeStep = "access";
+    this.save(settings);
+    return this.state();
   }
 
   /** Change the pending choice; Continue from plugins is its only disk write. */
@@ -567,6 +588,7 @@ export class Onboarding {
     this.noteKind = "error";
     this.busy = false;
     const settings = this.settings();
+    this.clearResumeStep(settings);
     this.telemetryEnabled = settings.telemetryEnabled;
     this.purpose = this.storedPurpose(settings);
     this.step = this.initialStep(settings);
@@ -662,9 +684,16 @@ export class Onboarding {
     saveSettings(this.deps.home, settings);
   }
 
+  /** Clear a consumed or abandoned navigation intent and persist its peers. */
+  private clearResumeStep(settings: Settings = this.settings()): void {
+    settings.onboardingResumeStep = undefined;
+    this.save(settings);
+  }
+
   private initialStep(settings: Settings): OnboardingStep {
     if (!settings.relayCredential.trim()) return "welcome";
-    return settings.setupComplete ? "done" : "plugins";
+    if (settings.setupComplete) return "done";
+    return settings.onboardingResumeStep === "access" ? "access" : "plugins";
   }
 
   private now(): number {
