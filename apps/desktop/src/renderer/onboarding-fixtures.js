@@ -1,4 +1,6 @@
 /** Shared states for the browser picker and the offscreen screenshot harness. */
+const BACK_STEPS = new Set(["activate", "waiting", "gatekeeper", "plugins", "access", "availability"]);
+
 export function onboardingFixtures(now) {
   const displayCode = "Z1SWY";
   const sendTo = "+1 555 987 6543";
@@ -206,7 +208,7 @@ export function onboardingFixtures(now) {
     grants: [{ ...fullDiskRelaunch, plugins: [iMessage] }],
   };
 
-  return [
+  const fixtures = [
     {
       name: "welcome",
       state: { ...base, step: "welcome" },
@@ -344,11 +346,12 @@ export function onboardingFixtures(now) {
         "What access should it allow to your Mac?",
         "Use a default:", "Personal assistant", "Executive assistant",
         ...gatekeeperPresets.home.rows.map((r) => r.label),
+        "Back",
         "Continue",
       ],
       expectValues: [gatekeeperPresets.home.text],
       // A closed row's detail is out of the page's text.
-      reject: ["Back", "Tap a request", "Name the work", "never sees it", "Gatekeeper Verdict"],
+      reject: ["Tap a request", "Name the work", "never sees it", "Gatekeeper Verdict"],
       expectFocus: "Continue",
       expectDotCount: 6,
     },
@@ -357,9 +360,8 @@ export function onboardingFixtures(now) {
       state: { ...base, step: "gatekeeper", purpose: gatekeeperPresets.work.text },
       cloud: noAgents,
       gatekeeper: { presets: gatekeeperPresets, results: workResults },
-      expect: ["Meet the Plow Gatekeeper", ...gatekeeperPresets.work.rows.map((r) => r.label), "Continue"],
+      expect: ["Meet the Plow Gatekeeper", ...gatekeeperPresets.work.rows.map((r) => r.label), "Back", "Continue"],
       expectValues: [gatekeeperPresets.work.text],
-      reject: ["Back"],
       expectDotCount: 6,
     },
     {
@@ -578,4 +580,11 @@ export function onboardingFixtures(now) {
       reject: ["Text Elm", "Enable Browser & import passwords"],
     },
   ];
+  return fixtures.map((fixture) => ({
+    ...fixture,
+    state: {
+      ...fixture.state,
+      canGoBack: BACK_STEPS.has(fixture.state.step),
+    },
+  }));
 }
