@@ -15,9 +15,14 @@
 
 namespace {
 
-bool FileExecutable(const char* path) {
+// Root-owned, not group- or world-writable, and executable: what makes a
+// binary safe to run as the cage, since the user whose agent is being caged
+// must not be able to replace it.
+bool TrustedExecutable(const char* path) {
   struct stat st {};
-  return ::stat(path, &st) == 0 && S_ISREG(st.st_mode) && ::access(path, X_OK) == 0;
+  if (::stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return false;
+  if (st.st_uid != 0 || (st.st_mode & (S_IWGRP | S_IWOTH)) != 0) return false;
+  return ::access(path, X_OK) == 0;
 }
 
 bool PathExists(const char* path) {
@@ -25,13 +30,17 @@ bool PathExists(const char* path) {
   return ::stat(path, &st) == 0;
 }
 
+// Absolute candidates first — the two places a distro puts these. PATH is
+// consulted only when neither exists (NixOS keeps bwrap in /nix/store), so that
+// fallback is the one route by which a directory the owner can write could
+// supply the cage; TrustedExecutable is what closes it.
 std::string FindOnPath(const char* name) {
   const std::string absolute_candidates[] = {
       std::string("/usr/bin/") + name,
       std::string("/bin/") + name,
   };
   for (const auto& candidate : absolute_candidates) {
-    if (FileExecutable(candidate.c_str())) return candidate;
+    if (TrustedExecutable(candidate.c_str())) return candidate;
   }
   const char* path = std::getenv("PATH");
   if (path == nullptr) return "";
@@ -42,7 +51,7 @@ std::string FindOnPath(const char* name) {
     remaining = sep == std::string::npos ? "" : remaining.substr(sep + 1);
     if (dir.empty()) continue;
     const std::string candidate = dir + "/" + name;
-    if (FileExecutable(candidate.c_str())) return candidate;
+    if (TrustedExecutable(candidate.c_str())) return candidate;
   }
   return "";
 }
