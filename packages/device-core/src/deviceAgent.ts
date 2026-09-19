@@ -15,10 +15,17 @@ import { AlwaysAllowRule, canonicalize, capabilityDisplay, Intent, intentIsExpir
 import { PROVIDERS, providerFor, providerRefusal, type Provider } from "./providers/registry.js";
 import { pluginFor, type StagedPlugin } from "./plugins/registry.js";
 import { stagedName } from "./plugins/stage.js";
-import type { PluginPlatform } from "./plugins/manifest.js";
+import { missingPluginAccounts, type PluginPlatform } from "./plugins/manifest.js";
 import { classifyArgv, ruleArgv } from "./plugins/argvRules.js";
+import { resolveEnv } from "./plugins/env.js";
 import { MintError, type MintedAccounts, type Minter } from "./providers/mint.js";
-import { conflictRefusal, gogExitReason, mergeFanout, planPlowGog } from "./providers/plowGog.js";
+import {
+  compactCalendarEvents,
+  conflictRefusal,
+  gogExitReason,
+  mergeFanout,
+  planPlowGog,
+} from "./providers/plowGog.js";
 import fs from "node:fs";
 import path from "node:path";
 import { APPROVAL_SOURCE_EXPIRED } from "./approvalStore.js";
@@ -49,6 +56,7 @@ import {
   hostInventory,
   HostInventory,
   HostProbes,
+  InventoryDeps,
   isHostGate,
   nodeProbes,
   sandboxKindFor,
@@ -57,11 +65,15 @@ import {
 import { readCredentialsState } from "./browser/vaultCredentials.js";
 import { DeviceIdentity, loadOrCreateIdentity } from "./identity.js";
 import { PolicyDelegate, PolicyEngine } from "./policyEngine.js";
-import { parseFrontmatter, SkillRegistry } from "./skills.js";
+import { parseFrontmatter, type Skill, SkillRegistry } from "./skills.js";
 import { registerContactsSkill } from "./contactsSkill.js";
 import { registerImessageSkill } from "./imessageSkill.js";
 import { ensurePlowFolder, registerPlowFolderSkill } from "./plowFolder.js";
 import { registerWhatsappSkill } from "./whatsappSkill.js";
+
+/** The browser's own name in `disabledPlugins` — it has no manifest and is
+ *  not one of `this.plugins`, but the owner's off switch treats it the same. */
+export const BROWSER_PLUGIN = "browser";
 
 /**
  * A delegate that denies because the adversarial reviewer could not run for
@@ -263,6 +275,10 @@ export class DeviceAgent {
   readonly executor: Executor;
   /** Owner-published skills (how-to guides), surfaced via plow_list_skills/plow_read_skill. */
   readonly skills: SkillRegistry;
+  /** Staged plugins the owner has turned off — see `setDisabledPlugins`. */
+  private disabledPlugins = new Set<string>();
+  /** Account connectors with an account connected — see `setConnectedAccounts`. */
+  private connectedAccounts = new Set<string>();
   /** Null when no browser runtime is installed — browser tools report so. */
   readonly browserSessions: BrowserSessions | null = null;
   /** Exposed so the approval UI can resolve credential item titles locally. */
@@ -412,31 +428,9 @@ export class DeviceAgent {
     ensurePlowFolder(this.ownerHome);
     registerPlowFolderSkill(this.skills, this.ownerHome);
     registerContactsSkill(this.skills, this.ownerHome);
-    // Registered only when the CLI it documents is actually staged: a skill
-    // for a binary this Mac does not have teaches an agent commands the exec
-    // path refuses unconditionally. Driven off `this.plugins` itself — the
-    // staged set — rather than a second staged-ness check, so there is one
-    // predicate for "is this really here" and every staged plugin is a
-    // candidate, not just the ones with a PROVIDERS row. A provider is a
-    // specialisation: its plugin publishes the provider's own skill (gog's
-    // orchestration wants its own copy, not the manifest's); any other
-    // staged plugin publishes the skill its OWN manifest declares, if any.
-    for (const staged of this.plugins) {
-      const provider = PROVIDERS.find((p) => p.plugin === staged.manifest.name);
-      if (provider) {
-        this.skills.register(provider.skill);
-        continue;
-      }
-      if (staged.manifest.skill === null) continue;
-      try {
-        const skill = parseFrontmatter(fs.readFileSync(path.join(staged.dir, staged.manifest.skill), "utf8"));
-        if (skill) this.skills.register(skill);
-      } catch {
-        /* unreadable or malformed — publish nothing rather than a broken skill */
-      }
-    }
     if (browserRuntime) {
-      this.skills.register(browsingSkillFor());
+      // Not registered here: syncPluginSkills() owns it, on exactly while
+      // this runtime is present and the owner has not turned the browser off.
       const browserDir = path.join(home, "device/browser");
       // Earlier builds wrote every agent screenshot under here and never
       // removed one. Nothing reads them, so an install that still has the
@@ -521,12 +515,9 @@ export class DeviceAgent {
         approval,
       );
     }
-    // LAST, so the owner's own file wins. `register` is a Map.set, so whoever
-    // goes last takes the name — and a skill the owner wrote into their own
-    // DOMO_HOME is a deliberate act that a built-in default should not
-    // silently discard. Built-ins are what this Mac ships; these are what its
-    // owner said instead.
-    this.skills.loadDir(path.join(home, "device/skills"));
+    // Last, after every built-in: plugin skills exactly while their plugin is
+    // staged and on, then the owner's own files over all of it (see the doc).
+    this.syncPluginSkills();
   }
 
   /**
@@ -584,8 +575,11 @@ export class DeviceAgent {
    * The sandbox rows go through the REAL executor with a throwaway profile:
    * a read-only run, no network, no writes, so it is also reapable — and
    * `/usr/bin/true` exits at once regardless.
+   *
+   * `automationTargets` narrows the Automation sweep for a caller that needs
+   * only some pairs (the Plugins tab); everything else is always probed.
    */
-  async hostInventory(): Promise<HostInventory> {
+  async hostInventory(scope: Pick<InventoryDeps, "automationTargets"> = {}): Promise<HostInventory> {
     const vaultDir = this.vaultDir;
     // The sandbox self-check runs a trivial command through the REAL
     // executor: `/usr/bin/true` under seatbelt on macOS, `cmd /c exit 0`
@@ -617,6 +611,7 @@ export class DeviceAgent {
           }
         : null;
     return hostInventory({
+      ...scope,
       probes: this.hostProbes,
       ownerHome: this.ownerHome,
       runSandboxed: sandboxed,
@@ -934,14 +929,122 @@ export class DeviceAgent {
   }
 
   /**
-   * The named plugin, if this Mac has it staged.
+   * The named plugin, if this Mac has it staged and it is on.
    *
    * Per-plugin rather than "is anything staged": the day a second row joins
    * the registry, a Mac with only gog staged would otherwise report the other
    * as present — publishing its skill and minting for it.
    */
   private plugin(name: string): StagedPlugin | null {
-    return this.plugins.find((p) => p.manifest.name === name) ?? null;
+    const staged = this.plugins.find((p) => p.manifest.name === name);
+    return staged !== undefined && this.offReason(staged) === null ? staged : null;
+  }
+
+  /**
+   * Why a staged plugin is off right now, or null when it is on: the owner's
+   * switch, or an account its manifest `requires` that is not connected — a
+   * plugin that cannot mint is not advertised to an agent, and its command
+   * never reaches an approval card only to fail at the mint. The one sentence
+   * every gate gives.
+   */
+  private offReason(staged: StagedPlugin): string | null {
+    const { name, command, requires } = staged.manifest;
+    if (this.disabledPlugins.has(name)) return `${command} is turned off on this Mac`;
+    const missing = requires.accounts.find((id) => !this.connectedAccounts.has(id));
+    if (missing === undefined) return null;
+    return `${command} needs a connected ${missing} account — the owner connects one in Plow Latch's Plugins tab`;
+  }
+
+  /**
+   * The plugins the owner has turned off, by name. Off is one fact with three
+   * consequences, all from `plugin()` answering null: not staged as far as
+   * this device is concerned, skill unpublished, commands refused by name at
+   * the pre-intent chokepoint. Called at startup and on every toggle — one
+   * code path.
+   *
+   * The browser carries a fourth: a session already open when the switch
+   * flips is a live window onto the owner's logins that the Plugins tab can
+   * no longer see or stop, so turning it off closes every one of them —
+   * `closeOpen`, not `closeAll`, because the switch flipping back on must be
+   * able to open a fresh browser, not find the runtime latched shut.
+   */
+  setDisabledPlugins(names: readonly string[]): Promise<void> {
+    const turningBrowserOff = names.includes(BROWSER_PLUGIN) && !this.disabledPlugins.has(BROWSER_PLUGIN);
+    this.disabledPlugins = new Set(names);
+    this.syncPluginSkills();
+    if (!turningBrowserOff || this.browserSessions === null) return Promise.resolve();
+    return this.browserSessions.closeOpen("turned_off").catch((error: unknown) => {
+      console.error("[browser] closing open sessions after the plugin was turned off:", error);
+    });
+  }
+
+  /**
+   * The account connectors the owner has an account connected for, e.g.
+   * "google" — main's view of Plow's answer, pushed on every change. A plugin
+   * that `requires` one is off until it is (`offReason`); the mint still asks
+   * Plow which accounts, per call.
+   */
+  setConnectedAccounts(ids: readonly string[]): void {
+    this.connectedAccounts = new Set(ids);
+    this.syncPluginSkills();
+  }
+
+  /**
+   * The one owner of plugin skill lifecycle, at launch and on every toggle:
+   * each staged plugin's skill is published exactly while the plugin is on,
+   * and the owner's own files load LAST so a file in their DOMO_HOME wins
+   * under a shared name — order is the whole mechanism, re-run each time.
+   */
+  private syncPluginSkills(): void {
+    // The browser is a plugin without a manifest: on exactly while a runtime is
+    // installed and the owner has not turned it off, like any staged plugin.
+    if (this.browserSessions !== null && !this.disabledPlugins.has(BROWSER_PLUGIN)) this.skills.register(browsingSkillFor());
+    else this.skills.unregister(browsingSkillFor().name);
+    for (const staged of this.plugins) {
+      const skill = this.pluginSkill(staged);
+      if (skill === null) continue;
+      if (this.plugin(staged.manifest.name) !== null) this.skills.register(skill);
+      else this.skills.unregister(skill.name);
+    }
+    this.skills.loadDir(path.join(this.home, "device/skills"));
+  }
+
+  /** Why a browser call cannot proceed on this Mac right now, or null. One
+   *  answer for the tool's pre-intent check and the two execution seams. */
+  browserRefusal(): string | null {
+    if (this.browserSessions === null) return "no browser runtime installed on this device";
+    if (this.disabledPlugins.has(BROWSER_PLUGIN)) return "browser use is turned off on this Mac";
+    return null;
+  }
+
+  /**
+   * A plugin's one-line description for the owner: its published skill's,
+   * so an owner's override shows the owner what it shows the agent — and the
+   * declared one while the plugin is off, so the row offering to turn it
+   * back on is not blank.
+   */
+  pluginDescription(name: string): string | null {
+    const staged = this.plugins.find((p) => p.manifest.name === name);
+    const declared = staged ? this.pluginSkill(staged) : null;
+    return declared ? (this.skills.skill(declared.name)?.description ?? declared.description) : null;
+  }
+
+  /**
+   * The skill a staged plugin publishes. A provider is a specialisation: its
+   * plugin publishes the provider's own skill (gog's orchestration wants its
+   * own copy, not the manifest's); any other staged plugin publishes the
+   * skill its OWN manifest declares, if any — and nothing rather than a
+   * broken skill when that file is unreadable or malformed.
+   */
+  private pluginSkill(staged: StagedPlugin): Skill | null {
+    const provider = PROVIDERS.find((p) => p.plugin === staged.manifest.name);
+    if (provider) return provider.skill;
+    if (staged.manifest.skill === null) return null;
+    try {
+      return parseFrontmatter(fs.readFileSync(path.join(staged.dir, staged.manifest.skill), "utf8"));
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -980,17 +1083,24 @@ export class DeviceAgent {
    * would then refuse at execution time. This device checks again there
    * regardless: it is the chokepoint and cannot rely on the caller.
    *
-   * `cwd` is a caller-supplied `plow_run_command` argument, never the
-   * plugin's own `manifest.exec.cwd` — a plugin's own dispatch always execs
-   * in the plugin's own directory and never reads it, so folding it into the
-   * capability would show the owner an approval card asserting a run
-   * location that could never happen. Refused by name, same as a manifest
-   * declaring env this Mac cannot resolve (below): a silent drop would leave
-   * the caller believing it chose a cwd it didn't.
+   * `cwd` is a caller-supplied `plow_run_command` argument — a plugin's own
+   * dispatch always execs in the plugin's own directory and never reads it,
+   * so folding it into the capability would show the owner an approval card
+   * asserting a run location that could never happen. Refused by name: a
+   * silent drop would leave the caller believing it chose a cwd it didn't.
    */
   pluginRefusal(argv: readonly string[], cwd?: string): string | null {
-    const plugin = pluginFor(this.plugins, argv[0] ?? "");
+    // A provider's row names its plugin; anything else is named by argv[0].
+    const provider = providerFor(argv);
+    const plugin = provider
+      ? (this.plugins.find((p) => p.manifest.name === provider.plugin) ?? null)
+      : pluginFor(this.plugins, argv[0] ?? "");
     if (plugin === null) return null;
+    const off = this.offReason(plugin);
+    if (off !== null) return off;
+    // Off is the one answer shared with a provider's command; the rest of its
+    // belt is `providerRefusal`'s, and it takes a cwd (stripped, never run in).
+    if (provider !== null) return null;
     if (cwd !== undefined) return "cwd is refused for a plugin; it always runs in its own directory";
     const verdict = classifyArgv(plugin.manifest, argv);
     return verdict.kind === "refused" ? verdict.reason : null;
@@ -1065,9 +1175,14 @@ export class DeviceAgent {
       // resolve; if it cannot, that is an answer, not a pass.
       const plugin = this.plugin(provider.plugin);
       if (plugin === null) {
-        return this.execError(intent.intentId, `${provider.command} is not installed on this Mac`);
+        return this.execError(intent.intentId, this.pluginRefusal(argv) ?? `${provider.command} is not installed on this Mac`);
       }
-      return this.executePlowGog(intent, plugin, provider, argv, { readPaths, writePaths, network, appleEvents, waitMs });
+      try {
+        return await this.executePlowGog(intent, plugin, provider, argv, { readPaths, writePaths, network, appleEvents, waitMs });
+      } catch (error: unknown) {
+        // A refused launch (the guard above), audited like the plain path's.
+        return this.execError(intent.intentId, error instanceof Error ? error.message : String(error));
+      }
     }
 
     // A staged plugin with no PROVIDERS row: reachable on its manifest alone.
@@ -1082,56 +1197,24 @@ export class DeviceAgent {
     // command's own, unchanged.
     const plugin = pluginFor(this.plugins, argv[0] ?? "");
     let runArgv = argv;
+    let runEnv: Record<string, string> | undefined;
+    let runSysvSemaphores = false;
     if (plugin !== null) {
+      const off = this.offReason(plugin);
+      if (off !== null) return this.execError(intent.intentId, off);
       // The manifest's own belt (`argv.read`/`argv.write`) is checked before
       // anything spawns, the same defense-in-depth shape as `providerRefusal`
       // above — the device is the chokepoint regardless of what a caller
       // already checked.
       const verdict = classifyArgv(plugin.manifest, argv);
       if (verdict.kind === "refused") return this.execError(intent.intentId, verdict.reason);
-      // No secret store, mint scope, or Plow API base is wired to a plugin's
-      // env yet — nothing on this Mac can answer `resolveEnv`'s `secret`/`mint`
-      // sources today, and faking a base URL would be a silent wrong answer
-      // rather than a loud one. A plugin declaring env is refused rather than
-      // handed a guess; the loud gap is the honest state until that plumbing
-      // exists.
-      if (Object.keys(plugin.manifest.env).length > 0) {
-        return this.execError(intent.intentId, `${plugin.manifest.command} needs env this Mac cannot resolve yet`);
-      }
-      // exec.cwd is required on every manifest (manifest.ts) and validated to
-      // be either the literal "plugin" or a declared source's name — but
-      // nothing on this Mac clones a source anywhere yet (stage.ts only ever
-      // stages binaries), so there is no staged directory to resolve a source
-      // name to. Same standard as env just above: refused by name, never a
-      // guessed path.
-      if (plugin.manifest.exec.cwd !== "plugin") {
-        return this.execError(
-          intent.intentId,
-          `${plugin.manifest.command} needs a source-rooted cwd this Mac cannot resolve yet`,
-        );
-      }
-      // A relative entrypoint that NAMES A STAGED BINARY (manifest.runtime.binaries)
-      // is joined under this plugin's OWN bin dir, so PATH never decides which
-      // copy runs (plow-gog's own pattern). Any other relative entry names a
-      // tool reached through the executor's curated PATH instead (e.g. the wiki
-      // plugin's `uv`-installed `wiki`) — joining it under binDir would point at
-      // a file this Mac never staged there, and every invocation would ENOENT.
-      // An absolute entry (e.g. /bin/sh) is a manifest choosing a fixed system
-      // binary and is left alone either way — manifest.ts's own comment on
-      // exec.argv[0] is why: nothing joins under bin/ for that shape.
-      const entry = plugin.manifest.exec.argv[0]!;
-      const isStagedBinary = plugin.manifest.runtime.binaries.some((b) => b.name === entry);
-      const bin = isStagedBinary
-        ? path.join(plugin.binDir, stagedName(entry, process.platform as PluginPlatform))
-        : entry;
-      runArgv = [bin, ...plugin.manifest.exec.argv.slice(1), ...argv.slice(1)];
-      // exec.cwd: "plugin" means this plugin's own dispatch runs in its own
-      // staged directory, and nowhere else. `mcp-server`'s tool offers that
-      // directory before the intent is built (`pluginDir`), so the owner
-      // approves a card naming it — this is the enforcement half: the
-      // approved `cwd` must be exactly this, or refuse. Refusing rather than
-      // substituting `plugin.dir` here is the point of this check — the
-      // device must never grant a wider sandbox than the card it showed.
+      // A plugin's own dispatch runs in its own staged directory, and nowhere
+      // else. `mcp-server`'s tool offers that directory before the intent is
+      // built (`pluginDir`), so the owner approves a card naming it — this is
+      // the enforcement half: the approved `cwd` must be exactly this, or
+      // refuse. Refusing rather than substituting `plugin.dir` here is the
+      // point of this check — the device must never grant a wider sandbox
+      // than the card it showed.
       // No separate read grant for the binary: the executor already reads
       // `cwd` recursively to exec anything under it, and `plugin.binDir` is
       // always a subdirectory of it.
@@ -1143,6 +1226,26 @@ export class DeviceAgent {
       if (exec.cwd !== plugin.dir) {
         return this.execError(intent.intentId, "approved cwd does not match this plugin's own directory");
       }
+      // Resolved here, never logged and never folded into argv: the values go
+      // into the child's environment below and nowhere else. `${owner_home}`
+      // is the owner's real home (wiki's WIKI_PATH), not the instance's.
+      runEnv = resolveEnv(plugin.manifest, { pluginHome: plugin.dir, ownerHome: this.ownerHome });
+      // A relative entrypoint that NAMES A STAGED BINARY (manifest.runtime.binaries)
+      // is joined under this plugin's OWN bin dir, so PATH never decides which
+      // copy runs (plow-gog's own pattern). Any other relative entry names a
+      // tool reached through the executor's curated PATH instead. An absolute
+      // entry (e.g. /bin/sh) is a manifest choosing a fixed system binary and
+      // is left alone either way — manifest.ts's own comment on
+      // exec.argv[0] is why: nothing joins under bin/ for that shape.
+      const entry = plugin.manifest.exec.argv[0]!;
+      const isStagedBinary = plugin.manifest.runtime.binaries.some((b) => b.name === entry);
+      const bin = isStagedBinary
+        ? path.join(plugin.binDir, stagedName(entry, process.platform as PluginPlatform))
+        : entry;
+      runArgv = [bin, ...plugin.manifest.exec.argv.slice(1), ...argv.slice(1)];
+      // The plugin's own hash-pinned binary, and nothing else — see the
+      // executor option for why.
+      runSysvSemaphores = isStagedBinary;
     }
 
     this.audit.record("exec_start", { intentId: intent.intentId, argv });
@@ -1154,7 +1257,10 @@ export class DeviceAgent {
         writePaths,
         network,
         appleEvents,
+        sysvSemaphores: runSysvSemaphores,
         waitMs,
+        env: runEnv,
+        guard: () => this.pluginRefusal(argv),
       });
       return this.finishRun(intent.intentId, result, {
         argv,
@@ -1177,7 +1283,7 @@ export class DeviceAgent {
    * in the capability the approver saw, so the start event carries only the
    * target. A failure is diagnosed like a command's, with the app the agent
    * named as the automation target, so a denied or never-asked Automation
-   * grant lands on the Capabilities tab's row for that app the same way —
+   * grant lands on the Permissions section's row for that app the same way —
    * and a refusal that is the app's own is said to be no gate.
    */
   private async executeAppleScript(
@@ -1292,7 +1398,7 @@ export class DeviceAgent {
         //
         // The clearing is recorded too, when the parked verdict was: a
         // run that went on to an end of its own was let through the
-        // dialog, and the Capabilities tab must stop counting a block the
+        // dialog, and the Permissions section must stop counting a block the
         // owner has answered — a folder it cannot query would otherwise
         // stay red on the strength of a guess. A reaped run was still
         // parked, and its verdict stands.
@@ -1471,6 +1577,10 @@ export class DeviceAgent {
         waitMs: opts.waitMs,
         // A help run gets no token, same as the gog path.
         env: token === null ? undefined : { [provider.tokenEnv]: token },
+        // Off NOW, not off at approval: the mint, the conflict probe and the
+        // executor's own hold are all waits the owner can flip the switch
+        // during, and this is the one seam every launch passes through.
+        guard: () => this.pluginRefusal(argv),
       });
     // An inner run that outlives wait_ms is WAITED OUT, not abandoned: the
     // per-account children have no public handle — the outer call owns the
@@ -1586,9 +1696,13 @@ export class DeviceAgent {
         intentId: intent.intentId,
         exit_code: answered === 0 && allDegraded.length > 0 ? 1 : 0,
       });
+      const shown = plan.compact
+        ? compactCalendarEvents(merged.items)
+        : { items: merged.items, truncated: null };
       return {
         status: "completed",
-        items: merged.items,
+        items: shown.items,
+        ...(shown.truncated !== null ? { truncated: shown.truncated } : {}),
         degraded: allDegraded,
       } as JSONValue;
     }
@@ -1677,16 +1791,15 @@ export class DeviceAgent {
    * detail, like wait_ms; the approved bound is entirely in the capabilities).
    */
   private async executeBrowserIntent(intent: Intent, payload: JSONValue): Promise<JSONValue> {
-    if (!this.browserSessions) {
-      return { status: "error", error: "no browser runtime installed on this device" };
-    }
+    const refusal = this.browserRefusal();
+    if (refusal !== null) return { status: "error", error: refusal };
     const origins = intent.capabilities.find((c) => c.kind === "browser")?.origins ?? [];
     const items =
       intent.capabilities.find((c) => c.kind === "credential" && c.access === "fill")?.items ?? [];
 
     const session = jv(payload).get("session").str;
     if (session !== null) {
-      return this.browserSessions.extend(intent.intentId, session, origins, items);
+      return this.browserSessions!.extend(intent.intentId, session, origins, items);
     }
     if (origins.length === 0) {
       return { status: "error", error: "plow_browser_open requires at least one origin" };
@@ -1695,7 +1808,7 @@ export class DeviceAgent {
     // owner approved, so it rides the payload and leaves the capability set —
     // and the rule the owner may have saved for these origins — untouched.
     const headed = jv(payload).get("headed").bool;
-    return this.browserSessions.open(
+    return this.browserSessions!.open(
       intent.intentId,
       intent.agentId,
       origins,
@@ -1709,13 +1822,12 @@ export class DeviceAgent {
    * already-approved run. Called in-process by the mcp-server's `browser` tool.
    */
   async browserCommand(session: string, params: JSONValue): Promise<JSONValue> {
-    if (!this.browserSessions) {
-      return { status: "error", error: "no browser runtime installed on this device" };
-    }
+    const refusal = this.browserRefusal();
+    if (refusal !== null) return { status: "error", error: refusal };
     if (jv(params).get("action").str === "close") {
-      return this.browserSessions.close(session, "agent");
+      return this.browserSessions!.close(session, "agent");
     }
-    return this.browserSessions.command(session, params);
+    return this.browserSessions!.command(session, params);
   }
 
   async getOutput(handle: string, since = 0): Promise<JSONValue> {
@@ -1732,7 +1844,7 @@ export class DeviceAgent {
   /**
    * Forget a `prompt_waiting` verdict for a run that went on — the owner
    * answered the dialog (or it never mattered) — and record the clearing,
-   * so the Capabilities tab stops counting a block the owner has answered:
+   * so the Permissions section stops counting a block the owner has answered:
    * a folder it cannot query would otherwise stay red on the strength of a
    * guess. Any other verdict stands. Idempotent; at most one clearing per
    * run is recorded, because the dedupe key goes with it.

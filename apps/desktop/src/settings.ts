@@ -177,7 +177,7 @@ export interface Settings {
   updatesLastCheckedAt?: string;
   /**
    * What macOS last said about Automation consent, per target bundle id
-   * (automation.ts). A memo of macOS's answer for the Capabilities tab, not
+   * (automation.ts). A memo of macOS's answer for the Permissions section, not
    * the permission itself — macOS holds that, can only report it while the
    * target app is running, and System Settings can change it behind the
    * app's back; a conclusive read overwrites this.
@@ -195,6 +195,15 @@ export interface Settings {
    *  field, which a confirmed block then outranks outright. */
   folderConsentAt?: Record<string, string>;
   /**
+   * Plugins the owner has turned OFF, by name (`plugins/registry.ts`).
+   *
+   * The disabled names rather than the enabled ones, so a plugin that arrives
+   * in a later build is on by default and one that is uninstalled leaves
+   * nothing behind. Off means not staged as far as the device is concerned:
+   * skill unpublished, commands refused (DeviceAgent.setDisabledPlugins).
+   */
+  disabledPlugins?: string[];
+  /**
    * Capabilities rows the owner said "not now" to, keyed by row, with when.
    * A row stays off the tab's badge until a block NEWER than this lands.
    */
@@ -202,7 +211,8 @@ export interface Settings {
   /** When the owner last dismissed the Capabilities banner (ISO-8601);
    *  blocks before it stay out of the next banner. */
   blockedBannerSeenAt?: string;
-  /** Keep this Mac awake while plugged in (default off). The opt-in only —
+  /** Keep this Mac awake while plugged in (off until setup's Availability
+   * screen turns it on). The opt-in only —
    * keepAwake.ts owns when a blocker is actually held (AC power only, and an
    * acquire the OS refuses writes this back to false). */
   keepAwakeWhileRunning: boolean;
@@ -214,15 +224,6 @@ export interface Settings {
   /** The first-run setup has reached its final screen. Kept separately from
    * the credential because the data choice happens after sign-in. */
   setupComplete: boolean;
-  /** The first-run availability default has been applied (onboarding.ts's
-   * `applyAvailabilityDefault` dep, on reaching the Availability screen). NOT
-   * a mirror of the OS's login-item bit — loginItem.ts explains why none
-   * exists — only the record that the one-time default ran, so it can never
-   * run twice and a user who turns a switch off stays off. Deliberately
-   * survives sign-out: a re-setup is not a first run. A signed-in home from
-   * before this field existed is grandfathered on load — see `loadSettings` —
-   * for the same reason. */
-  launchAtLoginDefaulted: boolean;
 }
 
 function settingsPath(home: string): string {
@@ -264,7 +265,6 @@ export function loadSettings(home: string): Settings {
     keepAwakeWhileRunning: false,
     telemetryEnabled: true,
     setupComplete: false,
-    launchAtLoginDefaulted: false,
   };
   let parsed: unknown;
   try {
@@ -277,18 +277,16 @@ export function loadSettings(home: string): Settings {
   // Retired fields must be removed explicitly: unknown keys otherwise ride
   // this spread into every later save. Delete this scrub once the fleet has
   // turned over; it is a one-off, not a migration framework.
-  const retired = [
+  const retiredKeys = [
     "anthropicApiKey",
     "inferenceProvider",
     "provisionedChatUid",
     "provisionedChatLabel",
     "welcomeEntrancePlayed",
-  ].some((key) => key in settings);
-  delete settings.anthropicApiKey;
-  delete settings.inferenceProvider;
-  delete settings.provisionedChatUid;
-  delete settings.provisionedChatLabel;
-  delete settings.welcomeEntrancePlayed;
+    "launchAtLoginDefaulted",
+  ];
+  const retired = retiredKeys.some((key) => key in settings);
+  for (const key of retiredKeys) delete settings[key];
 
   const loaded = { ...defaults, ...settings };
   // The encrypted field wins where it exists. A decrypt that fails is treated
@@ -306,22 +304,6 @@ export function loadSettings(home: string): Settings {
       loaded.accountUid = "";
       loaded.mcpUrl = "";
     }
-  }
-  // The spread above copies whatever the file held, and a hand-edited or
-  // truncated file can put a non-object — or a `null` — where a record belongs.
-  // Every reader of this map indexes it, so normalising once here is what keeps
-  // A signed-in home from before `launchAtLoginDefaulted` existed: its owner's
-  // launch-at-login choice predates the default, so reading the absent field as
-  // false would let a later re-setup flip the bit on them. Grandfather it as
-  // already defaulted. This can never swallow a genuinely new home's default:
-  // setup saves the whole Settings object, so any file holding a credential
-  // written since this field existed carries the key explicitly. Asked of the
-  // scrubbed record rather than the raw parse — the scrub only ever removes the
-  // retired key names, so the two answer this identically. It also has to run
-  // BEFORE the scrub's write below, or a home cleaned on this load is written
-  // back without the bit it was just granted.
-  if (!("launchAtLoginDefaulted" in settings) && loaded.relayCredential.trim()) {
-    loaded.launchAtLoginDefaulted = true;
   }
   // Take them OFF DISK here, rather than waiting for the next write of some
   // unrelated setting — and let a failure THROW. Swallowing it would report a

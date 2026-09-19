@@ -15,10 +15,13 @@ import os from "node:os";
 import path from "node:path";
 import {
   BROWSING_SKILL,
+  browsingSkillFor,
   DeviceAgent,
   HeadlessPolicy,
   INTERACTIVE_VERIFICATION,
   LIVE_WEB_ROUTING,
+  PC_HARD_BLOCK_ROUTING,
+  SAFARI_HARD_BLOCK_ROUTING,
 } from "@domo/device-core";
 import {
   BLOCKED_COPY,
@@ -315,6 +318,33 @@ describe("every tool this Mac can stop says so", () => {
     expect(d.plow_run_applescript).toMatch(/plow_list_skills/);
   });
 
+  // An agent screenshotted Yelp's "You have been blocked" page and told the
+  // owner it could not confirm their review — the block came back as a normal
+  // 200 with no failed_requests, so the screenshot was the only signal, and
+  // nothing on the surface said what to do with it. The owner's own Safari
+  // loaded the page first try. The fact that changes the report lives on the
+  // browser tool; the recipe lives in the skill (Task 2); the script tool
+  // names Safari so the two halves meet.
+  it.skipIf(process.platform !== "darwin")("the browser tool sends a hard block to the owner's Safari, and the script tool names it", async () => {
+    const d = await descriptions(makeServer());
+    expect(d.plow_browser).toMatch(/hard block/i);
+    // Seam, not words (see the live-web seam test below): one routing
+    // sentence, three consumers.
+    expect(d.plow_browser).toContain(SAFARI_HARD_BLOCK_ROUTING);
+    expect(d.plow_run_applescript).toContain(SAFARI_HARD_BLOCK_ROUTING);
+    expect(BROWSING_SKILL.body).toContain(SAFARI_HARD_BLOCK_ROUTING);
+  });
+
+  it.skipIf(process.platform === "darwin")("the browser tool names a hard block without routing it through Safari", async () => {
+    const d = await descriptions(makeServer());
+    expect(d.plow_browser).toMatch(/hard block/i);
+    expect(d.plow_browser).toContain(PC_HARD_BLOCK_ROUTING);
+    expect(d.plow_browser).not.toContain(SAFARI_HARD_BLOCK_ROUTING);
+    expect(d.plow_run_applescript).toBeUndefined();
+    expect(browsingSkillFor().body).toContain(PC_HARD_BLOCK_ROUTING);
+    expect(browsingSkillFor().body).not.toContain(SAFARI_HARD_BLOCK_ROUTING);
+  });
+
   it.skipIf(process.platform !== "darwin")("plow_run_command explains a running result that carries a diagnosis", async () => {
     const d = await descriptions(makeServer());
     expect(d.plow_run_command).toMatch(/still 'running' but carries a 'diagnosis'/);
@@ -401,7 +431,7 @@ describe("the browsing skill agrees with the tools it documents", () => {
    */
   function examples(): { tool: string; props: string[] }[] {
     const out: { tool: string; props: string[] }[] = [];
-    for (const m of BROWSING_SKILL.body.matchAll(/\b(plow_[a-z_]+) \{([^}]*)\}/g)) {
+    for (const m of browsingSkillFor().body.matchAll(/\b(plow_[a-z_]+) \{([^}]*)\}/g)) {
       const props = m[2]
         .replace(/"[^"]*"/g, "") // drop string contents: they hold dots and commas
         .split(",")
@@ -477,8 +507,8 @@ function manifestStrings(): { where: string; text: string }[] {
       if (prop?.description) out.push({ where: `${tool.name}.${name}`, text: prop.description });
     }
   }
-  out.push({ where: "skill.description", text: BROWSING_SKILL.description });
-  out.push({ where: "skill.body", text: BROWSING_SKILL.body });
+  out.push({ where: "skill.description", text: browsingSkillFor().description });
+  out.push({ where: "skill.body", text: browsingSkillFor().body });
   out.push({ where: "skill.footer", text: SKILL_FOOTER });
   out.push({ where: "serverInfo.title", text: SERVER_IDENTITY.title });
   out.push({ where: "serverInfo.description", text: SERVER_IDENTITY.description });

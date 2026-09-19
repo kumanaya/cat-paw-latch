@@ -57,6 +57,16 @@ exactly the approved capabilities**".
   same reason writes and network do: an Apple event is a side effect — a sent message — that a
   15-minute kill must not truncate, so such a run is never reaped and keeps the housekeeping writes.)
 
+- **`(allow ipc-sysv-sem)`, for a staged plugin's own binary only** — a PyInstaller onefile binary on
+  macOS (the wiki plugin) syncs its bootloader with the Python child through a SysV semaphore, and
+  `semctl` under `(deny default)` failed before Python started. The rule is emitted only when the
+  dispatch runs a plugin's own hash-pinned binary (`sysvSemaphores` on `Executor.run`); an ordinary
+  approved command never gets it. Semaphores only: seatbelt gates the operations rather than
+  creation (`shmget`, `msgget` and `semget` all return an id under any profile), and attaching SysV
+  shared memory, sending on a message queue, and removing either stay denied. SBPL has no filter for
+  this operation, so for that one binary the grant is the host's whole SysV semaphore namespace, not
+  its own sets.
+
 - **the declared-read loop** — the agent's declared `read_paths` are appended *after* the above. They can only
   ever widen an already-broad grant; they never narrow it.
 
@@ -153,16 +163,12 @@ and what the kernel then allows, is entirely your layer.
 
 Four further items in the same area, all yours:
 
-### 4.1 `fixtures/sbpl.json` is inert on every machine but the generator's
+### 4.1 `fixtures/sbpl.json` — resolved
 
-The fixture embeds the generating machine's `$HOME`, so its byte-parity assertions
-**skip** everywhere else. `packages/device-core/test/sandbox.test.ts:31` renders this as
-`"(skipped: fixture from another machine)"` and the test still reports green.
-
-The consequence is that the golden vector which would catch an unintended change to profile
-generation does not run in CI, does not run on any developer machine other than the original, and
-announces itself as a pass. The sandbox suite is weaker than a green run suggests. The live
-execution assertions in that file (write-outside-scope blocked, network deny) do run.
+It used to embed the generating machine's `$HOME` and skip everywhere else, which let it drift
+unnoticed. `sandbox.test.ts` now generates each case for the fixture's own `home`, so the
+byte-parity assertions run on every machine and in CI — `tmp-paths` on macOS only, since it freezes
+`/tmp` resolving to `/private/tmp`.
 
 ### 4.2 A residual symlink-swap window between decision and open
 

@@ -79,13 +79,13 @@ channel, and the enrollment challenge). `intent.json` was **re-frozen** without
 an authenticated agent's call, so there is no agent-held signing key. The device
 signature over a Grant is untouched.
 
-**Assertion strength:** most vectors are asserted byte-for-byte. Three are not.
+**Assertion strength:** most vectors are asserted byte-for-byte. Two are not.
 Ed25519 signing in CryptoKit was *randomized*, so signatures are checked by
 cross-*verification* (a fixture signature must verify under its public key)
 rather than byte-equality; the *signed bytes* (canonical JSON) are asserted
-identical. `sbpl.json` embeds `$HOME`, so its byte-parity cases run only on the
-machine that generated it — `sandbox.test.ts` names them "(skipped: fixture from
-another machine)" elsewhere, which is the three skips in every run of the suite.
+identical. `sbpl.json` embeds a `home`, and `sandbox.test.ts` generates each
+case for that home, so its byte-parity cases run on every machine — `tmp-paths`
+on macOS only, since it freezes /tmp resolving to /private/tmp.
 `pathutil.json` is the quiet one: `golden.test.ts` skips its relative-path cases
 whenever `process.cwd()` differs from the generating cwd, and its `/private`
 cases off darwin, with no marker in the test name — so off the generating
@@ -133,7 +133,7 @@ is the standing inventory — what would be refused if asked — with no
 approval, for the user's "what can you reach?" and for the whole picture
 after a block; the copy tells an agent to try rather than check, since only
 a refused attempt lights the owner's surfaces. The owner's side
-of the same facts is the app's Capabilities tab: every switch with what it
+of the same facts is the app's Permissions section: every switch with what it
 stopped, badged by the rows that need a decision (DESIGN.md §6a).
 
 **Paths are resolved before the human sees them.** Every path an agent supplies
@@ -244,8 +244,8 @@ the stable `device_id` and has no `ready` frame. The two request/response frame
 
 ## First-run login
 
-Download the app and walk through seven stages: Welcome → Privacy → Verify phone
-→ Data & permissions → Keep this Mac reachable → Connect your accounts → You're
+Download the app and walk through seven stages: Welcome → Verify phone → Privacy
+→ Choose your plugins → Grant access → Keep this Mac reachable → You're
 all set. Verification is an
 SMS activation: the app shows the exact message to send from the phone, then
 notices the verified text and links the Mac. Nothing is pasted out of a browser
@@ -257,7 +257,7 @@ account-flow state owner, and `src/plowApi.ts` is the only place that talks HTTP
 to Plow. The window (`renderer/onboarding.html`) draws whatever state the main
 process hands it and owns no copy of its own.
 
-- **Activation handoff:** Continue from Privacy calls `POST /v1/auth/activate`.
+- **Activation handoff:** Get started on Welcome calls `POST /v1/auth/activate`.
   Plow returns the display code, the destination number, and a main-process-only
   activation secret. The user sends the displayed `Plow Activate: …` message;
   the main process polls `POST /v1/auth/activate/redeem`, then calls
@@ -288,8 +288,8 @@ process hands it and owns no copy of its own.
   trusted: plow echoes the scopes and chat grant it actually minted, and a
   credential that came back wider than `relay:call` with no chats is refused
   rather than shown — after it is on screen it has been pasted into somebody's
-  client. Nothing revokes the refused one; it sits on the account as an unusable
-  credential the owner can see and remove under MCP clients.
+  client. Nothing revokes the refused one; it sits on the account held by
+  nobody, since its token is dropped without ever being shown or kept.
 - **The login session IS the credential this Mac keeps.** Latch is the owner's
   manager app, not an agent: it holds the socket, lists chats and Plow's
   numbers, mints agents, buys inference and mints connector tokens. It used to
@@ -306,10 +306,11 @@ process hands it and owns no copy of its own.
   with `relayCredential` as the plaintext fallback, and is never handed to the
   renderer. Sign-out retires it with `POST /v1/relay/devices/self/revoke`, which
   accepts a session: its guard is `relay:device`, and a session's wildcard
-  satisfies it. Macs paired before this change keep their narrow credential
-  until they sign out and back in, and every surface takes it, `GET /v1/lines`
-  included. A credential minted before `chats:list` existed is the exception:
-  that route refuses it and says so.
+  satisfies it. A Mac paired before this change still holds a narrow device
+  key. On each relay connect Latch reads its own row in `GET /v1/api-keys`
+  (no `*:*`, or refused the list, means old), retires that key, signs out and
+  reopens setup with "Sign in again", so the owner gets a session after one
+  text (#419).
 - **The server owns activation expiry.** The screen gives the first five minutes
   an active countdown, but the main process keeps polling while the activation
   remains valid. “Send it again” re-arms that same live code; a fresh code is
