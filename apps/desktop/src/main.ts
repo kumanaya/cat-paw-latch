@@ -252,6 +252,7 @@ let onboardingWindow: BrowserWindow | null = null;
 let onboardingWindowReady: BrowserWindow | null = null;
 let updates: UpdateController | null = null;
 let telemetry: Telemetry | null = null;
+let vaultImportRequested = false;
 
 // MARK: The audit log's live index (auditIndex.ts)
 
@@ -932,7 +933,16 @@ ipcMain.handle("onboarding:openMessages", async () => {
 // The last step of the wizard. It does not just close the setup window — it
 // hands the user over to the app, which is the whole point of the gate: the
 // main window has not existed until now.
-ipcMain.handle("onboarding:finish", async () => {
+ipcMain.handle("onboarding:finish", async (_event, destination?: string) => {
+  if (destination === "import" || destination === "enable-browser-and-import") {
+    if (destination === "enable-browser-and-import") {
+      await updateDisabledPlugins((disabled) => disabled.delete(BROWSER_PLUGIN));
+    }
+    vaultImportRequested = true;
+    const settings = loadSettings(home);
+    settings.selectedTab = "vault";
+    saveSettings(home, settings);
+  }
   gate.sync();
 });
 
@@ -1119,6 +1129,11 @@ ipcMain.handle("vault:importSources", async () => {
     chrome: { icon: chromeApp ? await iconOf(chromeApp) : null },
   };
 });
+
+// Setup can finish before the main window exists. The Vault pane consumes this
+// one-shot request only once it has rendered far enough to host vimportSheet.
+ipcMain.handle("vault:importRequested", async () => vaultImportRequested);
+ipcMain.handle("vault:importAcknowledged", async () => { vaultImportRequested = false; });
 
 // Pasted text: 1Password's "Copy item JSON", or CSV text.
 ipcMain.handle("vault:importInspect", async (_e, text: string) => stageImport(parsePasswordExport(String(text))));

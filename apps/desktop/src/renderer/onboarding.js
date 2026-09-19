@@ -38,6 +38,7 @@ let missed = null;
 /** The id of the switch a redraw hands focus back to, so a click keeps it. */
 let restoreFocus = null;
 let doneAgent = null;
+let doneBrowserEnabled = null;
 /** The Gatekeeper screen's live pieces. Built on entering the step and updated
  * in place, so typing never loses its focus to a redraw. */
 let gatekeeper = null;
@@ -676,11 +677,11 @@ function pluginRow(row) {
     restoreFocus = box.id;
     await showPlugins(() => window.domo.pluginsSetEnabled(row.name, box.checked));
   });
-  const tags = row.requirements.length
-    ? row.requirements.map((req) => req.status === "met"
-      ? el("span", { class: "item-tag met", text: `✓ ${req.title}` })
-      : el("span", { class: "item-tag", text: req.title }))
-    : [el("span", { class: "item-tag none", text: "Nothing to grant" })];
+  const tags = row.status === "off"
+    ? []
+    : row.requirements
+      .filter((req) => req.status !== "met")
+      .map((req) => el("span", { class: "item-tag required", text: `Required: ${req.title}` }));
   return el("div", { class: `item-row${row.status === "off" ? " off" : ""}` }, [
     el("span", { class: "item-icon" }, [
       icon(row.kind === "Browser" ? "browser" : "command", { strokeWidth: "1.7" }),
@@ -688,7 +689,7 @@ function pluginRow(row) {
     el("span", { class: "item-copy" }, [
       el("span", { class: "item-name", text: row.title }),
       row.summary ? el("span", { class: "item-detail", text: row.summary }) : null,
-      el("span", { class: "item-tags" }, tags),
+      tags.length ? el("span", { class: "item-tags" }, tags) : null,
     ]),
     switchEl(box),
   ]);
@@ -708,29 +709,24 @@ function pluginsScreen() {
     void update(() => window.domo.onboardingSetTelemetry(telemetry.checked));
   });
 
+  const examples = (pluginsState?.rows ?? []).filter((row) => row.example);
   const parts = [
     el("div", { class: "head-center" }, [
-      el("h1", { text: "Choose your plugins" }),
+      el("h1", { text: "Give your agents superpowers" }),
       el("p", {
         class: "subhead",
-        text: "Switch on what your agents can use on this Mac. You'll grant what they need next.",
+        text: "Plugins teach your agent how to reliably use your Mac",
       }),
+      examples.length ? el("div", { class: "plugin-examples", attrs: { "aria-label": "Things you can ask" } },
+        examples.map((row) => el("span", { class: "plugin-example" }, [
+          el("small", { text: row.title }),
+          el("span", { text: `“${row.example}”` }),
+        ]))) : null,
     ]),
   ];
   if (pluginsState) {
-    const toGrant = pluginsState.grants.filter((g) => g.status !== "met");
     parts.push(
       el("div", { class: "item-rows" }, pluginsState.rows.map(pluginRow)),
-      el("div", { class: "grant-next" }, [
-        el("div", { class: "section-label", text: "You'll grant next" }),
-        toGrant.length
-          ? el("div", { class: "grant-items" }, toGrant.map((g) =>
-            el("span", { class: "grant-item" }, [
-              document.createTextNode(g.title),
-              el("small", { text: `for ${g.plugins.join(" · ")}` }),
-            ])))
-          : el("p", { class: "grant-empty", text: "Nothing to grant. These work as soon as setup finishes." }),
-      ]),
     );
   }
   parts.push(toggleRow(
@@ -807,22 +803,46 @@ function accessScreen() {
 }
 
 function doneScreen() {
-  const actions = [];
+  const loadingBrowser = doneBrowserEnabled === null;
+  const enablingBrowser = doneBrowserEnabled === false;
+  const importPasswords = button(
+    enablingBrowser ? "Enable Browser & import passwords" : "Import passwords",
+    "nav-next",
+    () => update(() => window.domo.onboardingFinish(
+      enablingBrowser ? "enable-browser-and-import" : "import",
+    )),
+  );
+  importPasswords.setAttribute("autofocus", "");
+  importPasswords.disabled = loadingBrowser;
+  const actions = [importPasswords];
   if (doneAgent) {
-    actions.push(button(`Text ${doneAgent.name}`, "nav-next", async () => {
+    actions.push(button(`Text ${doneAgent.name}`, "done-tertiary", async () => {
       await window.domo.cloudOpenMessages(doneAgent.agentId);
     }));
   }
   actions.push(button(
-    "Explore the app",
-    doneAgent ? "nav-back done-explore" : "nav-next",
+    "Not now",
+    "done-tertiary",
     () => update(() => window.domo.onboardingFinish()),
   ));
-  return el("div", { class: "done-wrap" }, [
-    el("div", { class: "done-badge" }, [
-      icon("checkmark", { strokeWidth: "2.4" }),
-    ]),
-    el("h1", { text: "You're all set" }),
+  const outcomes = [
+    ["banking", "Reconcile bank deposits and catch payment problems."],
+    ["shopping", "Negotiate and verify an Amazon credit."],
+    ["healthcare", "Arrange follow-up care through Kaiser."],
+    ["travel", "Cancel Hipcamp bookings before their refund deadlines."],
+  ];
+  return el("div", { class: "done-wrap password-finish" }, [
+    el("span", { class: "done-key" }, [icon("key", { strokeWidth: "1.8" })]),
+    el("h1", { text: "Put your passwords to work" }),
+    el("p", {
+      class: "subhead",
+      text: "Import passwords so your agents can securely sign in and get things done in your browser.",
+    }),
+    el("div", { class: "browser-outcomes" }, outcomes.map(([label, text]) =>
+      el("div", { class: "browser-outcome" }, [
+        el("span", { class: "outcome-dot", attrs: { "aria-hidden": "true" } }),
+        el("span", {}, [el("small", { text: label }), el("span", { text })]),
+      ]))),
     el("div", { class: "done-actions" }, actions),
   ]);
 }
@@ -972,7 +992,7 @@ function render() {
   }
 
   const kept = restoreFocus ? document.getElementById(restoreFocus) : null;
-  const focus = kept ?? screen.querySelector("input[autofocus]")
+  const focus = kept ?? screen.querySelector("[autofocus]")
     ?? (primaryButton.disabled ? screen.querySelector(".verify-activate:not(:disabled)") : null)
     ?? (!footer.hidden ? primaryButton : null);
   if (focus && !state.busy && !continuingGatekeeper) {
@@ -991,7 +1011,10 @@ async function apply(next) {
     clearTimeout(gatekeeper.timer);
     gatekeeper = null;
   }
-  if (state?.step !== "done") doneAgent = null;
+  if (state?.step !== "done") {
+    doneAgent = null;
+    doneBrowserEnabled = null;
+  }
   if (!onPluginStep()) pluginsState = null;
   if (state?.step !== previousStep) missed = null;
   if (!onPluginStep() && state?.step !== "availability") skipped.clear();
@@ -1003,9 +1026,17 @@ async function apply(next) {
     void refreshAvailability();
   }
   if (state?.step === "done" && previousStep !== "done") {
-    const loaded = await loadDoneAgent(() => window.domo.cloudAgents());
+    const [loaded, plugins] = await Promise.all([
+      loadDoneAgent(() => window.domo.cloudAgents()),
+      window.domo.pluginsGet().catch(() => null),
+    ]);
     if (state?.step !== "done") return;
     doneAgent = loaded;
+    const browser = plugins?.rows?.find((row) => row.kind === "Browser");
+    // A failed status read must never leave an action that can import while
+    // Browser remains off. Enabling is idempotent, so unknown takes the
+    // explicit enable-and-import path once the read settles.
+    doneBrowserEnabled = browser ? browser.status !== "off" : false;
     render();
   }
 }
