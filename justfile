@@ -114,8 +114,8 @@ fetch-browser:
 fetch-browser-both:
     node scripts/build-browser-runtime.mjs --browser-both
 
-# Prove the shipped browser-stack modules load under ELECTRON'S Node (20.x for
-# Electron 33), not just the host's newer Node — the seam the vitest suite can't
+# Prove the shipped browser-stack modules load under ELECTRON'S Node (24.x for
+# Electron 44), not just the host's newer Node — the seam the vitest suite can't
 # reach. Runs the real cookie merger + a playwright-core load check under
 # electron-as-node; no browser, no display, CI-safe. Catches an ABI/loader
 # mismatch (e.g. a native module built for the wrong Node) before packaging.

@@ -2,7 +2,7 @@
  * Runtime smoke for the browser stack UNDER ELECTRON'S NODE — the one thing the
  * vitest suite can't cover, because it runs on the host's own (newer) Node. Run
  * via `just smoke-electron`, which invokes this with ELECTRON_RUN_AS_NODE so
- * `process.versions.node` is Electron's (20.x for Electron 33), the same runtime
+ * `process.versions.node` is Electron's (24.x for Electron 44), the same runtime
  * the packaged app spawns the browser server on.
  *
  * It catches the class of bug the code review found: a module that loads on the

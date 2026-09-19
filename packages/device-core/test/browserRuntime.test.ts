@@ -162,7 +162,10 @@ describe("resolveBrowserRuntime", () => {
   // or it launches the app instead of a node. Whether a packaged, fused,
   // hardened binary honors it is the test machine's smoke to prove.
   it("adds ELECTRON_RUN_AS_NODE under an Electron host, whose execPath is not a node", () => {
-    Object.defineProperty(process.versions, "electron", { value: "33.4.11", configurable: true });
+    // Presence is the whole signal — `resolveBrowserRuntime` reads it as one —
+    // so this is deliberately not a version: a real one goes stale at every
+    // Electron upgrade and then reads as something the branch consults.
+    Object.defineProperty(process.versions, "electron", { value: "1.2.3", configurable: true });
     try {
       const runtime = resolveBrowserRuntime(fakePayload().resources)!;
       expect(runtime.env.ELECTRON_RUN_AS_NODE).toBe("1");
