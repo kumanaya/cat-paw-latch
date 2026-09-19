@@ -12,6 +12,7 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <string.h>
 #include <thread>
 #include <vector>
 
@@ -139,6 +140,17 @@ bool AddRuntimeAce(const std::wstring& runtime, PSID app_container_sid) {
   return AddAppContainerAce(runtime, app_container_sid, GENERIC_READ | GENERIC_EXECUTE);
 }
 
+// Is `path` inside `root`, or `root` itself? Bounded at a separator so a
+// sibling named `...-workspace-elsewhere` is not read as a child, and
+// case-insensitively because that is how Windows compares paths. `root` has no
+// trailing separator (WindowsWorkspace.root is a path.join of scratch and one
+// component).
+bool Under(const std::wstring& path, const std::wstring& root) {
+  if (path.size() < root.size()) return false;
+  if (_wcsnicmp(path.c_str(), root.c_str(), root.size()) != 0) return false;
+  return path.size() == root.size() || path[root.size()] == L'\\' || path[root.size()] == L'/';
+}
+
 bool CreateThenDeleteProfile() {
   const std::wstring name = L"PlowLatch.LauncherProbe." + std::to_wstring(GetCurrentProcessId()) +
                             L"." + std::to_wstring(GetTickCount64());
@@ -217,6 +229,16 @@ int LaunchAppContainer(const LaunchConfig& config) {
   const std::wstring cwd = Wide(config.cwd);
   const std::wstring application = Wide(config.application);
   if (workspace.empty() || cwd.empty() || application.empty()) return 70;
+  // What runs must be the STAGED copy, and what it starts in must be inside the
+  // staged workspace. The AppContainer has read/execute on the runtime roots the
+  // TS side names, so a host executable in argv[0] would be reachable even
+  // though no ACE was ever written for it — the one guard this cage cannot
+  // express itself. Linux's launcher enforces the same bound (its `--bind` makes
+  // every other host path invisible), and TS checks it before writing this
+  // config; repeated here rather than trusted, because the check is what the
+  // staging is FOR. Unusable config answers with the same code as one that
+  // arrived empty.
+  if (!Under(application, workspace) || !Under(cwd, workspace)) return 70;
   const std::wstring profile_name = L"PlowLatch.Run." + std::to_wstring(GetCurrentProcessId()) + L"." + std::to_wstring(GetTickCount64());
   PSID app_sid = nullptr;
   if (FAILED(CreateAppContainerProfile(profile_name.c_str(), profile_name.c_str(), L"Plow Latch command", nullptr, 0, &app_sid))) return 71;

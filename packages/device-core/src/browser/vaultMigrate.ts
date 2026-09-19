@@ -14,8 +14,9 @@
  * decString (vaultCrypto.ts — the live item format anyway), VaultSecretStore
  * (reads the old account; its safeStorage identity is frozen in
  * vaultKeychain.ts, which is why old ciphertext still opens), and
- * /usr/bin/sqlite3, which every macOS ships (Electron 33's Node has no
- * node:sqlite).
+ * /usr/bin/sqlite3, which every macOS ships (written when Electron's Node had
+ * no node:sqlite — 33 / Node 20.18 — and the CLI is what the migration reads
+ * through).
  */
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";

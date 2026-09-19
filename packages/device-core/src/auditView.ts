@@ -221,6 +221,9 @@ export function decidedByLabel(source: string | null): string | null {
     case "no_reviewer": return "AI Reviewer (not configured)";
     case "reviewer_undecided": return "AI Reviewer (would not decide)";
     case "reviewer_unavailable": return "AI Reviewer (no usable verdict)";
+    // No button sends this — see DENIAL_SOURCE_UNRECOGNIZED_ANSWER. Denied, and
+    // named as what it is: a bug or a tampered dialog, not the owner's answer.
+    case "unrecognized_answer": return "Unrecognized answer (denied)";
     case "ask":
     case "prompt": return "You (asked)";
     // The deadline, not a person — see APPROVAL_SOURCE_EXPIRED.

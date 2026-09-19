@@ -1187,9 +1187,12 @@ Decisions and their reasons:
   quit-path flush is bounded (2s, not the SDK's 30s default) so an offline
   Mac never looks like an app refusing to quit.
 - **`posthog-node` is pinned exactly** (5.21.2, no caret): 5.22.0 narrowed
-  its Node engines past what Electron embeds (Node 20.18 in Electron 33), so
-  a caret would drift the packaged app onto an unsupported runtime. Revisit
-  the pin when Electron's Node crosses 20.20/22.22.
+  its Node engines past what Electron embedded at the time (Node 20.18 in
+  Electron 33), so a caret would have drifted the packaged app onto an
+  unsupported runtime. Electron 44 embeds Node 24, so that reason has expired
+  and the pin can be relaxed deliberately — a caret on a telemetry-only
+  dependency, with the lockfile regenerated beside it, not as a rider on
+  another change.
 - **Only the packaged install reports** — same `app.isPackaged` gate as
   updates (§11b), so worktree runs and the test suite pollute nothing. The
   project key is baked into `telemetry.ts` like the API base URL (a PostHog

@@ -329,8 +329,9 @@ A legacy vault whose account cannot be opened reads as **locked** and halts
 the migration — it never reads as empty, because empty is what would quietly
 mint a fresh vault beside the owner's real one. Soft-deleted rows (the old
 trash) are left behind. The database is read via `/usr/bin/sqlite3 -json`
-against a temp clone (Electron 33's Node has no `node:sqlite`, and the
-originals are never written to).
+against a temp clone (written when Electron's Node had no `node:sqlite` — 33 /
+Node 20.18 — and the CLI is what the migration reads through; the originals are
+never written to).
 
 ## Auditing
 
