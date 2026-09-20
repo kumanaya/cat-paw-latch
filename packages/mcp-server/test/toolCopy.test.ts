@@ -121,6 +121,13 @@ describe("the server tells the agent what it is for", () => {
     expect(SERVER_INSTRUCTIONS).toMatch(/never tell the user .* pending/i);
   });
 
+  it("routes Gatekeeper denials to Latch without overriding other denial recovery", () => {
+    expect(SERVER_INSTRUCTIONS).toMatch(/status 'denied'/);
+    expect(SERVER_INSTRUCTIONS).toMatch(/Gatekeeper's AI Reviewer/);
+    expect(SERVER_INSTRUCTIONS).toMatch(/open Plow Latch on their Mac/i);
+    expect(SERVER_INSTRUCTIONS).toMatch(/other 'denied'.*follow its reason/is);
+  });
+
   // The third answer: this Mac itself said no. The distinction agents got
   // wrong is stated outright, the fixed owner sentence is to be relayed
   // verbatim, and a confirmed verdict ends the attempt.
