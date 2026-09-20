@@ -361,9 +361,10 @@ export class CloudAgentState {
   }
 
   /** A Messages deep link for one resolved agent line, kept in main-process state. */
-  agentSmsUrl(agentId: string): string | null {
+  agentSmsUrl(agentId: string, body?: string): string | null {
     const lineUid = this.rows.get(agentId)?.line?.uid;
-    return this.lineDetails(lineUid ?? null).smsUrl;
+    const number = this.lineDetails(lineUid ?? null).messageNumber;
+    return number === null ? null : smsUrl(number, body);
   }
 
   /**
@@ -710,9 +711,9 @@ export class CloudAgentState {
   private lineDetails(lineUid: string | null): {
     line: CloudAgentLine | null;
     canMessage: boolean;
-    smsUrl: string | null;
+    messageNumber: string | null;
   } {
-    if (lineUid === null) return { line: null, canMessage: false, smsUrl: null };
+    if (lineUid === null) return { line: null, canMessage: false, messageNumber: null };
     const agentLine = [...this.agentLines.values()].find((line) => line.uid === lineUid);
     const known = this.lines?.find((line) => line.uid === lineUid);
     const chat = this.chats.find((candidate) => candidate.lineUid === lineUid);
@@ -729,7 +730,7 @@ export class CloudAgentState {
         label: name && number ? `${name} · ${number}` : name || number || "Unknown line",
       },
       canMessage: messageNumber !== null,
-      smsUrl: messageNumber === null ? null : `sms:${messageNumber}`,
+      messageNumber,
     };
   }
 
