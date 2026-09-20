@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { gatekeeperPresets } from "../src/gatekeeperPreview.js";
+import { pluginExamples } from "../src/onboardingExampleCatalog.js";
 import { grantList } from "../src/pluginsModel.js";
 import { onboardingFixtures } from "../src/renderer/onboarding-fixtures.js";
 
 describe("onboarding visual fixtures", () => {
-  const fixtures = onboardingFixtures(1_700_000_000_000);
+  const fixtures = onboardingFixtures(1_700_000_000_000, pluginExamples);
   const fixture = (name: string) => fixtures.find((item) => item.name === name)!;
 
   it("keeps clean verification separate from the interactive re-arm capture", () => {
@@ -30,6 +31,18 @@ describe("onboarding visual fixtures", () => {
       requirements: [],
     }));
     expect(fresh.reject).toContain("Obsidian-style wiki");
+  });
+
+  it("shows shared queries only for plugins present in the setup inventory", () => {
+    expect(fixture("plugins-fresh").plugins.examples).toEqual([
+      { query: "Check the family calendar", plugins: ["Gmail and Google Calendar"] },
+      { query: "Text Mary “Running late”", plugins: ["iMessage history"] },
+      { query: "Sign in to Instacart with your password", plugins: ["Browser use"] },
+      { query: "Find unread email from your team", plugins: ["Gmail and Google Calendar"] },
+    ]);
+    expect(fixture("plugins-fresh").plugins.examples).not.toContainEqual(
+      expect.objectContaining({ query: expect.stringContaining("cabin") }),
+    );
   });
 
   it("draws the gatekeeper from the presets main serves", () => {
