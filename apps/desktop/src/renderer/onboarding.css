@@ -682,6 +682,18 @@ body.on-welcome.welcome-full .wizard-footer .nav-next {
   pointer-events: none;
 }
 
+.verify-actions .alternate {
+  margin-top: 12px;
+}
+
+.verify-recovery {
+  margin-top: 44px;
+  gap: 16px;
+}
+
+.verify-recovery .state-note {
+  margin: 0;
+}
 .countdown {
   margin: 10px 0 0;
   color: var(--muted);

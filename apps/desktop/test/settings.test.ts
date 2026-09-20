@@ -278,6 +278,22 @@ describe("the credential at rest", () => {
     expect(loadSettings(home).relayCredential).toBe("plow_sk_secret_value");
   });
 
+  it("seals credentials queued for revocation and restores every one", () => {
+    useCredentialCodec(fakeCodec());
+    const home = tempHome();
+    const settings = loadSettings(home);
+    settings.pendingRevokeCredentials = ["plow_sk_retire_first", "plow_sk_retire_second"];
+    saveSettings(home, settings);
+
+    const raw = fs.readFileSync(path.join(home, "app/settings.json"), "utf8");
+    expect(raw).not.toContain("plow_sk_retire_first");
+    expect(raw).not.toContain("plow_sk_retire_second");
+    expect(fileOf(home).pendingRevokeCredentials).toEqual([]);
+    expect(fileOf(home).pendingRevokeCredentialsEnc).toBeTruthy();
+    expect(loadSettings(home).pendingRevokeCredentials)
+      .toEqual(["plow_sk_retire_first", "plow_sk_retire_second"]);
+  });
+
   it("migrates a plaintext credential on the first read that can seal it", () => {
     const home = tempHome();
     const settings = loadSettings(home);
@@ -357,6 +373,34 @@ describe("the credential at rest", () => {
       accountUid: "",
       mcpUrl: "",
     });
-    expect(fileOf(home).relayCredentialEnc).toBeUndefined();
+    const recovered = fileOf(home);
+    expect(recovered.relayCredentialEnc).toBeUndefined();
+    expect(recovered.pendingRevokeCredentialsEnc).toEqual(["garbage-from-another-keychain"]);
+  });
+
+  it("does not replace an older opaque revoke seal when another credential is queued", () => {
+    const codec = fakeCodec();
+    useCredentialCodec(codec);
+    const home = tempHome();
+    const first = loadSettings(home);
+    first.pendingRevokeCredentials = ["plow_sk_older_pending"];
+    saveSettings(home, first);
+
+    const file = path.join(home, "app/settings.json");
+    const raw = fileOf(home);
+    raw.pendingRevokeCredentialsEnc = ["opaque-from-locked-keychain"];
+    fs.writeFileSync(file, JSON.stringify(raw));
+
+    const withOpaque = loadSettings(home);
+    withOpaque.pendingRevokeCredentials.push("plow_sk_new_pending");
+    saveSettings(home, withOpaque);
+
+    const saved = fileOf(home);
+    expect(saved.pendingRevokeCredentialsEnc).toEqual([
+      "opaque-from-locked-keychain",
+      `sealed:${Buffer.from("plow_sk_new_pending").toString("base64")}`,
+    ]);
+    expect(saved.pendingRevokeCredentials).toEqual([]);
+    expect(loadSettings(home).pendingRevokeCredentials).toEqual(["plow_sk_new_pending"]);
   });
 });

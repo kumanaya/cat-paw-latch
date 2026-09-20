@@ -11,7 +11,54 @@
  */
 import { loadSettings, saveSettings, Settings } from "./settings.js";
 import { InferenceStatus, inferenceStatus } from "./reviewPolicy.js";
-import { keyPrefixOf, PlowApi } from "./plowApi.js";
+import { PlowApiError } from "./plowApi.js";
+
+export function queuePendingRevoke(settings: Settings, credential: string): void {
+  const pending = credential.trim();
+  if (!pending) return;
+  if (!settings.pendingRevokeCredentials.includes(pending)) {
+    settings.pendingRevokeCredentials.push(pending);
+  }
+}
+
+function forgetPendingRevoke(home: string, credential: string): void {
+  update(home, (s) => {
+    s.pendingRevokeCredentials = s.pendingRevokeCredentials.filter((pending) => pending !== credential);
+  });
+}
+
+/** One immediate pass over the durable queue. Callers provide the cadence:
+ * launch, sign-out, relay recovery, and main's existing one-minute heartbeat.
+ * Overlapping callers share one flight. */
+export class PendingRevokeRetrier {
+  private flight: Promise<void> | null = null;
+
+  constructor(
+    private readonly home: string,
+    private readonly revoke: (credential: string) => Promise<unknown>,
+  ) {}
+
+  start(): Promise<void> {
+    if (this.flight) return this.flight;
+    const current = (async () => {
+      for (const credential of [...loadSettings(this.home).pendingRevokeCredentials]) {
+        try {
+          await this.revoke(credential);
+          forgetPendingRevoke(this.home, credential);
+        } catch (error) {
+          if (error instanceof PlowApiError && error.kind === "unauthorized") {
+            forgetPendingRevoke(this.home, credential);
+          }
+        }
+      }
+    })();
+    const wrapped = current.finally(() => {
+      if (this.flight === wrapped) this.flight = null;
+    });
+    this.flight = wrapped;
+    return wrapped;
+  }
+}
 
 /** Read-modify-write. What the user chose is what stays on disk. */
 function update(home: string, mutate: (settings: Settings) => void): Settings {
@@ -29,6 +76,15 @@ export function readInference(home: string): InferenceStatus {
 /** What the owner wrote about what agents are for. Empty until they write it. */
 export function readAgentPurpose(home: string): string {
   return loadSettings(home).agentPurpose ?? "";
+}
+
+function clearPlowSession(settings: Settings): void {
+  settings.relayCredential = "";
+  settings.relayCredentialEnc = undefined;
+  settings.accountUid = "";
+  settings.mcpUrl = "";
+  settings.setupComplete = false;
+  settings.onboardingResumeStep = undefined;
 }
 
 /**
@@ -59,20 +115,8 @@ export function setAgentPurpose(home: string, purpose: unknown): string {
  * legal state that denies legibly, and rewriting the owner's choice behind
  * their back on sign-out was never the honest way to say so.
  */
-export function signOutOfPlow(home: string, unretiredPrefix?: string): void {
-  update(home, (s) => {
-    s.relayCredential = "";
-    s.relayCredentialEnc = undefined;
-    s.accountUid = "";
-    s.mcpUrl = "";
-    s.setupComplete = false;
-    s.onboardingResumeStep = undefined;
-    if (unretiredPrefix) s.unretiredKeyPrefixes = [...(s.unretiredKeyPrefixes ?? []), unretiredPrefix];
-  });
-}
-
-function forgetUnretired(home: string, retired: readonly string[]): void {
-  update(home, (s) => (s.unretiredKeyPrefixes = s.unretiredKeyPrefixes?.filter((p) => !retired.includes(p))));
+export function signOutOfPlow(home: string): void {
+  update(home, clearPlowSession);
 }
 
 /**
@@ -91,68 +135,17 @@ export function isSignedIn(home: string): boolean {
 }
 
 /**
- * Sign out: forget the credential here, and ask Plow to retire it.
+ * Sign out locally and retain the credential only in the retirement queue.
  *
- * LOCAL FIRST, and synchronously, before this function's first `await`. Erasing
- * the on-disk copy is the only half the app can guarantee on its own; revoking
- * is a network round-trip. Putting the round-trip in front would make "signed
- * out" depend on reaching a server, and a Mac that cannot reach Plow is the one
- * whose owner most wants the local copy gone.
- *
- * The revoke is BEST EFFORT, deliberately. Offline, API down, route not
- * deployed, any error at all: the local clear has already happened and sign-out
- * logs one fixed sentence, with no server text or credential. **Completing the
- * revoke across a quit is explicitly NOT
- * guaranteed** — if the user quits while it is in flight, the credential stays
- * live on the account until it idles out or is retired by other means.
- *
- * `revoke` is injected for one reason: it is what makes "sign-out always clears
- * locally, even when the revoke fails" executable by a test. `main.ts` cannot
- * be imported under vitest, so that property is only provable while this lives
- * here.
- *
- * The credential's `key_prefix` joins `unretiredKeyPrefixes` in the same write
- * that clears it, before the first `await` — see `retireUnretiredSession`. A
- * successful revoke removes it again.
+ * The network executor is deliberately elsewhere. This atomic disk mutation
+ * makes sign-out immediate; the shared retrier runs right after it and again
+ * from launch, relay recovery, and the app heartbeat.
  */
-export async function revokeAndSignOut(
-  home: string,
-  revoke: (credential: string) => Promise<unknown>,
-): Promise<boolean> {
-  const credential = (loadSettings(home).relayCredential ?? "").trim();
-  const prefix = credential ? keyPrefixOf(credential) : undefined;
-  signOutOfPlow(home, prefix);
-  if (!prefix) return true;
-  try {
-    await revoke(credential);
-    forgetUnretired(home, [prefix]);
-    return true;
-  } catch {
-    console.warn("[settings] session revoke failed; already signed out locally");
-    return false;
-  }
-}
-
-/**
- * Retire every session `revokeAndSignOut` recorded but couldn't reach — Plow
- * refuses to register this Mac's device to a new session while an old one is
- * still live (409). Errors propagate: the relay client's own backoff retries
- * `beforeConnect`, and the records stay on disk for that retry.
- */
-export async function retireUnretiredSession(
-  home: string,
-  api: Pick<PlowApi, "listApiKeys" | "revokeApiKey">,
-): Promise<void> {
-  const settings = loadSettings(home);
-  const prefixes = settings.unretiredKeyPrefixes ?? [];
-  const credential = (settings.relayCredential ?? "").trim();
-  if (!prefixes.length || !credential) return;
-  const keys = await api.listApiKeys(credential);
-  for (const key of keys) {
-    if (key.is_active && key.key_prefix && prefixes.includes(key.key_prefix)) await api.revokeApiKey(credential, key.id);
-  }
-  // Only this account's keys are listed; another account's prefix waits for it.
-  forgetUnretired(home, prefixes.filter((prefix) => keys.some((key) => key.key_prefix === prefix)));
+export function queueRevokeAndSignOut(home: string): void {
+  update(home, (s) => {
+    queuePendingRevoke(s, s.relayCredential);
+    clearPlowSession(s);
+  });
 }
 
 /**

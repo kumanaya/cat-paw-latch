@@ -263,19 +263,15 @@ export function onboardingFixtures(now) {
       expectFocus: "Send in Messages",
     },
     {
-      name: "signed-out-revoke-warning",
+      name: "verify-unavailable",
       state: {
         ...base,
-        step: "welcome",
-        message:
-          "Signed out on this Mac. Plow could not be reached to revoke the session — Plow Latch revokes it the next time this Mac signs in, or revoke it now in Plow's account settings.",
+        step: "activate",
+        message: "Plow isn’t responding right now.",
       },
-      expect: [
-        "Signed out on this Mac",
-        "Plow could not be reached to revoke the session",
-        "Plow Latch revokes it the next time this Mac signs in",
-      ],
-      expectFocus: "Get started",
+      expect: ["Plow isn’t responding right now.", "Try again"],
+      reject: ["Getting a code from Plow", "Talking to Plow"],
+      expectFocus: "Try again",
     },
     {
       name: "waiting",
