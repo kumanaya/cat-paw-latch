@@ -22,7 +22,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { PostHog } from "posthog-node";
-import { capabilityDisplay, Intent, JSONValue } from "@domo/protocol";
+import { Intent, JSONValue } from "@domo/protocol";
 import {
   ApprovalStore,
   LEGACY_VAULT_SERVER_FRAGMENTS,
@@ -89,9 +89,9 @@ import { SimulatedScenario, SimulatedUpdater, UpdateController } from "./updates
 import { adversarialReview } from "./adversarialAgent.js";
 import { gatekeeperPresets, previewRow } from "./gatekeeperPreview.js";
 import {
+  dismissGatekeeperAttention,
   gatekeeperRecoveryView,
   type GatekeeperRecoveryView,
-  representativeCommands,
   suggestGatekeeperRevision,
 } from "./gatekeeperRecovery.js";
 import {
@@ -100,7 +100,6 @@ import {
   Decided,
   decideIntent,
   ReviewHint,
-  ownerOverrideMayGrant,
   storedRuleMayGrant,
 } from "./reviewPolicy.js";
 import {
@@ -260,8 +259,8 @@ let onboardingWindow: BrowserWindow | null = null;
 let onboardingWindowReady: BrowserWindow | null = null;
 let updates: UpdateController | null = null;
 let telemetry: Telemetry | null = null;
-/** Latest AI Reviewer denial still useful to the owner. Raw intents remain in
- * PolicyEngine; the renderer gets only this capability-display view. */
+/** Latest AI Reviewer denial used for the cross-tab notice. Durable recovery
+ * context comes from Audit; the renderer gets only this capability-display view. */
 let gatekeeperAttention: GatekeeperRecoveryView | null = null;
 const gatekeeperNotified = new Set<string>();
 
@@ -355,10 +354,6 @@ class ElectronPolicy implements PolicyDelegate {
    */
   mayGrantFromStoredRule(): boolean {
     return storedRuleMayGrant(loadSettings(home));
-  }
-
-  mayGrantFromOwnerOverride(): boolean {
-    return ownerOverrideMayGrant(loadSettings(home));
   }
 
   // The branching itself lives in reviewPolicy.ts so it is testable without a
@@ -614,6 +609,11 @@ ipcMain.handle("audit:clear", async () => {
   });
   if (response !== 1) return false;
   device.audit.clear();
+  if (gatekeeperAttention) {
+    gatekeeperAttention = null;
+    refreshTray();
+    notifyRenderer("gatekeeperRecovery:changed");
+  }
   return true;
 });
 // Approvals still awaiting an answer, so the UI can show what is outstanding
@@ -626,28 +626,34 @@ ipcMain.handle("rules:remove", async (_e, key: string) => {
   device?.policy.removeRule(key);
 });
 ipcMain.handle("gatekeeperRecovery:get", async () => gatekeeperAttention);
-ipcMain.handle("gatekeeperRecovery:allowOnce", async (_e, intentId: unknown) => {
-  if (typeof intentId !== "string" || gatekeeperAttention?.intentId !== intentId || !device) {
-    return gatekeeperAttention;
+ipcMain.handle("gatekeeperRecovery:dismiss", async (_e, intentId: unknown) => {
+  if (typeof intentId !== "string") return gatekeeperAttention;
+  const before = gatekeeperAttention;
+  gatekeeperAttention = dismissGatekeeperAttention(gatekeeperAttention, intentId);
+  if (gatekeeperAttention !== before) {
+    refreshTray();
+    notifyRenderer("gatekeeperRecovery:changed");
   }
-  device.policy.armDeniedIntentOnce(intentId);
-  const denied = device.policy.deniedIntent(intentId);
-  gatekeeperAttention = denied ? gatekeeperRecoveryView(denied) : null;
-  notifyRenderer("gatekeeperRecovery:changed");
   return gatekeeperAttention;
 });
-ipcMain.handle("gatekeeperRecovery:suggest", async (_e, intentId: unknown) => {
-  if (typeof intentId !== "string" || gatekeeperAttention?.intentId !== intentId || !device) {
+ipcMain.handle("gatekeeperRecovery:suggest", async (_e, activityId: unknown) => {
+  if (typeof activityId !== "string") {
     return { ok: false, reason: "That denied request is no longer available" };
   }
-  const denied = device.policy.deniedIntent(intentId);
-  if (!denied) return { ok: false, reason: "That denied request is no longer available" };
+  const activity = ensureAuditIndex().get(activityId);
+  if (
+    !activity ||
+    activity.decisionKind !== "denied" ||
+    activity.decisionSource !== "adversarial" ||
+    !activity.intentId
+  ) {
+    return { ok: false, reason: "That denied request is no longer available" };
+  }
   const settings = loadSettings(home);
   return suggestGatekeeperRevision({
     currentPurpose: settings.agentPurpose ?? "",
-    deniedRequest: denied.intent.request,
-    capabilities: denied.intent.capabilities.map((capability) => capabilityDisplay(capability)),
-    typicalCommands: representativeCommands(ensureAuditIndex().activities(), intentId),
+    deniedRequest: activity.title,
+    capabilities: activity.capabilities,
     plowCredential: settings.relayCredential ?? "",
     apiBaseUrl,
   });
@@ -665,7 +671,13 @@ ipcMain.handle("ui:getTab", async () => {
     void connectClient?.refreshRoster();
   }
   // Retired keys land where their content lives now, not on the default tab.
-  return tab === "connect" ? "agents" : tab === "capabilities" ? "plugins" : tab;
+  return tab === "connect"
+    ? "agents"
+    : tab === "capabilities"
+      ? "plugins"
+      : tab === "rules"
+        ? "audit"
+        : tab;
 });
 ipcMain.handle("ui:setTab", async (_e, tab: string) => {
   const settings = loadSettings(home);
@@ -2426,20 +2438,12 @@ app.whenReady().then(async () => {
         (vaultState.status === "locked" ? ` (${vaultState.reason})` : ""),
     );
   }
-  // An always-allow answer in the approval window stores a rule; a Rules pane
-  // already on screen used to show it only after a tab switch.
+  // An always-allow answer in the approval window stores a rule; Audit's open
+  // Gatekeeper card or rules modal should show it without a tab switch.
   device.policy.events.on("changed", () => notifyRenderer("rules:changed"));
   device.policy.events.on(
     "reviewer_denied",
     ({ intentId }: { intentId: string }) => noteGatekeeperDenial(intentId),
-  );
-  device.policy.events.on(
-    "override_armed",
-    ({ intentId }: { intentId: string }) => updateGatekeeperOverride(intentId),
-  );
-  device.policy.events.on(
-    "override_consumed",
-    ({ intentId }: { intentId: string }) => updateGatekeeperOverride(intentId),
   );
   // Live-refresh the audit view whenever a new event is recorded: fold the
   // line into the index (once it exists — before first use the initial load
@@ -2834,18 +2838,10 @@ function noteGatekeeperDenial(intentId: string): void {
   gatekeeperNotified.add(key);
   const notification = new Notification({
     title: "Gatekeeper denied an agent request",
-    body: "Open Plow Latch to review it, allow one matching retry, or improve your Gatekeeper instructions.",
+    body: "Open Plow Latch to review it or improve your Gatekeeper instructions.",
   });
   notification.on("click", showGatekeeperRecovery);
   notification.show();
-}
-
-function updateGatekeeperOverride(intentId: string): void {
-  if (gatekeeperAttention?.intentId !== intentId) return;
-  const denied = device?.policy.deniedIntent(intentId);
-  gatekeeperAttention = denied ? gatekeeperRecoveryView(denied) : null;
-  refreshTray();
-  notifyRenderer("gatekeeperRecovery:changed");
 }
 
 function showGatekeeperRecovery(): void {

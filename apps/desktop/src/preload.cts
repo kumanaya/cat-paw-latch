@@ -26,10 +26,10 @@ contextBridge.exposeInMainWorld("domo", {
   rulesList: () => ipcRenderer.invoke("rules:list"),
   rulesRemove: (key: string) => ipcRenderer.invoke("rules:remove", key),
   gatekeeperRecoveryGet: () => ipcRenderer.invoke("gatekeeperRecovery:get"),
-  gatekeeperRecoveryAllowOnce: (intentId: string) =>
-    ipcRenderer.invoke("gatekeeperRecovery:allowOnce", intentId),
-  gatekeeperRecoverySuggest: (intentId: string) =>
-    ipcRenderer.invoke("gatekeeperRecovery:suggest", intentId),
+  gatekeeperRecoveryDismiss: (intentId: string) =>
+    ipcRenderer.invoke("gatekeeperRecovery:dismiss", intentId),
+  gatekeeperRecoverySuggest: (activityId: string) =>
+    ipcRenderer.invoke("gatekeeperRecovery:suggest", activityId),
   // The rule set changed under the pane: an approval answered "always allow"
   // stored one, or one was revoked.
   onRulesChanged: (cb: () => void) => ipcRenderer.on("rules:changed", cb),
