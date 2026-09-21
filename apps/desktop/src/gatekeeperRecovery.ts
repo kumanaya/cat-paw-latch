@@ -1,9 +1,7 @@
 import type { DeniedIntent } from "@domo/device-core";
 import { echoesCredential, normalizeApiBaseUrl, PlowApi } from "./plowApi.js";
 import {
-  REVIEWER_MAX_TOKENS,
-  REVIEWER_MODEL,
-  REVIEWER_THINKING_BUDGET,
+  REVIEWER_COMPLETION_BASE,
   REVIEWER_TIMEOUT_MS,
 } from "./adversarialAgent.js";
 
@@ -104,9 +102,7 @@ export async function suggestGatekeeperRevision(
     ({ status, body } = await new PlowApi(normalizeApiBaseUrl(args.apiBaseUrl)).chatCompletion(
       credential,
       {
-        model: REVIEWER_MODEL,
-        max_tokens: REVIEWER_MAX_TOKENS,
-        thinking: { type: "enabled", budget_tokens: REVIEWER_THINKING_BUDGET },
+        ...REVIEWER_COMPLETION_BASE,
         response_format: {
           type: "json_schema",
           json_schema: { name: "gatekeeper_revision", strict: true, schema: schema() },

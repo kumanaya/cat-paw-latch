@@ -9,8 +9,8 @@
  * Inference runs through Plow's OpenAI-shaped `/v1/chat/completions`, billed to
  * the user's Plow account and authenticated with the device's relay credential.
  *
- * The model uses the classic extended-thinking parameter (`budget_tokens`), not
- * the newer `effort` control, and the verdict comes back as structured JSON.
+ * The model thinks adaptively — it decides its own depth, rather than being
+ * handed a token budget — and the verdict comes back as structured JSON.
  */
 import { capabilityDisplay, Intent, JSONValue, jv } from "@domo/protocol";
 import { ApiBaseUrl, normalizeApiBaseUrl, PlowApi } from "./plowApi.js";
@@ -20,11 +20,24 @@ import { ApiBaseUrl, normalizeApiBaseUrl, PlowApi } from "./plowApi.js";
  * provider-prefixed id — a bare model name is refused by the allowlist.
  *
  * Recorded on every `adversarial_review_started`, so the audit log names the
- * model that actually saw the intent. Keep in sync with the request below.
+ * model that actually saw the intent.
  */
-export const REVIEWER_MODEL = "anthropic/claude-sonnet-4-6";
-export const REVIEWER_THINKING_BUDGET = 2048;
-export const REVIEWER_MAX_TOKENS = 4096;
+export const REVIEWER_MODEL = "anthropic/claude-sonnet-5";
+/**
+ * The wire contract both Gatekeeper calls share, spread into each payload so
+ * there is one spelling of it rather than two kept in sync by hand — which is
+ * how the reviewer and the recovery coach could have drifted apart on the
+ * thinking shape, the drift this file's history already shows.
+ */
+export const REVIEWER_COMPLETION_BASE = {
+  model: REVIEWER_MODEL,
+  max_tokens: 4096,
+  // Adaptive is the only on-mode sonnet-5 accepts — a `budget_tokens` thinking
+  // param comes back as an opaque provider 400, which in adversarial mode is a
+  // DENY (`reviewPolicy.ts`). litellm forwards this shape verbatim to an
+  // adaptive-capable model.
+  thinking: { type: "adaptive" },
+} as const;
 /**
  * How long a review may take before we give up on it.
  *
@@ -429,14 +442,9 @@ function plowCall(
       ({ status, body } = await api.chatCompletion(
         credential,
         {
-          model: REVIEWER_MODEL,
-          // No `temperature`: litellm forwards it and Anthropic rejects a
-          // non-default temperature alongside extended thinking.
-          max_tokens: REVIEWER_MAX_TOKENS,
-          // budget_tokens must stay < max_tokens; litellm only auto-raises
-          // max_tokens when the caller sends none, and a violation comes back
-          // as an opaque provider 400.
-          thinking: { type: "enabled", budget_tokens: REVIEWER_THINKING_BUDGET },
+          ...REVIEWER_COMPLETION_BASE,
+          // No `temperature`: litellm forwards it and Sonnet 5 rejects the
+          // sampling params outright.
           response_format: {
             type: "json_schema",
             json_schema: {

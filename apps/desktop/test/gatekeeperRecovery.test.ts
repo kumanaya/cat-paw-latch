@@ -79,6 +79,11 @@ describe("suggestGatekeeperRevision", () => {
       additionalProperties: false,
     });
     expect(JSON.stringify(body)).not.toContain(CREDENTIAL);
+    // …on the reviewer's own wire contract: the coach shares
+    // `REVIEWER_COMPLETION_BASE`, and sonnet-5 rejects a `budget_tokens`
+    // thinking param outright.
+    expect(body.model).toBe("anthropic/claude-sonnet-5");
+    expect(body.thinking).toEqual({ type: "adaptive" });
   });
 
   it("returns a proposal without changing the current purpose", async () => {
