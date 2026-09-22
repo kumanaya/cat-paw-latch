@@ -3,8 +3,9 @@
 
 import { onboardingFixtures } from "./onboarding-fixtures.js";
 import { pluginExamples } from "../onboardingExampleCatalog.js";
+import * as steps from "../onboardingSteps.js";
 
-const fixtures = onboardingFixtures(Date.now(), pluginExamples);
+const fixtures = onboardingFixtures(Date.now(), pluginExamples, steps);
 const fixturesByName = new Map(fixtures.map((fixture) => [fixture.name, fixture]));
 const params = new URLSearchParams(window.location.search);
 let initialGetDelayMs = Number(params.get("onboardingGetDelayMs")) || 0;
@@ -50,6 +51,9 @@ window.domo = {
   cloudAgents: async () => selected.cloud ?? null,
   cloudOpenMessages: async () => {},
   pluginsGet: plugins,
+  // Answers with nothing in production; the preview matches, so its fixture's
+  // `landed` stands and the animation is visible here.
+  pluginsAcknowledge: async () => {},
   pluginsSetEnabled: plugins,
   requirementsAct: async () => ({ ...selected.plugins, error: null }),
   appRelaunch: async () => {},

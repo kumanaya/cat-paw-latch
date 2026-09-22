@@ -10,6 +10,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import type { ResumableStep } from "./onboardingSteps.js";
+
 /**
  * How the credential is encrypted at rest, when the OS offers a way.
  *
@@ -218,6 +220,11 @@ export interface Settings {
   /** When the owner last dismissed the Capabilities banner (ISO-8601);
    *  blocks before it stay out of the next banner. */
   blockedBannerSeenAt?: string;
+  /** Whether the owner has been shown that Full Disk Access is usable.
+   *  `fullDiskLanded` in capabilitiesModel.ts reads it against the live state,
+   *  and it is shared on purpose, so one grant cannot produce both a setup
+   *  animation and, later, a banner for the same event. */
+  fullDiskGrantedSeen?: boolean;
   /** Keep this Mac awake while plugged in (off until setup's Availability
    * screen turns it on). The opt-in only —
    * keepAwake.ts owns when a blocker is actually held (AC power only, and an
@@ -231,8 +238,9 @@ export interface Settings {
   /** The first-run setup has reached its final screen. Kept separately from
    * the credential because the data choice happens after sign-in. */
   setupComplete: boolean;
-  /** Where an incomplete setup should resume after a relaunch it requested. */
-  onboardingResumeStep?: "access";
+  /** The setup screen an incomplete setup resumes on — whatever ended the last
+   * run. `onboardingSteps.ts` owns which screens may appear here. */
+  onboardingResumeStep?: ResumableStep;
 }
 
 function settingsPath(home: string): string {

@@ -10,6 +10,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { onboardingFixtures } from "../src/renderer/onboarding-fixtures.js";
 import { pluginExamples } from "../dist/onboardingExampleCatalog.js";
+import * as steps from "../dist/onboardingSteps.js";
 import { ONBOARDING_FAILURE_MESSAGE } from "../src/renderer/onboardingFallback.js";
 import { FONT_WAIT_CEILING_MS } from "../src/renderer/welcomeEntrance.js";
 import { clickText, failLoudly, shootScreens, shotWindow } from "./screenshot-harness.mjs";
@@ -20,7 +21,7 @@ const outDir = process.env.OUT_DIR ?? "/tmp";
 const REARM_NOTE =
   "That code still works — send it exactly as shown and this screen will move on by itself.";
 
-const fixtureScreens = onboardingFixtures(Date.now(), pluginExamples).map((fixture) => ({
+const fixtureScreens = onboardingFixtures(Date.now(), pluginExamples, steps).map((fixture) => ({
   ...fixture,
   expectFooter: fixture.state?.step !== "done",
   expectBack: fixture.state?.canGoBack === true,
@@ -114,6 +115,10 @@ ipcMain.handle("plugins:get", async () => {
   if (currentFixture.pluginsPending) return new Promise(() => {});
   return currentFixture.plugins;
 });
+// Access calls this once it has drawn a payload. It answers with nothing in
+// production, and nothing here either — the fixture's `landed` has to stand,
+// or the shot is of a screen that already forgot what it was celebrating.
+ipcMain.handle("plugins:acknowledge", async () => {});
 ipcMain.handle("plugins:setEnabled", async () => currentFixture.plugins);
 ipcMain.handle("requirements:act", async () => ({ ...currentFixture.plugins, error: null }));
 ipcMain.handle("app:relaunch", async () => {});

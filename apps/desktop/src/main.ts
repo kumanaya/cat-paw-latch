@@ -62,7 +62,7 @@ import { AuditIndex, AuditQuery } from "./auditIndex.js";
 import { appBundleName, appBundlePath, decodeTileImage, windowInWorkArea } from "./permissionFlow.js";
 import { FdaGrantFlow, GrantTarget } from "./fdaGrantFlow.js";
 import { AUTOMATION_APPS, automationApp, osascriptRunner, reconcile, requestAutomation } from "./automation.js";
-import { capabilitiesView, CapabilitiesView, FullDiskState, FullDiskWatch, isGroup, paneFor, permissionTitle } from "./capabilitiesModel.js";
+import { capabilitiesView, CapabilitiesView, fullDiskLanded, FullDiskState, FullDiskWatch, isGroup, paneFor, permissionTitle } from "./capabilitiesModel.js";
 import { browserPluginRow, grantList, pluginExamples, pluginRows, type GrantItem, type PluginExample, type PluginRow } from "./pluginsModel.js";
 import { actOnRequirement } from "./requirements.js";
 import { enableSafariJavaScript, Runner, safariJavaScriptEnabled } from "./safariJavaScript.js";
@@ -1678,7 +1678,7 @@ function connectorAccountNotices(): Record<string, { message: string; noteKind: 
  *  cannot disagree. The inventory asks only about the Automation pairs a
  *  staged plugin declares: this runs on every refresh, and the full sweep
  *  waits out a probe timeout on any app not answering Apple events. */
-async function pluginsNow(): Promise<{ rows: PluginRow[]; grants: GrantItem[]; examples: PluginExample[] }> {
+async function pluginsNow(): Promise<{ rows: PluginRow[]; grants: GrantItem[]; examples: PluginExample[]; landed: string[] }> {
   const disabled = new Set(loadSettings(home).disabledPlugins ?? []);
   const automationTargets = stagedPlugins
     .flatMap((p) => p.manifest.requires.permissions)
@@ -1708,7 +1708,21 @@ async function pluginsNow(): Promise<{ rows: PluginRow[]; grants: GrantItem[]; e
     relaunchPending,
     description: device?.skills.skill(BROWSING_SKILL.name)?.description ?? BROWSING_SKILL.description,
   }));
-  return { rows, grants: grantList(rows), examples: pluginExamples(rows) };
+  // What the owner has not been shown yet. Only Full Disk Access populates it
+  // today; the list shape means the Google account and Safari slot in later
+  // without a rename. A grant that needed the relaunch macOS forces is the
+  // whole point: the process that watched it change is gone, so nothing but
+  // the stored `fullDiskGrantedSeen` can tell the new one it is news.
+  // This read is PURE, and that is what makes the celebration survivable.
+  // Marking it seen here meant one read consumed it, so when `latestOnly`
+  // discarded that response for a newer one the mark was already written and
+  // the animation never reached the DOM. Reading without consuming means every
+  // concurrent read carries the same answer and whichever one the renderer
+  // commits still has it; `plugins:acknowledge` records it afterwards.
+  const landed = fullDiskLanded(fullDiskState, loadSettings(home).fullDiskGrantedSeen)
+    ? ["full_disk_access"]
+    : [];
+  return { rows, grants: grantList(rows), examples: pluginExamples(rows), landed };
 }
 
 /** Plugins → Continue: does a switched-on plugin still need a grant? A resumed
@@ -1725,6 +1739,24 @@ async function accessNeeded(): Promise<boolean> {
 }
 
 ipcMain.handle("plugins:get", async () => pluginsNow());
+
+/** The Access screen, once it has COMMITTED a payload and drawn it: the owner
+ *  has now seen whatever Full Disk Access is, so the next change is the next
+ *  thing worth showing. After the render, never during the read — a mark
+ *  written by a response that `latestOnly` then discards consumes a
+ *  celebration nobody saw.
+ *
+ *  Re-probes rather than trusting the caller, so the renderer never decides
+ *  what was observed, and writes only when the inventory answered: the
+ *  baseline it records is what separates an install that has always had the
+ *  grant from one about to receive it. Answers with nothing — fresh state here
+ *  would replace the chip the screen is still animating. */
+ipcMain.handle("plugins:acknowledge", async () => {
+  const inventory = device ? await device.hostInventory({ automationTargets: [] }) : null;
+  const state = inventory ? fullDiskStateOf(inventory) : undefined;
+  if (state === undefined) return;
+  saveSettings(home, { ...loadSettings(home), fullDiskGrantedSeen: state === "granted" });
+});
 
 /** The owner's off switches: the disabled NAMES persist (a later plugin is on
  *  by default), and the device is told in the same breath, so the skill and
@@ -1762,9 +1794,10 @@ ipcMain.handle("requirements:act", async (e, rawId: unknown) => {
   return { ...now, error };
 });
 // A relaunch-pending requirement's button, and setup's "Relaunch to finish":
-// the same relaunch the simulated updater's install does.
+// the same relaunch the simulated updater's install does. Nothing to arm —
+// setup checkpoints every step it lands on, so the quit macOS performs itself
+// after a grant comes back to the same screen this button would.
 ipcMain.handle("app:relaunch", () => {
-  onboarding?.prepareRelaunch();
   app.relaunch();
   app.quit();
 });

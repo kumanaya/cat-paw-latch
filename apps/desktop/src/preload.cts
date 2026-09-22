@@ -100,6 +100,10 @@ contextBridge.exposeInMainWorld("domo", {
   // `grants`, the ordered list setup walks; `setEnabled` is the owner's off
   // switch and answers with the fresh state.
   pluginsGet: () => ipcRenderer.invoke("plugins:get"),
+  // Access, after it has drawn a payload: the owner has now seen what Full
+  // Disk Access is. After the render, so a discarded response cannot consume
+  // a celebration nobody saw.
+  pluginsAcknowledge: () => ipcRenderer.invoke("plugins:acknowledge"),
   pluginsSetEnabled: (name: string, on: boolean) => ipcRenderer.invoke("plugins:setEnabled", name, on),
   // Any requirement's button, by id (requirements.ts): the panel, macOS's
   // dialog, Google sign-in or Safari's setting, awaited to the flow's end.

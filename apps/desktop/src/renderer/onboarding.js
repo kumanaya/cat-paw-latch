@@ -35,6 +35,14 @@ let pluginsState = null;
 const skipped = new Set();
 let running = null;
 let missed = null;
+/** The grant ids this visit to Access is celebrating, snapshotted on arrival —
+ * `null` until it has been taken, which is also what says the acknowledge has
+ * not fired yet. Held for the visit rather than read from `pluginsState` per
+ * draw, because acknowledging empties `landed` in the model and any later read
+ * — the acknowledge itself, a focus refresh, a grant flow — would drop the
+ * class mid-animation and cancel it. Back to `null` on leaving, so a later
+ * visit can celebrate a later grant. */
+let celebrating = null;
 /** The id of the switch a redraw hands focus back to, so a click keeps it. */
 let restoreFocus = null;
 let doneAgent = null;
@@ -73,8 +81,8 @@ const body = el("div", { class: "wizard-body" }, [screen]);
 const backButton = button("", "nav-back", () =>
   update(() => window.domo.onboardingBack(state?.step === "gatekeeper" ? gatekeeper?.text : undefined)));
 backButton.append(arrowIcon("back"), document.createTextNode("Back"));
-const dots = [0, 1, 2, 3, 4, 5].map(() => el("i", { class: "foot-dot" }));
-const dotRow = el("span", { class: "foot-dots", attrs: { "aria-hidden": "true" } }, dots);
+// Filled from state.progress — main counts the setup screens, not this file.
+const dotRow = el("span", { class: "foot-dots", attrs: { "aria-hidden": "true" } });
 const primaryLabel = el("span", { text: "Get started" });
 const primaryArrow = arrowIcon("next");
 const primaryButton = el("button", { class: "nav-next", attrs: { type: "button" } }, [
@@ -785,7 +793,11 @@ function grantRow(grant) {
       ? button(grant.repeatAction, "link-button", () => void repeatGrant(grant.id))
       : null;
     if (repeat) repeat.disabled = running !== null;
-    control = el("span", { class: "item-chip" }, [
+    // News: it arrived through the relaunch macOS forces, so without the
+    // animation it reads as a grant that was always there. The model decides
+    // which ids those are; this file never tells grants apart by id.
+    const news = celebrating?.includes(grant.id) ?? false;
+    control = el("span", { class: `item-chip${news ? " landed" : ""}` }, [
       icon("checkmark", { strokeWidth: "1.7" }),
       document.createTextNode(grant.done),
       repeat,
@@ -822,13 +834,24 @@ function grantRow(grant) {
 }
 
 function accessScreen() {
+  // Not before the model has answered: a relaunch straight onto Access — the
+  // path the whole feature exists for — draws once with `pluginsState` still
+  // null, and snapshotting there would take an empty celebration. The read
+  // that follows redraws this screen, and it is the read that marked the grant
+  // seen, so the snapshot and the mark cannot disagree.
+  if (celebrating === null && pluginsState) {
+    celebrating = pluginsState.landed ?? [];
+    // Only now, with a committed payload drawn: acknowledging during the read
+    // let a superseded response consume a celebration nobody ever saw.
+    void window.domo.pluginsAcknowledge();
+  }
   return el("div", { class: "form-screen" }, [
     el("div", { class: "step-inner" }, [
       el("div", { class: "head-center" }, [
         el("h1", { text: "Grant access" }),
         el("p", {
           class: "subhead",
-          text: "One at a time. Skip anything and it'll wait for you in Settings\u00a0›\u00a0Plugins.",
+          text: "The Plow Gatekeeper will monitor how your agents use these permissions.",
         }),
       ]),
       el("div", { class: "item-rows" }, (pluginsState?.grants ?? []).map(grantRow)),
@@ -876,31 +899,28 @@ function footerForStep() {
   if (step === "done") return { hidden: true };
   if (step === "welcome") {
     return {
-      dot: null,
       label: "Get started",
       arrow: false,
       action: advance,
     };
   }
   if (step === "activate" || step === "waiting") {
-    return { dot: 0, label: "Continue", arrow: true, primaryHidden: true, disabled: true, action: null };
+    return { label: "Continue", arrow: true, primaryHidden: true, disabled: true, action: null };
   }
   if (step === "privacy") {
     return {
-      dot: 1,
       label: "Continue",
       arrow: true,
       action: advance,
     };
   }
   if (step === "gatekeeper") {
-    return { dot: 2, label: "Continue", arrow: true, action: continueFromGatekeeper };
+    return { label: "Continue", arrow: true, action: continueFromGatekeeper };
   }
   if (step === "access") {
     const { label, kind } = accessPrimary({ grants: pluginsState?.grants ?? [], skipped, running, missed });
     const actions = { run: startGrants, relaunch: () => window.domo.appRelaunch(), advance };
     return {
-      dot: 4,
       label,
       arrow: kind !== null,
       disabled: kind === null || pluginsState === null,
@@ -909,14 +929,12 @@ function footerForStep() {
   }
   if (step === "availability") {
     return {
-      dot: 5,
       label: "Continue",
       arrow: true,
       action: advance,
     };
   }
   return {
-    dot: 3,
     label: "Continue",
     arrow: true,
     action: advance,
@@ -955,6 +973,7 @@ function render() {
   clearInterval(expiryTimer);
   expiryTimer = null;
   if (state.step !== "plugins") restoreFocus = null;
+  if (state.step !== "access") celebrating = null;
   if (state.step !== "availability") syncAvailability = null;
 
   const continuingWelcome = state.step === "welcome" && screen.classList.contains("is-welcome");
@@ -981,11 +1000,20 @@ function render() {
     backButton.hidden = state.canGoBack !== true;
     backButton.disabled = !!state.busy;
     primaryButton.hidden = !!config.primaryHidden;
-    dotRow.hidden = config.dot === null;
-    dots.forEach((dot, index) => {
-      dot.classList.toggle("active", index === config.dot);
-      dot.classList.toggle("complete", config.dot !== null && index < config.dot);
-    });
+    const progress = state.progress;
+    dotRow.hidden = progress === null;
+    if (progress) {
+      if (dotRow.childElementCount !== progress.total) {
+        dotRow.replaceChildren(...Array.from(
+          { length: progress.total },
+          () => el("i", { class: "foot-dot" }),
+        ));
+      }
+      [...dotRow.children].forEach((dot, index) => {
+        dot.classList.toggle("active", index === progress.index);
+        dot.classList.toggle("complete", index < progress.index);
+      });
+    }
     primaryLabel.textContent = config.label;
     primaryArrow.toggleAttribute("hidden", !config.arrow);
     primaryButton.disabled = !!config.disabled || !!state.busy;
@@ -1019,7 +1047,12 @@ async function apply(next) {
     gatekeeper = null;
   }
   if (state?.step !== "done") doneAgent = null;
-  if (!onPluginStep()) pluginsState = null;
+  // Dropped on any step change, not just off the plugin steps: Access and
+  // Plugins share this state, so keeping it across Access → Plugins → Access
+  // let the second visit snapshot the FIRST visit's `landed` — replaying a
+  // celebration for a grant already acknowledged. Each visit waits for its own
+  // read, which the transition below starts.
+  if (!onPluginStep() || state?.step !== previousStep) pluginsState = null;
   if (state?.step !== previousStep) missed = null;
   if (!onPluginStep() && state?.step !== "availability") skipped.clear();
   if (state?.step !== "availability") availability = null;
