@@ -93,7 +93,7 @@ export function storedRuleMayGrant(settings: Settings): boolean {
  * path, or the rule that answered), so the engine does not store it again
  * (PolicyEngine's `IntentDecision`).
  */
-export type Decided = { decision: ApprovalDecision; source: string; ruleStored?: true };
+export type Decided = { decision: ApprovalDecision; source: string; ruleStored?: true; reason?: string };
 
 /** A request waiting its turn for the human. */
 export interface QueuedApproval {
@@ -295,7 +295,7 @@ export async function decideIntent(intent: Intent, deps: DecideDeps): Promise<De
     const { verdict, reason, cause } = await review();
     if (verdict === "allow")
       return { decision: "allow_once", source: "adversarial" };
-    if (verdict === "deny") return { decision: "deny", source: "adversarial" };
+    if (verdict === "deny") return { decision: "deny", source: "adversarial", reason };
     // The account cannot pay for inference, so the reviewer can never run.
     // Deny — and say why, in a form the calling agent can read.
     // Quietly reverting to prompting a human would change the mode the user

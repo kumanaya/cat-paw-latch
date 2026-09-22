@@ -146,7 +146,25 @@ from, the audit log stores, and the adversarial reviewer evaluates.
   capability bounds, and the owner's own `agentPurpose` text, which rides in
   the system message. Nothing else does — no goal text, and no audit history:
   `reviewPolicy.ts` passes `history: []` deliberately, and `buildPrompt`
-  explains why. WHETHER it runs is decided in precedence order by
+  explains why. Setup's Gatekeeper step posts the same shape for five fixed
+  example requests with the owner's DRAFT instructions as the purpose, to
+  preview verdicts; their example paths use a fixed placeholder home, so no
+  local account name leaves the Mac. A preview is not an operation and records
+  nothing — no audit line, no telemetry, no rule.
+  A separate, owner-invoked **Gatekeeper revision coach** may run after an AI
+  Reviewer denial. It sees the current owner-authored purpose, the denied
+  request, and its capability displays. Every persisted AI Reviewer denial in
+  Audit retains that context, so its row remains coachable after newer denials
+  and app restarts; manual denials and timeouts do not offer this action. The
+  coach is asked for a complete
+  replacement that allows commands *similar to* the denied command by
+  generalizing purpose and effect while preserving unrelated restrictions; it
+  is explicitly forbidden from encoding the exact merchant, product, amount,
+  path, recipient, URL, or command. The result is editable display text until
+  the owner explicitly saves it. No audit history reaches either this coach or
+  the live allow/deny reviewer, which remains on `history: []` to avoid the
+  denial ratchet described above.
+  WHETHER the reviewer runs is decided in precedence order by
   `packages/device-core/src/policyEngine.ts`: a stored always-allow rule
   short-circuits Ask and Approve, while global AI Reviewer and Deny modes decide
   every request. What *is*
@@ -184,6 +202,11 @@ Decisions: **Always allow / Allow once / Deny.**
   call approved for one set of paths does not cover a call for a different
   one; a write is keyed on the full argv.
 - Rules are listed and revocable in the app. Goal text is never part of a rule.
+- An AI Reviewer denial grants nothing and cannot be overridden. Latch keeps a
+  transient latest-denial notice for navigation and retains each reviewer
+  denial in Audit so the owner can review it and ask the revision coach for an
+  editable replacement Gatekeeper prompt; the operation remains denied until
+  a later request is decided under the owner's saved policy.
 - A third *observed* layer — processes spawned, files actually touched by the
   in-process file tools, sandbox denials, exit codes — lands in the audit log,
   not the approval flow. It is the raw material for the future iOS
@@ -617,7 +640,7 @@ repo can prove they broke nothing.
 | `domo-broker` | exec | Daemon + `create-agent` subcommand |
 | `domo-device` | exec | Headless device runner (`--policy`) |
 | `domo-mcp` | exec | stdio↔socket MCP shim for Claude Code |
-| `DomoApp` | exec | AppKit shell: status item, NSAlert approvals, Goals/Rules/Audit window, agent spin-up |
+| `DomoApp` | exec | AppKit shell: status item, NSAlert approvals, Agents/Audit window, agent spin-up |
 
 ## 11a. Local browsing (Camoufox + local vault)
 
@@ -772,13 +795,21 @@ The browser server deliberately refuses to type a whole code into box one
 the mark is on); this is the "one fill per box" that trade was designed around.
 
 **Banking-credential payment gate (v1 domain registry).**
-The owner grants the separate payment approval out of band — a link in the
-owner thread, or a 👍 — and plow mints a single-use token that
-`consume` spends at fill time. What flags a fill as "banking" today is a bundled
+The agent calls `plow_request_payment` with the exact hostname of the frame
+containing the bank field (`frame_url` from `forms`, including any subdomain),
+intended recipient, and exact amount.
+Plow immediately mints a single-use banking-credential release at or below the
+owner's configured threshold; above it, Plow sends a single-use approval link
+to the owner thread, and only that page can approve it. Ordinary chat replies
+and reactions do not. `consume` spends the authorization at fill time, scoped
+to the session and exact hostname; it does not verify or bind the eventual
+transaction amount or recipient. A fill failure after consumption therefore
+requires fresh authorization before retrying.
+What flags a fill as "banking" today is a bundled
 **bank-domain list** (`bankDomains.ts`), matched on the unspoofable
 device-observed destination host. This 55-domain list is the accepted v1
-detector. Listed exact domains and subdomains require a per-payment owner
-approval and fail closed if approval cannot be consumed. An unlisted institution
+detector. Listed exact domains and subdomains require a per-payment
+authorization and fail closed if it cannot be consumed. An unlisted institution
 or a credit card typed on an arbitrary merchant site does not trigger the gate;
 that fail-open gap is an accepted v1 residual. Maintain the single domain list
 as real usage exposes gaps. Gating **every** credential release was rejected: it
@@ -1316,7 +1347,7 @@ Monorepo mirroring the current module seams one-to-one:
 | `@domo/device-core` | `DomoDeviceCore` | DeviceAgent, PolicyEngine, FileOps, Executor+SBPL, AuditLog, SkillRegistry |
 | `apps/broker` | `domo-broker` | Linux deploy target; TLS in-process or behind a reverse proxy per the runbook |
 | `apps/mcp` | `domo-mcp` | stdio shim on the official SDK |
-| `apps/desktop` | `DomoApp` | Electron: device-core in the main process; tray, approval windows, Goals/Rules/Audit |
+| `apps/desktop` | `DomoApp` | Electron: device-core in the main process; tray, approval windows, Agents/Audit |
 
 Runtime decisions: **Node LTS everywhere** — Electron's main process is Node,
 so standardizing on it keeps one runtime; Bun may be used as a dev-time runner
@@ -1364,7 +1395,7 @@ that succeeds when approved, symlink/traversal bounds, SBPL byte-parity.
 streams from Swift and TS devices are event-for-event comparable.*
 
 **Phase T5 — Electron app.** `apps/desktop`: device-core in the main process;
-tray, approval flow, onboarding/TOFU, Goals/Rules/Audit windows; signing +
+tray, approval flow, onboarding/TOFU, Agents/Audit windows; signing +
 notarization + hardened runtime (spawning `sandbox-exec` verified under it);
 autoupdate wired so Chromium patches ship on cadence. UI smoke follows the
 existing philosophy — real input events, not synthetic accessibility calls —

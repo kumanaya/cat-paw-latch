@@ -11,6 +11,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { lockdownSecretFile } from "@domo/device-core";
 
+import type { ResumableStep } from "./onboardingSteps.js";
+
 /**
  * How the credential is encrypted at rest, when the OS offers a way.
  *
@@ -135,6 +137,14 @@ export interface Settings {
    * SECRET: never sent to the renderer, never written to a log or an error
    * string. */
   relayCredential: string;
+  /** Login sessions this Mac has forgotten locally but Plow has not yet
+   * confirmed as retired. Main-process only, sealed at rest like the active
+   * credential, and retried without involving the setup renderer. */
+  pendingRevokeCredentials: string[];
+  /** Individually sealed pending-revoke credentials that could not be read on
+   * this load. Keeping each ciphertext separate lets a newly queued sign-out
+   * be appended without replacing an older seal while the Keychain is locked. */
+  pendingRevokeCredentialsEnc?: string[];
   /** The account this Mac is signed into. */
   accountUid: string;
   /** This installation's server-authored MCP endpoint. */
@@ -211,6 +221,11 @@ export interface Settings {
   /** When the owner last dismissed the Capabilities banner (ISO-8601);
    *  blocks before it stay out of the next banner. */
   blockedBannerSeenAt?: string;
+  /** Whether the owner has been shown that Full Disk Access is usable.
+   *  `fullDiskLanded` in capabilitiesModel.ts reads it against the live state,
+   *  and it is shared on purpose, so one grant cannot produce both a setup
+   *  animation and, later, a banner for the same event. */
+  fullDiskGrantedSeen?: boolean;
   /** Keep this Mac awake while plugged in (off until setup's Availability
    * screen turns it on). The opt-in only —
    * keepAwake.ts owns when a blocker is actually held (AC power only, and an
@@ -224,6 +239,9 @@ export interface Settings {
   /** The first-run setup has reached its final screen. Kept separately from
    * the credential because the data choice happens after sign-in. */
   setupComplete: boolean;
+  /** The setup screen an incomplete setup resumes on — whatever ended the last
+   * run. `onboardingSteps.ts` owns which screens may appear here. */
+  onboardingResumeStep?: ResumableStep;
 }
 
 function settingsPath(home: string): string {
@@ -255,6 +273,7 @@ export function credentialStorage(home: string): "sealed" | "plaintext" | "empty
 export function loadSettings(home: string): Settings {
   const defaults: Settings = {
     relayCredential: "",
+    pendingRevokeCredentials: [],
     accountUid: "",
     mcpUrl: "",
     selectedTab: "agents",
@@ -289,11 +308,13 @@ export function loadSettings(home: string): Settings {
   for (const key of retiredKeys) delete settings[key];
 
   const loaded = { ...defaults, ...settings };
+  const plaintextPendingOnDisk = Array.isArray(settings.pendingRevokeCredentials) &&
+    settings.pendingRevokeCredentials.some(
+      (value) => typeof value === "string" && value.trim() !== "",
+    );
   // The encrypted field wins where it exists. A decrypt that fails is treated
-  // as signed out rather than as a crash, and the unreadable value is cleared
-  // below along with the account-local display state.
-  // 0 users; a session that can't be revoked idles out in 180 days; revisit
-  // when there's a fleet.
+  // as signed out rather than as a crash; its opaque seal joins the revocation
+  // queue below so a temporarily locked Keychain can recover it later.
   const sealed = typeof loaded.relayCredentialEnc === "string" ? loaded.relayCredentialEnc : "";
   let unreadableSeal = false;
   if (sealed) {
@@ -305,6 +326,36 @@ export function loadSettings(home: string): Settings {
       loaded.mcpUrl = "";
     }
   }
+  const pendingSeals = Array.isArray(loaded.pendingRevokeCredentialsEnc)
+    ? loaded.pendingRevokeCredentialsEnc.filter(
+        (value): value is string => typeof value === "string" && value.trim() !== "",
+      )
+    : [];
+  if (unreadableSeal) pendingSeals.push(sealed);
+  const pendingCredentials = Array.isArray(loaded.pendingRevokeCredentials)
+    ? loaded.pendingRevokeCredentials.filter(
+        (value): value is string => typeof value === "string" && value.trim() !== "",
+      )
+    : [];
+  const opaquePendingSeals: string[] = [];
+  const pendingCodec = activeCodec();
+  for (const pendingSeal of pendingSeals) {
+    try {
+      if (!pendingCodec) throw new Error("credential codec unavailable");
+      const plain = pendingCodec.decrypt(pendingSeal);
+      if (!plain.trim()) throw new Error("pending revoke seal has no credential");
+      pendingCredentials.push(plain);
+    } catch {
+      // Unlike the active login, an unreadable pending revoke does not gate
+      // the app. Preserve its exact bytes so a temporarily locked Keychain can
+      // recover them later; a new sign-out is appended beside it on save.
+      opaquePendingSeals.push(pendingSeal);
+    }
+  }
+  loaded.pendingRevokeCredentials = [...new Set(pendingCredentials)];
+  loaded.pendingRevokeCredentialsEnc = opaquePendingSeals.length > 0
+    ? opaquePendingSeals
+    : undefined;
   // Take them OFF DISK here, rather than waiting for the next write of some
   // unrelated setting — and let a failure THROW. Swallowing it would report a
   // successful load while the credential is still in the file, which is the one
@@ -315,8 +366,16 @@ export function loadSettings(home: string): Settings {
   // sealed on the first read that can — the same one-off shape the retired-key
   // scrub uses, and for the same reason: waiting for some unrelated write
   // leaves the plaintext on disk for as long as nobody changes a setting.
-  const needsSealing = !sealed && loaded.relayCredential.trim() !== "" && activeCodec() !== null;
-  if (retired || needsSealing || unreadableSeal) saveSettings(home, loaded);
+  const active = activeCodec();
+  const needsSealing = !sealed && loaded.relayCredential.trim() !== "" && active !== null;
+  // A current-format array of ciphertexts is already exactly what we want on
+  // disk. Decoding it for the caller must remain a read, not synchronously
+  // re-encrypt and fsync settings on every hot-path `loadSettings` call.
+  const pendingNeedsSealing =
+    plaintextPendingOnDisk && active !== null;
+  if (retired || needsSealing || pendingNeedsSealing || unreadableSeal) {
+    saveSettings(home, loaded);
+  }
   return loaded;
 }
 
@@ -335,7 +394,30 @@ export function saveSettings(home: string, settings: Settings): void {
   } else {
     delete stored.relayCredentialEnc;
   }
-  const credentialInClear = !encrypted && credential !== "";
+  const pendingCredentials = Array.isArray(settings.pendingRevokeCredentials)
+    ? [...new Set(settings.pendingRevokeCredentials.filter(
+        (value): value is string => typeof value === "string" && value.trim() !== "",
+      ))]
+    : [];
+  const preservedPendingSeals = Array.isArray(settings.pendingRevokeCredentialsEnc)
+    ? settings.pendingRevokeCredentialsEnc.filter(
+        (value): value is string => typeof value === "string" && value.trim() !== "",
+      )
+    : [];
+  const newlySealed: string[] = [];
+  const pendingInClear: string[] = [];
+  for (const pendingCredential of pendingCredentials) {
+    const encryptedPendingCredential = seal(pendingCredential, active);
+    if (encryptedPendingCredential) newlySealed.push(encryptedPendingCredential);
+    else pendingInClear.push(pendingCredential);
+  }
+  const allPendingSeals = [...new Set([...preservedPendingSeals, ...newlySealed])];
+  if (allPendingSeals.length > 0) stored.pendingRevokeCredentialsEnc = allPendingSeals;
+  else delete stored.pendingRevokeCredentialsEnc;
+  stored.pendingRevokeCredentials = pendingInClear;
+  const credentialInClear =
+    (!encrypted && credential !== "") ||
+    pendingInClear.length > 0;
   if (credentialInClear && codec && !warnedUnavailable) {
     warnedUnavailable = true;
     console.log("[settings] no OS keychain available; credential stored unencrypted (0600)");

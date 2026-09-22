@@ -64,20 +64,22 @@ import type { AutomationStatus, HostInventory, NativePermissions, RequestablePer
 import { approvalViewModel, CredentialTitles } from "./viewModel.js";
 import { AuditIndex, AuditQuery } from "./auditIndex.js";
 
-import { appBundleName, appBundlePath, decodeTileImage } from "./permissionFlow.js";
+import { appBundleName, appBundlePath, decodeTileImage, windowInWorkArea } from "./permissionFlow.js";
 import { FdaGrantFlow, GrantTarget } from "./fdaGrantFlow.js";
 import { AUTOMATION_APPS, automationApp, osascriptRunner, reconcile, requestAutomation } from "./automation.js";
-import { capabilitiesView, CapabilitiesView, fdaGrantKind, FullDiskState, FullDiskWatch, isGroup, paneFor, PERMISSION_TITLES, permissionTitle, WINDOWS_DEFENDER_SETTINGS } from "./capabilitiesModel.js";
-import { browserPluginRow, grantList, pluginRows, type GrantItem, type PluginRow } from "./pluginsModel.js";
+import { capabilitiesView, CapabilitiesView, fdaGrantKind, fullDiskLanded, FullDiskState, FullDiskWatch, isGroup, paneFor, PERMISSION_TITLES, permissionTitle, WINDOWS_DEFENDER_SETTINGS } from "./capabilitiesModel.js";
+import { browserPluginRow, grantList, pluginExamples, pluginRows, type GrantItem, type PluginExample, type PluginRow } from "./pluginsModel.js";
 import { actOnRequirement } from "./requirements.js";
 import { enableSafariJavaScript, Runner, safariJavaScriptEnabled } from "./safariJavaScript.js";
-import { launchAtLoginState, setLaunchAtLogin } from "./loginItem.js";
+import { launchSessionWarning, managerName } from "./launchSession.js";
+import { launchAtLoginState, LoginItemApi, setLaunchAtLogin } from "./loginItem.js";
 import { createPlatformLoginItems } from "./loginItemPlatform.js";
 import { windowsRunSeam } from "./windowsRunKey.js";
 import { KeepAwake, type PowerSourceObserver } from "./keepAwake.js";
 import { createSleepBlocker } from "./sleepBlocker.js";
 import { sysfsPowerSource } from "./powerSource.js";
 import { devIconScript } from "./devIcon.js";
+import { applyPlowFolderIcon } from "./plowFolderIcon.js";
 import { migrateLegacyHome } from "./migrateHome.js";
 import { buildMinter } from "./providerWiring.js";
 import { resolveInstancePaths } from "./paths.js";
@@ -90,16 +92,22 @@ import { centeredFrame, fitFrame } from "./windowPlacement.js";
 import { resolveTelemetryConfig, SimulatedError, Telemetry, telemetryMaySend } from "./telemetry.js";
 import { PlowApi, PlowApiError, relaySocketUrl, resolveApiBaseUrl } from "./plowApi.js";
 import { Onboarding } from "./onboarding.js";
-import { Connectors } from "./connectors.js";
+import { CONNECTOR_SETUP_WAIT_MS, Connectors } from "./connectors.js";
 import { ConnectClient } from "./connectClient.js";
 import { CloudAgentsClient } from "./cloudAgents.js";
 import { CloudAgentState, CloudChatsClient, CloudLinesClient, tabShowsCloudAgents } from "./cloudAgentState.js";
 import { fetchAgentIndex } from "./agentIndex.js";
-import { cloudAgentsIpcResult } from "./cloudAgentsIpc.js";
 import { loggingFetch } from "./wireLog.js";
 import { WindowGate } from "./windowGate.js";
 import { platformUpdateFeed, SimulatedScenario, SimulatedUpdater, UpdateController } from "./updates.js";
 import { adversarialReview } from "./adversarialAgent.js";
+import { gatekeeperPresets, previewRow } from "./gatekeeperPreview.js";
+import {
+  dismissGatekeeperAttention,
+  gatekeeperRecoveryView,
+  type GatekeeperRecoveryView,
+  suggestGatekeeperRevision,
+} from "./gatekeeperRecovery.js";
 import {
   ApprovalDecision,
   ApprovalQueue,
@@ -110,10 +118,11 @@ import {
 } from "./reviewPolicy.js";
 import {
   isSignedIn,
+  PendingRevokeRetrier,
   readAgentPurpose,
   readInference,
   setAgentPurpose,
-  revokeAndSignOut,
+  queueRevokeAndSignOut,
   setApprovalMode,
   signOutOfPlow,
 } from "./settingsActions.js";
@@ -283,6 +292,7 @@ let relay: RelayClient | null = null;
 // both uses even when this device has no vault client.
 let ownerPresence: PresenceGate | null = null;
 let onboarding: Onboarding | null = null;
+let pendingRevokeRetrier: PendingRevokeRetrier | null = null;
 let connectors: Connectors | null = null;
 /** What `loadPlugins` found at startup — the Plugins tab's inventory, and the
  *  list the owner's off switch selects from. Empty until whenReady. */
@@ -297,6 +307,10 @@ let onboardingWindow: BrowserWindow | null = null;
 let onboardingWindowReady: BrowserWindow | null = null;
 let updates: UpdateController | null = null;
 let telemetry: Telemetry | null = null;
+/** Latest AI Reviewer denial used for the cross-tab notice. Durable recovery
+ * context comes from Audit; the renderer gets only this capability-display view. */
+let gatekeeperAttention: GatekeeperRecoveryView | null = null;
+const gatekeeperNotified = new Set<string>();
 
 function lockOwnerPresence(): void {
   ownerPresence?.lock();
@@ -667,6 +681,11 @@ ipcMain.handle("audit:clear", async () => {
   });
   if (response !== 1) return false;
   device.audit.clear();
+  if (gatekeeperAttention) {
+    gatekeeperAttention = null;
+    refreshTray();
+    notifyRenderer("gatekeeperRecovery:changed");
+  }
   return true;
 });
 // Approvals still awaiting an answer, so the UI can show what is outstanding
@@ -677,6 +696,39 @@ ipcMain.handle("rules:list", async () => device?.policy.allRules() ?? []);
 // — one path for every change to the list, whoever made it.
 ipcMain.handle("rules:remove", async (_e, key: string) => {
   device?.policy.removeRule(key);
+});
+ipcMain.handle("gatekeeperRecovery:get", async () => gatekeeperAttention);
+ipcMain.handle("gatekeeperRecovery:dismiss", async (_e, intentId: unknown) => {
+  if (typeof intentId !== "string") return gatekeeperAttention;
+  const before = gatekeeperAttention;
+  gatekeeperAttention = dismissGatekeeperAttention(gatekeeperAttention, intentId);
+  if (gatekeeperAttention !== before) {
+    refreshTray();
+    notifyRenderer("gatekeeperRecovery:changed");
+  }
+  return gatekeeperAttention;
+});
+ipcMain.handle("gatekeeperRecovery:suggest", async (_e, activityId: unknown) => {
+  if (typeof activityId !== "string") {
+    return { ok: false, reason: "That denied request is no longer available" };
+  }
+  const activity = ensureAuditIndex().get(activityId);
+  if (
+    !activity ||
+    activity.decisionKind !== "denied" ||
+    activity.decisionSource !== "adversarial" ||
+    !activity.intentId
+  ) {
+    return { ok: false, reason: "That denied request is no longer available" };
+  }
+  const settings = loadSettings(home);
+  return suggestGatekeeperRevision({
+    currentPurpose: settings.agentPurpose ?? "",
+    deniedRequest: activity.title,
+    capabilities: activity.capabilities,
+    plowCredential: settings.relayCredential ?? "",
+    apiBaseUrl,
+  });
 });
 ipcMain.handle("ui:getTab", async () => {
   const tab = loadSettings(home).selectedTab;
@@ -691,7 +743,13 @@ ipcMain.handle("ui:getTab", async () => {
     void connectClient?.refreshRoster();
   }
   // Retired keys land where their content lives now, not on the default tab.
-  return tab === "connect" ? "agents" : tab === "capabilities" ? "plugins" : tab;
+  return tab === "connect"
+    ? "agents"
+    : tab === "capabilities"
+      ? "plugins"
+      : tab === "rules"
+        ? "audit"
+        : tab;
 });
 ipcMain.handle("ui:setTab", async (_e, tab: string) => {
   const settings = loadSettings(home);
@@ -721,22 +779,17 @@ ipcMain.handle("settings:getRelay", async () => {
   };
 });
 /**
- * Forget this Mac's credential and put the user back at the start.
+ * Put every in-memory account surface back at the signed-out start.
  *
  * Nobody clicked anything on the relay's `onAuthFailed` path or on
  * `signInAgainIfOldKey`: the credential is already retired on the account, so
  * there is nothing to revoke and the window has to be OPENED — otherwise the app
  * sits silently disconnected with no way forward but quitting.
  *
- * `signOutOfPlow` rather than blanking the fields inline: losing the Plow
- * credential takes the Plow reviewer with it, and retiring Adversarial mode is
- * part of that same write.
+ * Callers clear settings first, either as an ordinary auth failure or as the
+ * atomic queue-and-clear transition for explicit sign-out.
  */
-function signOut() {
-  // `signOutOfPlow` rather than blanking the fields inline: losing the Plow
-  // credential takes the Plow reviewer with it, and retiring Adversarial mode
-  // is part of that same write.
-  signOutOfPlow(home);
+function resetSignedOutRuntime() {
   onboarding?.reset();
   connectors?.signedOut();
   // Connect-a-client holds the old account's state too — possibly a shown-once
@@ -753,35 +806,39 @@ function signOut() {
   return onboarding?.state();
 }
 
+function signOut() {
+  signOutOfPlow(home);
+  return resetSignedOutRuntime();
+}
+
 /**
- * Sign out: retire the credential with Plow, forget it here, and drop the
- * socket. The revoke is best-effort — see `revokeAndSignOut` — so a Mac that
- * cannot reach Plow still signs out locally.
+ * Sign out: forget the credential here, queue its retirement, and drop the
+ * socket. A Mac that cannot reach Plow still signs out locally while the
+ * background retrier keeps retiring the server session.
+ *
+ * Two callers: the Settings button, and the roster's own row for this Mac.
+ * Revoking that row as an ordinary key would leave the credential on disk, the
+ * socket dialled and the window open, all talking to an account that no longer
+ * accepts them.
  */
 async function signOutThisMac(): Promise<void> {
   if (hasPendingAgentSetup() && !(await mayLeaveMain(mainWindow))) return;
   // A second click, before the button re-rendered. The first already signed
   // out; going round again would reset the setup window and mint a fresh code
   // over the one the user may have just texted.
-  if (!isSignedIn(home)) return;
+  if (!isSignedIn(home) && !relay) return;
   // Before the credential is cleared, so the event still keys on the account
   // that is signing out rather than the anonymous install id.
   telemetry?.track("signed_out");
-  // Started first: it clears the stored credential synchronously, before its
-  // own first await, so everything below already sees a signed-out Mac.
-  const revoking = revokeAndSignOut(home, (credential) =>
-    new PlowApi(apiBaseUrl).revokeDeviceCredential(credential),
-  );
+  // One atomic write clears the login and makes the remote cleanup durable.
+  queueRevokeAndSignOut(home);
+  void pendingRevokeRetrier?.start();
   // The one place that resets the app's state, shared with the relay's
   // auth-failed path. It also drops connect-a-client's shown-once credential,
   // which a click has exactly as much reason to clear as a revocation does.
-  signOut();
+  resetSignedOutRuntime();
   await startRelay();
-  if (!(await revoking)) {
-    onboarding?.showMessage(
-      "Signed out on this Desktop. Plow could not be reached to revoke the session — revoke it in Plow's account settings.",
-    );
-  }
+
 }
 
 ipcMain.handle("settings:signOut", async () => signOutThisMac());
@@ -899,7 +956,10 @@ ipcMain.handle("cloud:refresh", async () => {
 // Setup needs only the cloud-agent projection. Keep connect-client state — in
 // particular its roster and one-time credential — off this narrower bridge.
 ipcMain.handle("cloud:agents", async () => {
-  return cloudAgentsIpcResult(cloudAgents);
+  await cloudAgents?.refresh();
+  if (!cloudAgents) return null;
+  const { cloudAgents: rows, cloudAgentsError } = cloudAgents.state();
+  return { cloudAgents: rows, cloudAgentsError };
 });
 ipcMain.handle("connect:create", async (_e, name: string) => {
   await connectClient?.createCredential(name);
@@ -940,9 +1000,9 @@ ipcMain.handle("cloud:changeLine", async (_e, input: unknown) => {
   await cloudAgents?.refresh();
   return agentsTabState();
 });
-ipcMain.handle("cloud:openMessages", async (_e, agentId?: unknown) => {
+ipcMain.handle("cloud:openMessages", async (_e, agentId?: unknown, draft?: unknown) => {
   const url = typeof agentId === "string"
-    ? cloudAgents?.agentSmsUrl(agentId)
+    ? cloudAgents?.agentSmsUrl(agentId, typeof draft === "string" ? draft : undefined)
     : null;
   return openSmsUrl(url);
 });
@@ -983,12 +1043,25 @@ function agentsTabState(): Record<string, unknown> | null {
 // leaves the window rendered but inert. See the note in onboarding.ts.
 ipcMain.handle("onboarding:get", async () => onboarding?.state() ?? null);
 ipcMain.handle("onboarding:begin", async () => onboarding?.begin());
-ipcMain.handle("onboarding:advance", async () => onboarding?.advance());
-ipcMain.handle("onboarding:back", async () => onboarding?.back());
+ipcMain.handle("onboarding:advance", async (_e, draft: unknown) => onboarding?.advance(draft));
+ipcMain.handle("onboarding:back", async (_event, draft: unknown) => onboarding?.back(draft));
 ipcMain.handle("onboarding:setTelemetry", async (_e, on: unknown) =>
   onboarding?.setTelemetryEnabled(on),
 );
 ipcMain.handle("onboarding:newCode", async () => onboarding?.newActivationCode());
+ipcMain.handle("onboarding:gatekeeperPresets", async () => gatekeeperPresets());
+// One live review of one example row against the owner's draft instructions.
+// Not an operation: no audit line, no telemetry, no rule. The credential stays
+// here; the renderer names a preset and a row and gets only the verdict back.
+ipcMain.handle(
+  "onboarding:gatekeeperPreview",
+  async (_e, preset: unknown, index: unknown, draft: unknown) =>
+    previewRow(preset, index, draft, {
+      review: adversarialReview,
+      settings: loadSettings(home),
+      apiBaseUrl,
+    }),
+);
 /**
  * Open Messages with the activation text drafted.
  *
@@ -1695,13 +1768,20 @@ function connectedAccountIds(): string[] {
   return (connectors?.state().google.accounts.length ?? 0) > 0 ? ["google"] : [];
 }
 
+/** Connector state owns its own failure/late-success explanation; setup only
+ * associates that explanation with the corresponding model requirement. */
+function connectorAccountNotices(): Record<string, { message: string; noteKind: "neutral" | "error" }> {
+  const state = connectors?.state();
+  return state?.message ? { google: { message: state.message, noteKind: state.noteKind } } : {};
+}
+
 /** The whole tab, fresh: what is staged, what each plugin still needs, and
  *  the one ordered list of it setup walks. A permission is met when Settings'
  *  own Permissions section reads it granted — one answer, so the two tabs
  *  cannot disagree. The inventory asks only about the Automation pairs a
  *  staged plugin declares: this runs on every refresh, and the full sweep
  *  waits out a probe timeout on any app not answering Apple events. */
-async function pluginsNow(): Promise<{ rows: PluginRow[]; grants: GrantItem[] }> {
+async function pluginsNow(): Promise<{ rows: PluginRow[]; grants: GrantItem[]; examples: PluginExample[]; landed: string[] }> {
   const disabled = new Set(loadSettings(home).disabledPlugins ?? []);
   const automationTargets = stagedPlugins
     .flatMap((p) => p.manifest.requires.permissions)
@@ -1719,6 +1799,7 @@ async function pluginsNow(): Promise<{ rows: PluginRow[]; grants: GrantItem[] }>
       description: device?.pluginDescription(p.manifest.name) ?? null,
     })),
     connectedAccounts: connectedAccountIds(),
+    accountNotices: connectorAccountNotices(),
     grantedPermissions: granted,
     relaunchPending,
   });
@@ -1731,10 +1812,55 @@ async function pluginsNow(): Promise<{ rows: PluginRow[]; grants: GrantItem[] }>
     relaunchPending,
     description: device?.skills.skill(browsingSkillFor().name)?.description ?? browsingSkillFor().description,
   }));
-  return { rows, grants: grantList(rows) };
+  // What the owner has not been shown yet. Only Full Disk Access populates it
+  // today; the list shape means the Google account and Safari slot in later
+  // without a rename. A grant that needed the relaunch macOS forces is the
+  // whole point: the process that watched it change is gone, so nothing but
+  // the stored `fullDiskGrantedSeen` can tell the new one it is news.
+  // This read is PURE, and that is what makes the celebration survivable.
+  // Marking it seen here meant one read consumed it, so when `latestOnly`
+  // discarded that response for a newer one the mark was already written and
+  // the animation never reached the DOM. Reading without consuming means every
+  // concurrent read carries the same answer and whichever one the renderer
+  // commits still has it; `plugins:acknowledge` records it afterwards.
+  const landed = fullDiskLanded(fullDiskState, loadSettings(home).fullDiskGrantedSeen)
+    ? ["full_disk_access"]
+    : [];
+  return { rows, grants: grantList(rows), examples: pluginExamples(rows), landed };
+}
+
+/** Plugins → Continue: does a switched-on plugin still need a grant? A resumed
+ *  setup can get here before the relay's poll, so ask Plow for the accounts —
+ *  quietly and briefly: past the wait the cache answers, and a late reply
+ *  redraws Access. A slow Plow never holds Continue. */
+async function prepareSetupAccounts(): Promise<void> {
+  await Promise.race([connectors?.poll(), new Promise((done) => setTimeout(done, CONNECTOR_SETUP_WAIT_MS))]);
+}
+
+async function accessNeeded(): Promise<boolean> {
+  await prepareSetupAccounts();
+  return (await pluginsNow()).grants.some((g) => g.status !== "met");
 }
 
 ipcMain.handle("plugins:get", async () => pluginsNow());
+
+/** The Access screen, once it has COMMITTED a payload and drawn it: the owner
+ *  has now seen whatever Full Disk Access is, so the next change is the next
+ *  thing worth showing. After the render, never during the read — a mark
+ *  written by a response that `latestOnly` then discards consumes a
+ *  celebration nobody saw.
+ *
+ *  Re-probes rather than trusting the caller, so the renderer never decides
+ *  what was observed, and writes only when the inventory answered: the
+ *  baseline it records is what separates an install that has always had the
+ *  grant from one about to receive it. Answers with nothing — fresh state here
+ *  would replace the chip the screen is still animating. */
+ipcMain.handle("plugins:acknowledge", async () => {
+  const inventory = device ? await device.hostInventory({ automationTargets: [] }) : null;
+  const state = inventory ? fullDiskStateOf(inventory) : undefined;
+  if (state === undefined) return;
+  saveSettings(home, { ...loadSettings(home), fullDiskGrantedSeen: state === "granted" });
+});
 
 /** The owner's off switches: the disabled NAMES persist (a later plugin is on
  *  by default), and the device is told in the same breath, so the skill and
@@ -1794,7 +1920,9 @@ ipcMain.handle("requirements:act", async (e, rawId: unknown) => {
   return { ...now, error };
 });
 // A relaunch-pending requirement's button, and setup's "Relaunch to finish":
-// the same relaunch the simulated updater's install does.
+// the same relaunch the simulated updater's install does. Nothing to arm —
+// setup checkpoints every step it lands on, so the quit macOS performs itself
+// after a grant comes back to the same screen this button would.
 ipcMain.handle("app:relaunch", () => {
   app.relaunch();
   app.quit();
@@ -2097,14 +2225,14 @@ function openOnboardingWindow(): void {
     onboardingWindow.focus();
     return;
   }
-  // The wizard is 660x840 by design, but a small panel is shorter than that.
-  // It opens resizable and clamped to the work area so every step — and the
-  // Continue button pinned to its footer — stays reachable, and so a tiling
-  // WM may size it like any other window instead of floating it off-screen.
+  // Fit the 660x840 wizard inside the active work area. Keep it resizable: on
+  // Windows and Linux a tiling window manager may size it further, and the
+  // scrollable body keeps the footer action reachable at every size.
   const workArea = screen.getPrimaryDisplay().workArea;
+  const frame = windowInWorkArea(workArea, { width: 660, height: 840 });
   onboardingWindow = new BrowserWindow({
     show: false,
-    ...centeredFrame(Math.min(660, workArea.width), Math.min(840, workArea.height), workArea),
+    ...frame,
     minWidth: Math.min(520, workArea.width),
     minHeight: Math.min(480, workArea.height),
     resizable: true,
@@ -2178,8 +2306,10 @@ const gate = new WindowGate({
  * is what makes this safe to call on every settings change.
  */
 async function startRelay(): Promise<void> {
-  await relay?.stop();
+  const previousRelay = relay;
   relay = null;
+  await previousRelay?.stop();
+  if (relay) return;
   connected = false;
   notifyRenderer("status:changed");
 
@@ -2196,9 +2326,18 @@ async function startRelay(): Promise<void> {
     credential,
     deviceId,
     beforeConnect: async () => {
+      // Logged, so a 409 here lands in plow-wire.log.
+      const api = new PlowApi(apiBaseUrl, loggingFetch(home));
       let registered;
+      let accountUid: string | undefined;
       try {
-        registered = await new PlowApi(apiBaseUrl).registerRelayDevice(credential, deviceId, hostName());
+        // A prior offline sign-out gets one immediate retirement attempt before
+        // its still-live session can block this registration with a 409.
+        await pendingRevokeRetrier?.start();
+        accountUid = loadSettings(home).accountUid.trim()
+          ? undefined
+          : (await api.relayInfo(credential)).uid;
+        registered = await api.registerRelayDevice(credential, deviceId, hostName());
       } catch (error) {
         if (!(error instanceof PlowApiError) || error.kind !== "unauthorized") throw error;
         if (loadSettings(home).relayCredential.trim() !== credential) return;
@@ -2212,6 +2351,7 @@ async function startRelay(): Promise<void> {
       const latest = loadSettings(home);
       if (latest.relayCredential.trim() !== credential) return;
       latest.mcpUrl = registered.mcpUrl;
+      if (accountUid) latest.accountUid = accountUid;
       saveSettings(home, latest);
     },
     serve: (request, auth) => server.fetch(request, auth),
@@ -2225,7 +2365,10 @@ async function startRelay(): Promise<void> {
       }
       connected = isConnected;
       notifyRenderer("status:changed");
-      if (isConnected) void signInAgainIfOldKey();
+      if (isConnected) {
+        void signInAgainIfOldKey();
+        void pendingRevokeRetrier?.start();
+      }
     },
     // The relay refused the credential — revoked in the console, or minted
     // against a different environment. It will never work again, so the app
@@ -2274,6 +2417,13 @@ app.whenReady().then(async () => {
     encrypt: (plain) => electronSafeStorage.encryptString(plain).toString("base64"),
     decrypt: (cipher) => electronSafeStorage.decryptString(Buffer.from(cipher, "base64")),
   });
+  pendingRevokeRetrier = new PendingRevokeRetrier(
+    home,
+    (credential) => new PlowApi(apiBaseUrl).revokeDeviceCredential(credential),
+  );
+  // A quit during an outage leaves the encrypted queue behind; launch is the
+  // guaranteed next opportunity, before any setup screen needs to know.
+  void pendingRevokeRetrier.start();
   // Usage statistics + error reporting (telemetry.ts owns what leaves the
   // Mac and what never does). A from-source run gets no key, so worktree
   // instances and the test machine report nothing; the packaged app reports
@@ -2311,9 +2461,12 @@ app.whenReady().then(async () => {
       },
       enabled: () => telemetryMaySend(loadSettings(home)),
       accountUid: () => loadSettings(home).accountUid,
-      // The relay credential is the one secret this process holds in a string;
-      // read per event because it changes on sign-in/out.
-      secrets: () => [loadSettings(home).relayCredential],
+      // Active and pending relay credentials are the secrets this process
+      // holds in strings; read per event because sign-in/out moves between them.
+      secrets: () => {
+        const settings = loadSettings(home);
+        return [settings.relayCredential, ...settings.pendingRevokeCredentials];
+      },
       ownerHome: os.homedir(),
       baseProps: {
         app_version: app.getVersion(),
@@ -2430,6 +2583,13 @@ app.whenReady().then(async () => {
     // degrades — the same contract as the Full Disk Access tracker.
     nodeProbes({ ownerHome: os.homedir(), helperPath: hostPermissionsHelperPath, native: nativePermissions() }),
   );
+  // DeviceAgent has just ensured the owner's real ~/Plow exists. Decorating
+  // it is cosmetic and must not hold relay startup or weaken that ownership.
+  void applyPlowFolderIcon({
+    folderPath: plowFolderPath(os.homedir()),
+    helperPath: nativeHelperPath("plow-folder-icon"),
+    badgePath: nativeHelperPath("plow-badge.png"),
+  });
   // The owner's off switches, as they left them: one call, and the device
   // publishes exactly the skills it will honour commands for.
   device.setDisabledPlugins(loadSettings(home).disabledPlugins ?? []);
@@ -2498,9 +2658,13 @@ app.whenReady().then(async () => {
         (vaultState.status === "locked" ? ` (${vaultState.reason})` : ""),
     );
   }
-  // An always-allow answer in the approval window stores a rule; a Rules pane
-  // already on screen used to show it only after a tab switch.
+  // An always-allow answer in the approval window stores a rule; Audit's open
+  // Gatekeeper card or rules modal should show it without a tab switch.
   device.policy.events.on("changed", () => notifyRenderer("rules:changed"));
+  device.policy.events.on(
+    "reviewer_denied",
+    ({ intentId }: { intentId: string }) => noteGatekeeperDenial(intentId),
+  );
   // Live-refresh the audit view whenever a new event is recorded: fold the
   // line into the index (once it exists — before first use the initial load
   // reads it off disk) and tell the renderer which rows moved. A rotation or
@@ -2559,12 +2723,11 @@ app.whenReady().then(async () => {
       mainWindow?.webContents.send("connectors:changed", state);
     },
   });
-  // Keep asking while connected: an account connected or disconnected outside
-  // this app (Plow hands agents a connect link), or a refresh that failed, must
-  // not leave a plugin that needs one in the wrong state until the next
-  // reconnect. The poll is quiet and publishes only a changed list.
+  // The app's existing heartbeat refreshes connected accounts and gives any
+  // offline sign-out another revoke attempt. Both passes are quiet.
   setInterval(() => {
     if (connected) void connectors?.poll();
+    void pendingRevokeRetrier?.start();
   }, 60_000);
   await startRelay();
 
@@ -2572,6 +2735,7 @@ app.whenReady().then(async () => {
     api: new PlowApi(apiBaseUrl),
     home,
     startRelay,
+    wakePendingRevokes: () => { void pendingRevokeRetrier?.start(); },
     deviceName: `Plow Latch (${hostName()})`,
     onChange: () => onboardingWindow?.webContents.send("onboarding:changed"),
     // The Availability screen's defaults. keepAwake exists by the time any
@@ -2580,23 +2744,14 @@ app.whenReady().then(async () => {
       keepAwake?.setEnabled(true);
       setLaunchAtLogin(app.isPackaged, loginItems, true);
     },
-    // The Plugins screen opens with on only what already works: every staged
-    // plugin still needing setup joins the owner's off switches. A re-setup
-    // can get here before main has read the connected accounts, so read them
-    // first — or a connected Google account still turns Gmail off.
-    applyPluginDefault: async () => {
-      await connectors?.refresh();
-      const { rows } = await pluginsNow();
-      const off = rows.filter((r) => r.status === "needs-setup").map((r) => r.name);
-      if (off.length) await updateDisabledPlugins((disabled) => off.forEach((name) => disabled.add(name)));
-    },
-    // A relaunched setup resumes on Plugins before the relay's connector
-    // poll: read the accounts first, or a connected Google needs connecting.
-    accessNeeded: async () => {
-      await connectors?.refresh();
-      return (await pluginsNow()).grants.some((g) => g.status !== "met");
-    },
+    accessNeeded,
+    // A checkpointed relaunch skips Plugins, so give the same bounded account
+    // refresh a chance to land before Access becomes interactive.
+    prepareAccess: prepareSetupAccounts,
   });
+  // A checkpointed relaunch skips the Plugins transition (and accessNeeded),
+  // so give its account inventory the same bounded chance before the window.
+  await onboarding.prepareInitialStep();
   const cloudApi = new PlowApi(apiBaseUrl, loggingFetch(home));
   const cloudAgentsClient = new CloudAgentsClient(cloudApi);
 
@@ -2755,6 +2910,13 @@ app.whenReady().then(async () => {
   // main window with a setup window floating beside it.
   gate.sync();
 
+  // Launched by a terminal rather than by Finder, this app is in the wrong
+  // login session and loses the desktop one's services silently — speech
+  // above all (launchSession.ts). Said once, after the gate has put a window
+  // up, and never awaited: it is a remark, not a step of the launch.
+  const session = launchSessionWarning(managerName());
+  if (session) void dialog.showMessageBox({ type: "warning", buttons: ["OK"], ...session });
+
   app.on("activate", () => {
     // Whichever window is the right one — never the main window on a Mac that
     // is not signed in.
@@ -2877,6 +3039,34 @@ let hostGateAttention: { permission: string | null; ownerAction: string | null; 
  *  be a notification per retry. */
 const hostGateNotified = new Set<string>();
 
+function noteGatekeeperDenial(intentId: string): void {
+  const denied = device?.policy.deniedIntent(intentId);
+  if (!denied) return;
+  gatekeeperAttention = gatekeeperRecoveryView(denied);
+  refreshTray();
+  notifyRenderer("gatekeeperRecovery:changed");
+  const key = JSON.stringify({
+    agent: denied.intent.agentId,
+    request: denied.intent.request,
+    capabilities: denied.intent.capabilities,
+  });
+  if (gatekeeperNotified.has(key) || !Notification.isSupported()) return;
+  gatekeeperNotified.add(key);
+  const notification = new Notification({
+    title: "Gatekeeper denied an agent request",
+    body: "Open Plow Latch to review it or improve your Gatekeeper instructions.",
+  });
+  notification.on("click", showGatekeeperRecovery);
+  notification.show();
+}
+
+function showGatekeeperRecovery(): void {
+  gate.sync();
+  const send = () => mainWindow?.webContents.send("ui:showGatekeeperRecovery");
+  if (mainWindow?.webContents.isLoading()) mainWindow.webContents.once("did-finish-load", send);
+  else send();
+}
+
 function noteHostGateBlock(fields: { [k: string]: unknown }): void {
   const cause = typeof fields.cause === "string" ? fields.cause : "unknown";
   const permission = typeof fields.permission === "string" ? fields.permission : null;
@@ -2991,6 +3181,14 @@ function refreshTray(): void {
               ? `Needs ${PERMISSION_LABELS[hostGateAttention.permission as keyof typeof PERMISSION_LABELS] ?? hostGateAttention.permission}…`
               : "An agent was blocked by this Desktop…",
             click: () => showCapabilitiesForHostGate(),
+          },
+        ]
+      : []),
+    ...(gatekeeperAttention
+      ? [
+          {
+            label: "Review Gatekeeper denial…",
+            click: showGatekeeperRecovery,
           },
         ]
       : []),

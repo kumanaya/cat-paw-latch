@@ -9,6 +9,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { onboardingFixtures } from "../src/renderer/onboarding-fixtures.js";
+import { pluginExamples } from "../dist/onboardingExampleCatalog.js";
+import * as steps from "../dist/onboardingSteps.js";
 import { ONBOARDING_FAILURE_MESSAGE } from "../src/renderer/onboardingFallback.js";
 import { FONT_WAIT_CEILING_MS } from "../src/renderer/welcomeEntrance.js";
 import { clickText, failLoudly, shootScreens, shotWindow } from "./screenshot-harness.mjs";
@@ -19,7 +21,11 @@ const outDir = process.env.OUT_DIR ?? "/tmp";
 const REARM_NOTE =
   "That code still works — send it exactly as shown and this screen will move on by itself.";
 
-const fixtureScreens = onboardingFixtures(Date.now());
+const fixtureScreens = onboardingFixtures(Date.now(), pluginExamples, steps).map((fixture) => ({
+  ...fixture,
+  expectFooter: fixture.state?.step !== "done",
+  expectBack: fixture.state?.canGoBack === true,
+}));
 const welcomeFixture = fixtureScreens[0];
 const SCREENS = [
   ...fixtureScreens,
@@ -27,6 +33,8 @@ const SCREENS = [
     ...welcomeFixture,
     name: "boot-null",
     state: null,
+    expectFooter: true,
+    expectBack: false,
   },
   {
     ...welcomeFixture,
@@ -38,6 +46,10 @@ const SCREENS = [
 let currentFixture = SCREENS[0];
 let current = currentFixture.state;
 let newCodeRequests = 0;
+let finishCalls = 0;
+let finishDestination;
+let openedAgent = null;
+let openedDraft = null;
 let releaseInitialGet;
 let markInitialGetStarted;
 const initialGetStarted = new Promise((resolve) => {
@@ -71,7 +83,22 @@ ipcMain.handle("onboarding:setTelemetry", async (_event, enabled) => {
   current = { ...current, telemetryEnabled: enabled === true };
   return current;
 });
-ipcMain.handle("onboarding:finish", async () => {});
+ipcMain.handle("onboarding:gatekeeperPresets", async () => currentFixture.gatekeeper?.presets ?? null);
+ipcMain.handle("cloud:agents", async () => currentFixture.cloud ?? null);
+ipcMain.handle("cloud:openMessages", async (_event, agentId, draft) => {
+  openedAgent = agentId;
+  openedDraft = draft;
+});
+// "pending" holds every row on Checking.
+ipcMain.handle("onboarding:gatekeeperPreview", async (_event, _preset, index) => {
+  const results = currentFixture.gatekeeper?.results;
+  if (results === "pending" || !results) return new Promise(() => {});
+  return results[index];
+});
+ipcMain.handle("onboarding:finish", async (_event, destination) => {
+  finishCalls += 1;
+  finishDestination = destination;
+});
 let currentLaunch = { supported: true, openAtLogin: true };
 let currentAwake = { enabled: true };
 ipcMain.handle("launch:get", async () => currentLaunch);
@@ -84,12 +111,17 @@ ipcMain.handle("power:setKeepAwake", async (_event, on) => {
   currentAwake = { enabled: on === true };
   return currentAwake;
 });
-ipcMain.handle("plugins:get", async () => currentFixture.plugins);
+ipcMain.handle("plugins:get", async () => {
+  if (currentFixture.pluginsPending) return new Promise(() => {});
+  return currentFixture.plugins;
+});
+// Access calls this once it has drawn a payload. It answers with nothing in
+// production, and nothing here either — the fixture's `landed` has to stand,
+// or the shot is of a screen that already forgot what it was celebrating.
+ipcMain.handle("plugins:acknowledge", async () => {});
 ipcMain.handle("plugins:setEnabled", async () => currentFixture.plugins);
 ipcMain.handle("requirements:act", async () => ({ ...currentFixture.plugins, error: null }));
 ipcMain.handle("app:relaunch", async () => {});
-ipcMain.handle("cloud:agents", async () => currentFixture.cloud);
-ipcMain.handle("cloud:openMessages", async () => true);
 
 const verifyRearmFixture = SCREENS.find((fixture) => fixture.name === "verify-rearm");
 verifyRearmFixture.prepare = async (win) => {
@@ -97,7 +129,7 @@ verifyRearmFixture.prepare = async (win) => {
   const displayCodeBefore = await win.webContents.executeJavaScript(
     `document.querySelector(".message-code")?.textContent.trim() ?? ""`,
   );
-  await clickText(win, "Still waiting? Send it again");
+  await clickText(win, "Try again");
   const displayCodeAfter = await win.webContents.executeJavaScript(
     `document.querySelector(".message-code")?.textContent.trim() ?? ""`,
   );
@@ -105,12 +137,72 @@ verifyRearmFixture.prepare = async (win) => {
     `document.querySelector(".state-note.neutral:not(.error)")?.textContent.trim() ?? ""`,
   );
   if (newCodeRequests !== requestsBefore + 1) {
-    throw new Error("Send it again did not request a re-arm");
+    throw new Error("Try again did not request a re-arm");
   }
   if (!displayCodeBefore || displayCodeAfter !== displayCodeBefore) {
-    throw new Error(`Send it again changed the display code: ${displayCodeBefore} → ${displayCodeAfter}`);
+    throw new Error(`Try again changed the display code: ${displayCodeBefore} → ${displayCodeAfter}`);
   }
   if (neutralNote !== REARM_NOTE) throw new Error("The re-arm note was not rendered neutrally");
+};
+
+const verifyExpiredFixture = SCREENS.find((fixture) => fixture.name === "verify-expired");
+verifyExpiredFixture.prepare = async (win) => {
+  const retainedFocus = await win.webContents.executeJavaScript(`(async () => {
+    const retry = [...document.querySelectorAll("button")]
+      .find((button) => button.textContent.trim() === "Try again");
+    if (!retry) return false;
+    retry.focus();
+    await new Promise((resolve) => setTimeout(resolve, 1200));
+    const retained = document.activeElement === retry;
+    document.querySelector(".verify-activate")?.focus();
+    return retained;
+  })()`);
+  if (!retainedFocus) throw new Error("The expired retry was replaced after it received focus");
+};
+// A fixture's `click` opens that row's reason, the way the owner would.
+for (const fixture of SCREENS.filter((f) => f.click)) {
+  fixture.prepare = async (win) => {
+    await clickText(win, fixture.click);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  };
+}
+
+const pluginQueries = [
+  "Check the family calendar",
+  "Text Mary “Running late”",
+  "Sign in to Instacart with your password",
+  "Find unread email from your team",
+];
+const pluginsFreshFixture = SCREENS.find((fixture) => fixture.name === "plugins-fresh");
+pluginsFreshFixture.prepare = async (win) => {
+  const examples = await win.webContents.executeJavaScript(`Array.from(document.querySelectorAll(".plugin-example"), (node) => ({
+    text: node.textContent,
+    visible: getComputedStyle(node).visibility === "visible",
+  }))`);
+  if (examples.length !== pluginQueries.length ||
+      pluginQueries.some((query) => !examples.some((example) => example.text.includes(query)))) {
+    throw new Error("Plugin query carousel did not render all four examples");
+  }
+  if (examples.filter((example) => example.visible).length !== 1) {
+    throw new Error("Plugin query carousel must expose exactly one example at a time");
+  }
+};
+
+const doneAgentFixture = SCREENS.find((fixture) => fixture.name === "done-agent");
+doneAgentFixture.prepare = async (win) => {
+  openedAgent = null;
+  openedDraft = null;
+  finishCalls = 0;
+  finishDestination = "not-called";
+  await clickText(win, "Text Elm");
+  if (openedAgent !== "agent_elm") throw new Error(`Text Elm opened ${String(openedAgent)}`);
+  if (openedDraft !== "Use Latch to say \"hello world\" out loud on my Mac.") {
+    throw new Error(`Text Elm drafted ${String(openedDraft)}`);
+  }
+  await clickText(win, "Explore the app");
+  if (finishCalls !== 1 || finishDestination !== undefined) {
+    throw new Error(`Explore the app called finish ${finishCalls} times with ${String(finishDestination)}`);
+  }
 };
 
 failLoudly();
@@ -154,9 +246,10 @@ app.whenReady().then(async () => {
       await win.loadFile(path.join(dist, "renderer/onboarding.html"));
       // The full Welcome resolves its last delayed reveal at about 2.08s. Shoot
       // its resting state after the font and first-paint gate has also settled.
+      // The Gatekeeper's pills cross the beam and bump back within about 1.5s.
       const settleMs = fixture.state?.step === "welcome" || fixture.state === null
         ? FONT_WAIT_CEILING_MS + 2200
-        : 400;
+        : fixture.state?.step === "gatekeeper" ? 1800 : 400;
       await new Promise((resolve) => setTimeout(resolve, settleMs));
     },
   });

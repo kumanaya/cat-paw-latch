@@ -359,6 +359,7 @@ verify-preload: build
       AGENTS_OPEN_OUT="${AGENTS_OPEN_OUT:-{{outdir}}/agents-open.png}" \
       APPROVALS_OUT="${APPROVALS_OUT:-{{outdir}}/agents-approvals.png}" \
       APPROVALS_ASK_OUT="${APPROVALS_ASK_OUT:-{{outdir}}/agents-approvals-ask.png}" \
+      GATEKEEPER_RECOVERY_OUT="${GATEKEEPER_RECOVERY_OUT:-{{outdir}}/gatekeeper-recovery.png}" \
       VAULT_OUT="${VAULT_OUT:-{{outdir}}/vault-locked.png}" \
       npx electron apps/desktop/scripts/verify-preload.mjs
 
@@ -408,6 +409,7 @@ audit:
 # is this branch's "Plow-Latch-<branch>" home, never another checkout's and
 # never the packaged install's plain "Plow-Latch".
 clean:
+    node scripts/assert-home-cleanable.mjs "{{apphome}}"
     rm -rf "{{apphome}}"
     @echo "wiped {{apphome}}"
 

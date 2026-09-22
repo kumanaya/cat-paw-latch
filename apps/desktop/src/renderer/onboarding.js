@@ -4,9 +4,10 @@
 
 import { el, icon, switchEl } from "./dom.js";
 import { latestOnly, singleFlight, whenAnswered } from "./onboardingAction.js";
-import { loadDoneAgent } from "./onboardingDone.js";
+import { HELLO_WORLD_DEMO, loadDoneAgent } from "./onboardingDone.js";
 import { failedOnboardingState, resolveOnboardingState } from "./onboardingFallback.js";
-import { accessPrimary, runGrants } from "./onboardingGrants.js";
+import { presetFor, rowView, verdictWord } from "./gatekeeperRows.js";
+import { accessPrimary, clearMissed, runGrants } from "./onboardingGrants.js";
 import { startAfterDocumentPaint } from "./welcomeEntrance.js";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -34,9 +35,24 @@ let pluginsState = null;
 const skipped = new Set();
 let running = null;
 let missed = null;
+/** The grant ids this visit to Access is celebrating, snapshotted on arrival —
+ * `null` until it has been taken, which is also what says the acknowledge has
+ * not fired yet. Held for the visit rather than read from `pluginsState` per
+ * draw, because acknowledging empties `landed` in the model and any later read
+ * — the acknowledge itself, a focus refresh, a grant flow — would drop the
+ * class mid-animation and cancel it. Back to `null` on leaving, so a later
+ * visit can celebrate a later grant. */
+let celebrating = null;
 /** The id of the switch a redraw hands focus back to, so a click keeps it. */
 let restoreFocus = null;
 let doneAgent = null;
+/** The Gatekeeper screen's live pieces. Built on entering the step and updated
+ * in place, so typing never loses its focus to a redraw. */
+let gatekeeper = null;
+let gatekeeperPresets = null;
+/** The deck last shown, so an edited draft comes back from Plugins with its own examples. */
+let lastDeck = null;
+const PREVIEW_PAUSE_MS = 1000;
 const mutate = singleFlight(() => state?.busy === true);
 
 async function update(action) {
@@ -62,10 +78,11 @@ function arrowIcon(direction) {
 const titlebar = el("div", { class: "wizard-titlebar", attrs: { "aria-hidden": "true" } });
 const screen = el("section", { class: "wizard-screen", attrs: { "aria-live": "polite" } });
 const body = el("div", { class: "wizard-body" }, [screen]);
-const backButton = button("", "nav-back", () => update(() => window.domo.onboardingBack()));
+const backButton = button("", "nav-back", () =>
+  update(() => window.domo.onboardingBack(state?.step === "gatekeeper" ? gatekeeper?.text : undefined)));
 backButton.append(arrowIcon("back"), document.createTextNode("Back"));
-const dots = [0, 1, 2, 3, 4].map(() => el("i", { class: "foot-dot" }));
-const dotRow = el("span", { class: "foot-dots", attrs: { "aria-hidden": "true" } }, dots);
+// Filled from state.progress — main counts the setup screens, not this file.
+const dotRow = el("span", { class: "foot-dots", attrs: { "aria-hidden": "true" } });
 const primaryLabel = el("span", { text: "Get started" });
 const primaryArrow = arrowIcon("next");
 const primaryButton = el("button", { class: "nav-next", attrs: { type: "button" } }, [
@@ -192,9 +209,220 @@ function privacyScreen() {
   ]);
 }
 
-function copyButton(value) {
+const MINI_STROKE = "rgba(240,240,232,.34)";
+const PORT_STROKE = "rgba(240,240,232,.42)";
+
+/** The Mac mini, drawn — monochrome lines, no logo. Its status light and
+ * underglow pulse when a request gets through. */
+function macMini() {
+  const svg = svgElement("svg", { viewBox: "0 0 120 86", fill: "none", "aria-hidden": "true" });
+  const defs = svgElement("defs");
+  const grad = (tag, id, attrs, stops) => {
+    const g = svgElement(tag, { id, ...attrs });
+    for (const [offset, color, opacity] of stops) {
+      g.appendChild(svgElement("stop", { offset, "stop-color": color, "stop-opacity": opacity }));
+    }
+    return g;
+  };
+  defs.append(
+    grad("linearGradient", "gk-mm-top", { x1: "0", y1: "0", x2: "0", y2: "1" }, [["0", "#1b1c18", "1"], ["1", "#222420", "1"]]),
+    grad("linearGradient", "gk-mm-front", { x1: "0", y1: "0", x2: "0", y2: "1" }, [["0", "#191a16", "1"], ["1", "#121310", "1"]]),
+    grad("radialGradient", "gk-mm-under", { cx: ".5", cy: ".5", r: ".5" }, [["0", "#d5ef8a", ".55"], ["1", "#d5ef8a", "0"]]),
+    grad("radialGradient", "gk-mm-led", { cx: ".5", cy: ".5", r: ".5" }, [["0", "#eaffb0", "1"], [".35", "#d5ef8a", ".8"], ["1", "#d5ef8a", "0"]]),
+  );
+  svg.append(
+    defs,
+    svgElement("ellipse", { class: "gk-glow", cx: "60", cy: "77", rx: "54", ry: "6", fill: "url(#gk-mm-under)" }),
+    svgElement("ellipse", { cx: "60", cy: "75.5", rx: "50", ry: "2.6", fill: "rgba(0,0,0,.55)" }),
+    svgElement("path", { d: "M8.5 36 H111.5 V65 Q111.5 74 102 74 H18 Q8.5 74 8.5 65 Z", fill: "url(#gk-mm-front)", stroke: MINI_STROKE, "stroke-width": "1.3", "stroke-linejoin": "round" }),
+    svgElement("path", { d: "M17 23 Q18 18 26 18 H94 Q102 18 103 23 L111 32 Q113 36.5 107 36.5 H13 Q7 36.5 9 32 Z", fill: "url(#gk-mm-top)", stroke: MINI_STROKE, "stroke-width": "1.3", "stroke-linejoin": "round" }),
+    svgElement("path", { d: "M13 36 H107", stroke: "rgba(240,240,232,.12)", "stroke-width": "1" }),
+    svgElement("rect", { x: "23", y: "53", width: "3.6", height: "10", rx: "1.8", stroke: PORT_STROKE, "stroke-width": "1.1" }),
+    svgElement("rect", { x: "31", y: "53", width: "3.6", height: "10", rx: "1.8", stroke: PORT_STROKE, "stroke-width": "1.1" }),
+    svgElement("circle", { cx: "96", cy: "58", r: "2.3", stroke: PORT_STROKE, "stroke-width": "1.1" }),
+    svgElement("circle", { class: "gk-glow", cx: "86", cy: "58", r: "5", fill: "url(#gk-mm-led)" }),
+    svgElement("circle", { cx: "86", cy: "58", r: ".9", fill: "rgba(240,240,232,.5)" }),
+  );
+  return el("div", { class: "gk-mac" }, [el("div", { class: "gk-halo" }), svg]);
+}
+
+/** One row as its latest result reads; the beam scans while any row is out. */
+function paintRow(index) {
+  const g = gatekeeper;
+  const { state: rowState, reason } = rowView(g.results[index]);
+  const row = g.view.rows[index];
+  row.node.className = `gk-row ${rowState}${g.open.has(index) ? " open" : ""}`;
+  row.pill.setAttribute("aria-expanded", String(g.open.has(index)));
+  const word = verdictWord(rowState);
+  row.end.textContent = rowState === "ok" ? "✓" : rowState === "no" ? "✕" : rowState === "checking" ? word : "";
+  row.word.textContent = word;
+  row.reason.textContent = reason ? ` — ${reason}` : "";
+  // Restart the flare so a re-review flashes again.
+  const flare = el("span", { class: "gk-flare" });
+  row.flare.replaceWith(flare);
+  row.flare = flare;
+  g.view.field.classList.toggle("reviewing", g.results.some((result) => !result));
+}
+
+function lightMac(view) {
+  view.mac.classList.remove("lit");
+  void view.mac.offsetWidth;
+  view.mac.classList.add("lit");
+  setTimeout(() => view.mac.classList.remove("lit"), 260);
+}
+
+/** Every row back to checking, for `text`; an open row stays open to watch its
+ * re-review. Answers still out for older text land on a stale generation and
+ * are dropped. */
+function invalidate(g, text) {
+  g.lastText = text.trim();
+  g.results = g.results.map(() => null);
+  g.results.forEach((_, i) => paintRow(i));
+  return ++g.gen;
+}
+
+/** Review every row of the current deck against the text in the field. A newer
+ * run supersedes an older one; its late answers are dropped, not cancelled. */
+function runPreview() {
+  const g = gatekeeper;
+  if (!g?.view) return;
+  // A pending debounce is for text this run already covers (or a deck it replaced).
+  clearTimeout(g.timer);
+  const text = g.text;
+  const gen = invalidate(g, text);
+  g.results.forEach((_, i) => {
+    window.domo.gatekeeperPreview(g.deck, i, text)
+      .catch(() => ({ verdict: "ask", reason: "", cause: "unavailable" }))
+      .then((result) => {
+        if (gatekeeper !== g || g.gen !== gen) return;
+        g.results[i] = result;
+        paintRow(i);
+        if (result.verdict === "allow") setTimeout(() => lightMac(g.view), 420);
+      });
+  });
+}
+
+function schedulePreview() {
+  clearTimeout(gatekeeper.timer);
+  gatekeeper.timer = setTimeout(() => runPreview(), PREVIEW_PAUSE_MS);
+}
+
+function choosePreset(key) {
+  const g = gatekeeper;
+  g.deck = lastDeck = key;
+  g.text = gatekeeperPresets[key].text;
+  g.results = gatekeeperPresets[key].rows.map(() => null);
+  g.open.clear();
+  g.view = null; // render() rebuilds a screen with no view
+  render();
+  runPreview();
+}
+
+function gatekeeperScreen() {
+  const head = el("div", { class: "head-center" }, [
+    el("h1", { text: "Meet the Plow Gatekeeper" }),
+    el("p", {
+      class: "subhead",
+      text: "The Plow Gatekeeper uses a HIPAA-compliant model to protect your data from malicious queries, while allowing your agents to get useful work done.",
+    }),
+  ]);
+  const g = gatekeeper;
+  if (!g || !gatekeeperPresets) return el("div", { class: "step-inner gatekeeper-screen" }, [head, note(state)]);
+
+  // Each default replaces the text with its preset; it is an action, not a state.
+  const defaults = el("div", { class: "gk-defaults" }, [
+    el("span", { text: "Use a default:" }),
+    button("Personal assistant", "gk-default", () => choosePreset("home")),
+    button("Executive assistant", "gk-default", () => choosePreset("work")),
+  ]);
+
+  const field = el("textarea", {
+    class: "gk-text",
+    attrs: { rows: "3", spellcheck: "false", "aria-label": "What access should Plow Latch allow to your Mac?" },
+  });
+  field.value = g.text;
+  field.addEventListener("input", () => {
+    g.text = field.value;
+    // An edit retires the shown verdicts at once; only the review waits for a pause.
+    if (g.text.trim() === g.lastText) return;
+    invalidate(g, g.text);
+    schedulePreview();
+  });
+
+  const rows = gatekeeperPresets[g.deck].rows.map(({ label, icon: glyph, command }, index) => {
+    const end = el("span", { class: "gk-end" });
+    const pill = el("button", { class: "gk-pill", attrs: { type: "button" } }, [
+      icon(glyph, { strokeWidth: "1.7" }),
+      el("span", { class: "gk-label", text: label }),
+      end,
+    ]);
+    const flare = el("span", { class: "gk-flare" });
+    const word = el("span", { class: "gk-word" });
+    const reason = el("span");
+    // The capability lines the reviewer reads, then what it made of them.
+    const why = el("div", { class: "gk-why" }, [
+      el("div", { class: "gk-detail" }, [
+        el("div", { class: "gk-command" }, command.map((line) => el("div", { text: line }))),
+        el("p", { class: "gk-verdict" }, [el("strong", { text: "Gatekeeper Verdict: " }), word, reason]),
+      ]),
+    ]);
+    const node = el("div", { class: "gk-row" }, [el("div", { class: "gk-lane" }, [pill, flare]), why]);
+    pill.addEventListener("click", () => {
+      if (g.open.has(index)) g.open.delete(index);
+      else g.open.add(index);
+      node.classList.toggle("open", g.open.has(index));
+      pill.setAttribute("aria-expanded", String(g.open.has(index)));
+    });
+    return { node, pill, end, word, reason, flare };
+  });
+
+  const mac = macMini();
+  const beamField = el("div", { class: "gk-field" }, [
+    mac,
+    el("div", { class: "gk-beam", attrs: { "aria-hidden": "true" } }),
+    el("div", { class: "gk-list" }, rows.map((r) => r.node)),
+  ]);
+  g.view = { field: beamField, rows, mac };
+  rows.forEach((_, i) => paintRow(i));
+
+  return el("div", { class: "step-inner gatekeeper-screen" }, [
+    head,
+    el("p", { class: "gk-prompt", text: "What access should Plow Latch allow to your Mac?" }),
+    field,
+    defaults,
+    beamField,
+    note(state),
+  ]);
+}
+
+async function enterGatekeeper() {
+  gatekeeperPresets ??= await window.domo.gatekeeperPresets();
+  if (state?.step !== "gatekeeper" || !gatekeeperPresets) return;
+  const deck = lastDeck = presetFor(state.purpose, gatekeeperPresets) ?? lastDeck ?? "home";
+  gatekeeper = {
+    deck,
+    text: state.purpose,
+    gen: 0,
+    lastText: null,
+    timer: null,
+    view: null,
+    open: new Set(),
+    results: gatekeeperPresets[deck].rows.map(() => null),
+  };
+  render();
+  runPreview();
+}
+
+function continueFromGatekeeper() {
+  return update(() => window.domo.onboardingAdvance(gatekeeper?.text ?? state.purpose));
+}
+
+function copyButton(value, ariaLabel) {
   const label = el("span", { text: "Copy" });
-  const node = el("button", { class: "copy-button", attrs: { type: "button", "aria-label": "Copy message" } }, [
+  const node = el("button", {
+    class: "copy-button",
+    attrs: { type: "button", "aria-label": ariaLabel },
+  }, [
     icon("copy", { strokeWidth: "1.7" }),
     label,
   ]);
@@ -202,9 +430,11 @@ function copyButton(value) {
     await navigator.clipboard.writeText(value).then(() => {
       node.classList.add("copied");
       label.textContent = "Copied";
+      node.setAttribute("aria-label", ariaLabel.replace(/^Copy /, "Copied "));
       setTimeout(() => {
         node.classList.remove("copied");
         label.textContent = "Copy";
+        node.setAttribute("aria-label", ariaLabel);
       }, 2000);
     }).catch(() => {});
   });
@@ -238,73 +468,81 @@ function note(current) {
   });
 }
 
+function retryActivation(node, message = null) {
+  node.replaceChildren(
+    ...(message ? [el("span", { class: "status-text", text: message })] : []),
+    button("Try again", "link-button", () => update(() => window.domo.onboardingNewCode())),
+  );
+  node.classList.add("expired");
+}
+
 function startActivationCountdown(node, until) {
   const tick = () => {
     const left = Math.max(0, until - Date.now());
+    if (left === 0) {
+      clearInterval(expiryTimer);
+      expiryTimer = null;
+      retryActivation(node);
+      return;
+    }
     const minutes = Math.floor(left / 60000);
     const seconds = Math.floor((left % 60000) / 1000);
-    node.textContent = left > 0
-      ? `Listening for ${minutes}:${String(seconds).padStart(2, "0")}`
-      : "Still listening — you can try the same message or request another code.";
+    node.replaceChildren(
+      el("span", { class: "waiting-spinner" }),
+      el("span", { class: "status-text", text: "Waiting for your text" }),
+      el("span", { class: "countdown", text: `${minutes}:${String(seconds).padStart(2, "0")}` }),
+    );
   };
-  tick();
   expiryTimer = setInterval(tick, 1000);
+  tick();
 }
 
 function verifyScreen() {
   const activation = state.activation;
+  const idle = activation ? null : state.busy
+    ? { kind: "loading", text: "Getting a code from Plow…", action: null }
+    : { kind: state.message ? "failure" : "idle", text: state.message, action: "Try again" };
   const parts = [
     el("div", { class: "head-center" }, [
-      el("h1", { text: "Verify your phone to connect this Desktop" }),
-      el("p", {
+      el("h1", { text: "Verify your phone" }),
+      activation ? el("p", {
         class: "subhead",
-        text: "Send the message below from the phone number you want to use with Plow.",
-      }),
+        text: "Send this text from the phone you’ll use with Plow.",
+      }) : null,
     ]),
   ];
 
   if (activation) {
     parts.push(
-      el("div", { class: "send-block" }, [
-        el("div", { class: "send-head" }, [
-          el("span", { class: "section-label", text: "Send to:" }),
-          el("span", { class: "send-to", text: activation.sendTo }),
+      el("div", { class: "activation-details" }, [
+        el("div", { class: "activation-row" }, [
+          el("span", { class: "activation-label", text: "To" }),
+          el("span", { class: "activation-value" }, [
+            el("span", { class: "send-to", text: activation.sendTo }),
+            copyButton(activation.sendTo, "Copy phone number"),
+          ]),
         ]),
-        el("div", { class: "message-field" }, [
-          activationMessage(activation),
-          copyButton(activation.smsBody),
-        ]),
-        el("p", { class: "caution" }, [
-          icon("lock", { strokeWidth: "1.7" }),
-          el("span", {}, [
-            el("strong", { text: "Keep this private. " }),
-            document.createTextNode("Anyone who sends this code from their number can link it to this Plow account."),
+        el("div", { class: "activation-row" }, [
+          el("span", { class: "activation-label", text: "Text" }),
+          el("span", { class: "activation-value" }, [
+            activationMessage(activation),
+            copyButton(activation.smsBody, "Copy activation message"),
           ]),
         ]),
       ]),
+      el("p", { class: "activation-warning" }, [
+        icon("lock", { strokeWidth: "1.7" }),
+        el("span", { text: "Keep this code private—anyone who sends it can link their phone to your account." }),
+      ]),
     );
-  } else {
-    parts.push(el("p", { class: "state-note", text: "Getting a code from Plow…" }));
+  } else if (idle?.kind === "loading") {
+    parts.push(el("p", { class: "state-note", text: idle.text, attrs: { role: "status" } }));
   }
 
   if (activation) {
-    parts.push(el("div", { class: "waiting-status" }, [
-      ...(state.activationStale ? [] : [el("span", { class: "waiting-spinner" })]),
-      el("span", {
-        class: "status-text",
-        text: state.activationStale ? "Still not signed in" : "Waiting for your text…",
-      }),
-    ]));
-
-    const countdown = el("p", { class: "countdown", attrs: { "aria-live": "off" } });
-    if (!state.activationStale) startActivationCountdown(countdown, activation.pollUntil);
-    parts.push(countdown);
-
-    if (state.activationStale) {
-      parts.push(el("div", { class: "inline-actions" }, [
-        button("Try again", "link-button", () => update(() => window.domo.onboardingNewCode())),
-      ]));
-    }
+    const waiting = el("div", { class: "waiting-status", attrs: { "aria-live": "polite" } });
+    if (state.activationStale) retryActivation(waiting, "Still not signed in");
+    else startActivationCountdown(waiting, activation.pollUntil);
 
     {
       const activate = button("", "verify-activate", async () => {
@@ -314,28 +552,25 @@ function verifyScreen() {
       });
       activate.append(
         icon("messages", { strokeWidth: "1.7" }),
-        document.createTextNode("Open Messages to activate"),
+        document.createTextNode("Open in Messages"),
       );
-
-      const actions = [activate];
-      if (!state.activationStale) {
-        actions.push(el("p", { class: "alternate" }, [
-          button("Still waiting? Send it again", "link-button", () =>
-            update(() => window.domo.onboardingNewCode()),
-          ),
-        ]));
-      }
-      parts.push(el("div", { class: "verify-actions" }, actions));
+      parts.push(el("div", { class: "verify-actions" }, [activate]));
     }
+    parts.push(waiting);
   } else {
-    if (!state.busy) {
-      parts.push(el("div", { class: "inline-actions" }, [
-        button("Try again", "link-button", () => update(() => window.domo.onboardingBegin())),
+    if (idle?.action) {
+      parts.push(el("div", { class: "verify-actions verify-recovery" }, [
+        ...(idle.text ? [el("p", {
+          class: `state-note${idle.kind === "failure" ? " error" : ""}`,
+          text: idle.text,
+          attrs: { role: idle.kind === "failure" ? "alert" : "status" },
+        })] : []),
+        button(idle.action, "verify-activate", () => update(() => window.domo.onboardingBegin())),
       ]));
     }
   }
 
-  parts.push(note(state));
+  if (!idle) parts.push(note(state));
   return el("div", { class: "step-inner" }, parts);
 }
 
@@ -346,6 +581,7 @@ const onPluginStep = () => state?.step === "plugins" || state?.step === "access"
  * undo a switch), and so is one that lands after setup left both steps. */
 const showPlugins = latestOnly((next) => {
   if (!onPluginStep()) return;
+  missed = clearMissed(missed, next.grants);
   pluginsState = next;
   render();
 });
@@ -355,19 +591,37 @@ async function refreshPlugins() {
 }
 
 /** Access's one button: the list's flows in order; a grant that did not land
- * stops the run on its row. */
+ * stops the run on its row. The renderer's shared single-flight gate owns
+ * every requirement action, including met-row repeats. */
+const actRequirement = singleFlight(() => running !== null);
+
+function runRequirement(id) {
+  return actRequirement(async () => {
+    running = id;
+    render();
+    try {
+      return await whenAnswered(window.domo.requirementsAct(id), showPlugins);
+    } finally {
+      running = null;
+      render();
+    }
+  });
+}
+
 async function startGrants() {
   missed = null; // the run's first redraw must not still show the last miss
   missed = await runGrants({
-    act: (id) => whenAnswered(window.domo.requirementsAct(id), showPlugins),
+    act: runRequirement,
     getState: () => pluginsState,
     stillHere: () => state?.step === "access",
-    setRunning: (id) => {
-      running = id;
-      render();
-    },
   }, skipped);
   render();
+}
+
+/** A met requirement can offer another action without restarting Access's
+ * open-grant runner. Its id and label both come from the model. */
+async function repeatGrant(id) {
+  await runRequirement(id).catch(() => null);
 }
 
 async function refreshAvailability() {
@@ -459,11 +713,11 @@ function pluginRow(row) {
     restoreFocus = box.id;
     await showPlugins(() => window.domo.pluginsSetEnabled(row.name, box.checked));
   });
-  const tags = row.requirements.length
-    ? row.requirements.map((req) => req.status === "met"
-      ? el("span", { class: "item-tag met", text: `✓ ${req.title}` })
-      : el("span", { class: "item-tag", text: req.title }))
-    : [el("span", { class: "item-tag none", text: "Nothing to grant" })];
+  const tags = row.status === "off"
+    ? []
+    : row.requirements
+      .filter((req) => req.status !== "met")
+      .map((req) => el("span", { class: "item-tag required", text: `Required: ${req.title}` }));
   return el("div", { class: `item-row${row.status === "off" ? " off" : ""}` }, [
     el("span", { class: "item-icon" }, [
       icon(row.kind === "Browser" ? "browser" : "command", { strokeWidth: "1.7" }),
@@ -471,7 +725,7 @@ function pluginRow(row) {
     el("span", { class: "item-copy" }, [
       el("span", { class: "item-name", text: row.title }),
       row.summary ? el("span", { class: "item-detail", text: row.summary }) : null,
-      el("span", { class: "item-tags" }, tags),
+      tags.length ? el("span", { class: "item-tags" }, tags) : null,
     ]),
     switchEl(box),
   ]);
@@ -491,29 +745,25 @@ function pluginsScreen() {
     void update(() => window.domo.onboardingSetTelemetry(telemetry.checked));
   });
 
+  const examples = pluginsState?.examples ?? [];
   const parts = [
     el("div", { class: "head-center" }, [
-      el("h1", { text: "Choose your plugins" }),
+      el("h1", { text: "Give your agents superpowers" }),
       el("p", {
         class: "subhead",
-        text: "Switch on what your agents can use on this Mac. You'll grant what they need next.",
+        text: "Plugins teach your agent how to reliably use your Mac",
       }),
+      examples.length ? el("div", { class: `plugin-examples count-${examples.length}`, attrs: { "aria-label": "Things you can ask" } },
+        examples.map((example) => el("span", { class: "plugin-example" }, [
+          el("small", { text: example.plugins.join(" + ") }),
+          el("span", { text: `“${example.query}”` }),
+        ]))) : null,
     ]),
   ];
   if (pluginsState) {
-    const toGrant = pluginsState.grants.filter((g) => g.status !== "met");
+    const choices = pluginsState.rows.filter((row) => row.status === "off" || row.requirements.length > 0);
     parts.push(
-      el("div", { class: "item-rows" }, pluginsState.rows.map(pluginRow)),
-      el("div", { class: "grant-next" }, [
-        el("div", { class: "section-label", text: "You'll grant next" }),
-        toGrant.length
-          ? el("div", { class: "grant-items" }, toGrant.map((g) =>
-            el("span", { class: "grant-item" }, [
-              document.createTextNode(g.title),
-              el("small", { text: `for ${g.plugins.join(" · ")}` }),
-            ])))
-          : el("p", { class: "grant-empty", text: "Nothing to grant. These work as soon as setup finishes." }),
-      ]),
+      el("div", { class: "item-rows" }, choices.map(pluginRow)),
     );
   }
   parts.push(toggleRow(
@@ -539,11 +789,20 @@ function grantRow(grant) {
   let line = null;
   let control = null;
   if (grant.status === "met") {
-    control = el("span", { class: "item-chip" }, [
+    const repeat = grant.repeatAction
+      ? button(grant.repeatAction, "link-button", () => void repeatGrant(grant.id))
+      : null;
+    if (repeat) repeat.disabled = running !== null;
+    // News: it arrived through the relaunch macOS forces, so without the
+    // animation it reads as a grant that was always there. The model decides
+    // which ids those are; this file never tells grants apart by id.
+    const news = celebrating?.includes(grant.id) ?? false;
+    control = el("span", { class: `item-chip${news ? " landed" : ""}` }, [
       icon("checkmark", { strokeWidth: "1.7" }),
       document.createTextNode(grant.done),
+      repeat,
     ]);
-    if (missed?.id === grant.id && missed.error) line = statusLine("error", missed.error);
+    if (grant.notice) line = statusLine(grant.notice.noteKind, grant.notice.message);
   } else if (grant.status === "relaunch") {
     line = statusLine("done", "Granted: relaunch to finish");
   } else if (running === grant.id) {
@@ -575,13 +834,24 @@ function grantRow(grant) {
 }
 
 function accessScreen() {
+  // Not before the model has answered: a relaunch straight onto Access — the
+  // path the whole feature exists for — draws once with `pluginsState` still
+  // null, and snapshotting there would take an empty celebration. The read
+  // that follows redraws this screen, and it is the read that marked the grant
+  // seen, so the snapshot and the mark cannot disagree.
+  if (celebrating === null && pluginsState) {
+    celebrating = pluginsState.landed ?? [];
+    // Only now, with a committed payload drawn: acknowledging during the read
+    // let a superseded response consume a celebration nobody ever saw.
+    void window.domo.pluginsAcknowledge();
+  }
   return el("div", { class: "form-screen" }, [
     el("div", { class: "step-inner" }, [
       el("div", { class: "head-center" }, [
         el("h1", { text: "Grant access" }),
         el("p", {
           class: "subhead",
-          text: "One at a time. Skip anything and it'll wait for you in Settings\u00a0›\u00a0Plugins.",
+          text: "The Plow Gatekeeper will monitor how your agents use these permissions.",
         }),
       ]),
       el("div", { class: "item-rows" }, (pluginsState?.grants ?? []).map(grantRow)),
@@ -593,7 +863,7 @@ function doneScreen() {
   const actions = [];
   if (doneAgent) {
     actions.push(button(`Text ${doneAgent.name}`, "nav-next", async () => {
-      await window.domo.cloudOpenMessages(doneAgent.agentId);
+      await window.domo.cloudOpenMessages(doneAgent.agentId, HELLO_WORLD_DEMO);
     }));
   }
   actions.push(button(
@@ -601,6 +871,7 @@ function doneScreen() {
     doneAgent ? "nav-back done-explore" : "nav-next",
     () => update(() => window.domo.onboardingFinish()),
   ));
+  actions[0].setAttribute("autofocus", "");
   return el("div", { class: "done-wrap" }, [
     el("div", { class: "done-badge" }, [
       icon("checkmark", { strokeWidth: "2.4" }),
@@ -613,6 +884,7 @@ function doneScreen() {
 function screenForStep() {
   if (state.step === "welcome") return welcomeScreen();
   if (state.step === "privacy") return privacyScreen();
+  if (state.step === "gatekeeper") return gatekeeperScreen();
   if (state.step === "activate" || state.step === "waiting") return verifyScreen();
   if (state.step === "plugins") return pluginsScreen();
   if (state.step === "access") return accessScreen();
@@ -627,31 +899,28 @@ function footerForStep() {
   if (step === "done") return { hidden: true };
   if (step === "welcome") {
     return {
-      back: false,
-      dot: null,
       label: "Get started",
       arrow: false,
       action: advance,
     };
   }
   if (step === "activate" || step === "waiting") {
-    return { back: true, dot: 0, label: "Continue", arrow: true, disabled: true, action: null };
+    return { label: "Continue", arrow: true, primaryHidden: true, disabled: true, action: null };
   }
   if (step === "privacy") {
     return {
-      back: false,
-      dot: 1,
       label: "Continue",
       arrow: true,
       action: advance,
     };
   }
+  if (step === "gatekeeper") {
+    return { label: "Continue", arrow: true, action: continueFromGatekeeper };
+  }
   if (step === "access") {
     const { label, kind } = accessPrimary({ grants: pluginsState?.grants ?? [], skipped, running, missed });
     const actions = { run: startGrants, relaunch: () => window.domo.appRelaunch(), advance };
     return {
-      back: true,
-      dot: 3,
       label,
       arrow: kind !== null,
       disabled: kind === null || pluginsState === null,
@@ -660,16 +929,12 @@ function footerForStep() {
   }
   if (step === "availability") {
     return {
-      back: true,
-      dot: 4,
       label: "Continue",
       arrow: true,
       action: advance,
     };
   }
   return {
-    back: false,
-    dot: 2,
     label: "Continue",
     arrow: true,
     action: advance,
@@ -694,8 +959,9 @@ function playWelcomeEntrance() {
   });
 }
 
-function refreshWelcomeNote() {
-  const wrap = screen.querySelector(".welcome-wrap");
+/** Redraw only the note of a screen that must not be rebuilt under the owner. */
+function refreshNote(selector) {
+  const wrap = screen.querySelector(selector);
   if (!wrap) return;
   wrap.querySelector(".state-note")?.remove();
   const next = note(state);
@@ -707,11 +973,17 @@ function render() {
   clearInterval(expiryTimer);
   expiryTimer = null;
   if (state.step !== "plugins") restoreFocus = null;
+  if (state.step !== "access") celebrating = null;
   if (state.step !== "availability") syncAvailability = null;
 
   const continuingWelcome = state.step === "welcome" && screen.classList.contains("is-welcome");
+  // The Gatekeeper is rebuilt only when it has no view (entering, a new deck):
+  // a redraw would take the caret from the owner and replay every row.
+  const continuingGatekeeper = state.step === "gatekeeper" && !!gatekeeper?.view;
   if (continuingWelcome) {
-    refreshWelcomeNote();
+    refreshNote(".welcome-wrap");
+  } else if (continuingGatekeeper) {
+    refreshNote(".gatekeeper-screen");
   } else {
     // A redraw of the same step (a switch, a grant landing) keeps its scroll.
     const stepChanged = !screen.classList.contains(`is-${state.step}`);
@@ -725,13 +997,23 @@ function render() {
   const config = footerForStep();
   footer.hidden = !!config.hidden;
   if (!config.hidden) {
-    backButton.hidden = !config.back;
+    backButton.hidden = state.canGoBack !== true;
     backButton.disabled = !!state.busy;
-    dotRow.hidden = config.dot === null;
-    dots.forEach((dot, index) => {
-      dot.classList.toggle("active", index === config.dot);
-      dot.classList.toggle("complete", config.dot !== null && index < config.dot);
-    });
+    primaryButton.hidden = !!config.primaryHidden;
+    const progress = state.progress;
+    dotRow.hidden = progress === null;
+    if (progress) {
+      if (dotRow.childElementCount !== progress.total) {
+        dotRow.replaceChildren(...Array.from(
+          { length: progress.total },
+          () => el("i", { class: "foot-dot" }),
+        ));
+      }
+      [...dotRow.children].forEach((dot, index) => {
+        dot.classList.toggle("active", index === progress.index);
+        dot.classList.toggle("complete", index < progress.index);
+      });
+    }
     primaryLabel.textContent = config.label;
     primaryArrow.toggleAttribute("hidden", !config.arrow);
     primaryButton.disabled = !!config.disabled || !!state.busy;
@@ -745,10 +1027,10 @@ function render() {
   }
 
   const kept = restoreFocus ? document.getElementById(restoreFocus) : null;
-  const focus = kept ?? screen.querySelector("input[autofocus]")
+  const focus = kept ?? screen.querySelector("[autofocus]")
     ?? (primaryButton.disabled ? screen.querySelector(".verify-activate:not(:disabled)") : null)
     ?? (!footer.hidden ? primaryButton : null);
-  if (focus && !state.busy) {
+  if (focus && !state.busy && !continuingGatekeeper) {
     requestAnimationFrame(() => {
       focus.focus({ preventScroll: true, focusVisible: false });
       if (focus === kept) restoreFocus = null;
@@ -760,12 +1042,22 @@ function render() {
 async function apply(next) {
   const previousStep = state?.step;
   state = resolveOnboardingState(state, next);
+  if (state?.step !== "gatekeeper" && gatekeeper) {
+    clearTimeout(gatekeeper.timer);
+    gatekeeper = null;
+  }
   if (state?.step !== "done") doneAgent = null;
-  if (!onPluginStep()) pluginsState = null;
+  // Dropped on any step change, not just off the plugin steps: Access and
+  // Plugins share this state, so keeping it across Access → Plugins → Access
+  // let the second visit snapshot the FIRST visit's `landed` — replaying a
+  // celebration for a grant already acknowledged. Each visit waits for its own
+  // read, which the transition below starts.
+  if (!onPluginStep() || state?.step !== previousStep) pluginsState = null;
   if (state?.step !== previousStep) missed = null;
   if (!onPluginStep() && state?.step !== "availability") skipped.clear();
   if (state?.step !== "availability") availability = null;
   render();
+  if (state?.step === "gatekeeper" && previousStep !== "gatekeeper") void enterGatekeeper();
   if (onPluginStep() && previousStep !== state.step) void refreshPlugins();
   if (state?.step === "availability" && previousStep !== "availability") {
     void refreshAvailability();
@@ -780,7 +1072,7 @@ async function apply(next) {
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Enter" || event.defaultPrevented || footer.hidden || primaryButton.disabled) return;
-  if (event.target instanceof HTMLButtonElement) return;
+  if (event.target instanceof HTMLButtonElement || event.target instanceof HTMLTextAreaElement) return;
   event.preventDefault();
   primaryButton.click();
 });

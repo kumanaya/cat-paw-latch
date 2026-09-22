@@ -1,12 +1,8 @@
 /** Pick the first agent the existing cloud bridge says Messages can open. */
+export const HELLO_WORLD_DEMO = "Use Latch to say \"hello world\" out loud on my Mac.";
+
 export async function loadDoneAgent(loadAgents) {
-  try {
-    const cloud = await loadAgents();
-    if (cloud?.cloudAgentsError) return null;
-    return (cloud?.cloudAgents ?? []).find((agent) =>
-      agent?.canMessage === true && typeof agent.agentId === "string" && typeof agent.name === "string"
-    ) ?? null;
-  } catch {
-    return null;
-  }
+  const cloud = await loadAgents();
+  if (!cloud || cloud.cloudAgentsError) return null;
+  return cloud.cloudAgents.find((agent) => agent.canMessage) ?? null;
 }

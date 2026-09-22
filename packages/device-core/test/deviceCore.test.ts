@@ -20,6 +20,7 @@ import {
   FileOpsError,
   HeadlessPolicy,
   MAX_FILE_BYTES,
+  PolicyDelegate,
   PolicyEngine,
 } from "@domo/device-core";
 
@@ -145,6 +146,40 @@ describe("PolicyEngine", () => {
     });
   }
 
+  it("does not authorize a retry after a reviewer denial", async () => {
+    const engine = new PolicyEngine(path.join(tempDir(), "rules.json"));
+    const caps: Capability[] = [{ kind: "process.exec", argv: ["open", "https://amazon.com/lego"], cwd: "/tmp" }];
+    const first = intentWith(caps);
+    first.request = "Buy the Lego set for the family";
+    const reviewerDenies: PolicyDelegate = {
+      async decideIntent() {
+        return { decision: "deny" as const, source: "adversarial" };
+      },
+    };
+
+    expect((await engine.decide(first, reviewerDenies)).decision).toBe("deny");
+    const retry = intentWith(caps);
+    retry.request = first.request;
+    expect(await engine.decide(retry, reviewerDenies)).toMatchObject({ decision: "deny", source: "adversarial" });
+  });
+
+  it("retains only the latest reviewer denial for recovery", async () => {
+    const engine = new PolicyEngine(path.join(tempDir(), "rules.json"));
+    const reviewerDenies: PolicyDelegate = {
+      async decideIntent() {
+        return { decision: "deny" as const, source: "adversarial" };
+      },
+    };
+    const first = intentWith([{ kind: "network", allowed: true }]);
+    const second = intentWith([{ kind: "process.exec", argv: ["open", "https://example.com"] }]);
+
+    await engine.decide(first, reviewerDenies);
+    await engine.decide(second, reviewerDenies);
+
+    expect(engine.deniedIntent(first.intentId)).toBeNull();
+    expect(engine.deniedIntent(second.intentId)).toMatchObject({ intent: second, reason: null });
+  });
+
   it("always_allow stores a rule reused on the next matching intent", async () => {
     const engine = new PolicyEngine(path.join(tempDir(), "rules.json"));
     const always = new HeadlessPolicy({ intent: "always_allow" });
@@ -176,7 +211,7 @@ describe("PolicyEngine", () => {
     await engine.decide(intentWith(caps), new HeadlessPolicy({ intent: "allow_once" }));
     expect(changes).toBe(0);
 
-    // Storing a rule — the Rules pane learns of it from this, not a tab switch.
+    // Storing a rule — Audit's Gatekeeper UI learns of it from this, not a tab switch.
     await engine.decide(intentWith(caps), new HeadlessPolicy({ intent: "always_allow" }));
     expect(changes).toBe(1);
 
@@ -406,6 +441,34 @@ describe("PolicyEngine", () => {
     };
     const g2 = await engine.decide(intentWith([{ kind: "network", allowed: false }]), bare);
     expect(g2.source).toBe("prompt");
+  });
+});
+
+describe("reviewer denial recovery", () => {
+  it("tells the agent Gatekeeper denied and to wait for a policy change", async () => {
+    const home = tempDir();
+    const reviewerDenies: PolicyDelegate = {
+      async decideIntent() {
+        return { decision: "deny" as const, source: "adversarial" };
+      },
+    };
+    const device = new DeviceAgent(home, "Test Mac", reviewerDenies);
+    const request = makeIntent({
+      agentId: new KeyPair().fingerprint,
+      agentDisplay: "Family assistant",
+      deviceId: device.identity.deviceId,
+      request: "Buy the Lego set for the family",
+      capabilities: [{ kind: "process.exec", argv: ["open", "https://amazon.com/lego"] }],
+      sessionId: "s1",
+    });
+
+    expect(await device.handleIntent(request)).toEqual({
+      status: "denied",
+      reason:
+        "Gatekeeper's AI Reviewer denied this request. Ask the user to open Plow Latch on their Mac, " +
+        "where they can review the denial or improve their Gatekeeper instructions. " +
+        "Do not retry unchanged until the owner changes their Gatekeeper policy",
+    });
   });
 });
 
