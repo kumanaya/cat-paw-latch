@@ -35,6 +35,7 @@ import {
   MAX_CLICK_TIMEOUT_MS,
   MAX_FILE_BYTES,
   HARD_BLOCK_ROUTING,
+  PAYMENT_AUTHORIZATION,
   SAFARI_HARD_BLOCK_ROUTING,
   impliesNetwork,
   providerFor,
@@ -207,7 +208,12 @@ const GOAL = {
  * printed: `mdfind`, `sips`, `pbcopy` and `pbpaste` all exit 0 under
  * `(deny default)` + `(allow mach-lookup)`. `say hello world` ran through
  * `plow_run_command` under the generated profile on a real owner's Mac on
- * 2026-09-03 (relay 200, agent reported it spoke; exit code not captured).
+ * 2026-09-03 — but the evidence was the agent's own report that it spoke,
+ * which is not evidence: exit 0 is what a silent `say` returns too. The
+ * measurement that settles it is the synthesised bytes (`say -o`), and they
+ * say the profile is not the variable. The app's LOGIN SESSION is: speech
+ * produces nothing when the app was launched outside Aqua, and the app now
+ * says so at launch (apps/desktop/src/launchSession.ts).
  * `osascript` driving another application, `screencapture`, `shortcuts` and
  * `afplay` are deliberately absent — the profile grants no `appleevent-send`
  * and the app ships no automation entitlement, so naming them would point an
@@ -217,7 +223,9 @@ const GOAL = {
  */
 export const MACOS_TOOLING =
   "mdfind for Spotlight search across their files, sips for images, " +
-  "pbcopy and pbpaste for the clipboard, say to speak text aloud through the Mac's speakers, " +
+  "pbcopy and pbpaste for the clipboard, say to speak text aloud through the Mac's speakers " +
+  "(a clean exit is not evidence it was heard — a Latch running in the wrong macOS login session " +
+  "speaks silently, and the user quitting it and reopening it from Finder is the fix), " +
   "and whatever else they have installed";
 
 /**
@@ -1216,10 +1224,9 @@ export const TOOLS: ToolSpec[] = [
       "A date of birth or a card's expiry takes a 'format' — the month alone, the year alone, " +
       "or the whole date in the page's shape — and a fill into a dropdown chooses the matching " +
       "option. " +
-      "A destination in the bundled v1 bank registry needs more than item " +
-      "rights: the owner must ALSO approve the payment separately (a link in their Plow " +
-      "thread, or a 👍), and the fill proceeds only once they do — otherwise fill_secret " +
-      "returns an error and types nothing. Ask the owner to approve it, then retry. " +
+      `${PAYMENT_AUTHORIZATION} Continue after an authorized result, or after the owner uses ` +
+      "the link for approval_required. Otherwise fill_secret returns an error and " +
+      "types nothing. Request the payment authorization, then retry. " +
       "Fields the vault itself conceals (passwords, card numbers and codes, " +
       "hidden custom fields) also render masked and come back from 'forms' without their " +
       "characters; everything else fills as ordinary text you can read back. A generated " +

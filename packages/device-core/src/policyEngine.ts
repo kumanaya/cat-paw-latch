@@ -39,6 +39,9 @@ export type IntentDecision =
        * decision, so it cannot outlive it.
        */
       ruleStored?: true;
+      /** Safe, human-readable context for a decision lifecycle event. It is
+       * not part of the grant and cannot affect authorization. */
+      reason?: string;
     };
 
 /** A stored rule which remains visible to its owner but can never answer an
@@ -48,6 +51,10 @@ export type ListedAlwaysAllowRule = AlwaysAllowRule & {
   disabled?: true;
   disabledReason?: "windows_sensitive_capability" | "linux_sensitive_capability";
 };
+export interface DeniedIntent {
+  intent: Intent;
+  reason: string | null;
+}
 
 /** Whoever answers approval questions: app UI, headless script… */
 export interface PolicyDelegate {
@@ -80,11 +87,13 @@ export class PolicyEngine {
   private rules = new Map<string, AlwaysAllowRule>();
   private disabled = new Map<string, ListedAlwaysAllowRule>();
   private migrated = new Map<string, ListedAlwaysAllowRule>();
+  /** Reviewer denials are recovery UI state, not durable policy. */
+  private readonly deniedIntents = new Map<string, DeniedIntent>();
   /**
    * Emits `changed` once per write to the rule set — a rule stored by an
-   * always-allow answer, or one removed. The main window's Rules pane draws
-   * from `allRules()` and has no other way to learn that an approval dialog
-   * just added one while it was on screen.
+   * always-allow answer, or one removed. Audit's rules modal draws from
+   * `allRules()` and has no other way to learn that an approval dialog just
+   * added one while it was on screen.
    *
    * Alongside it, the write itself: `stored` with `{ rule, intentId }` (the
    * intent whose answer made the rule) and `revoked` with `{ rule }`. The
@@ -158,6 +167,10 @@ export class PolicyEngine {
    * every app launch. */
   migratedDisabledRules(): ListedAlwaysAllowRule[] {
     return [...this.migrated.values()];
+  }
+
+  deniedIntent(intentId: string): DeniedIntent | null {
+    return this.deniedIntents.get(intentId) ?? null;
   }
 
   removeRule(key: string): void {
@@ -313,8 +326,14 @@ export class PolicyEngine {
     const result = await delegate.decideIntent(intent);
     const decision = typeof result === "string" ? result : result.decision;
     const source = typeof result === "string" ? "prompt" : (result.source ?? "prompt");
+    const reason = typeof result === "string" ? null : (result.reason ?? null);
     const ruleStored = typeof result !== "string" && result.ruleStored === true;
     if (decision === "always_allow" && !ruleStored) this.storeRule(intent);
+    if (decision === "deny" && source === "adversarial") {
+      this.deniedIntents.clear();
+      this.deniedIntents.set(intent.intentId, { intent, reason });
+      this.events.emit("reviewer_denied", { intentId: intent.intentId, intent, reason });
+    }
     return makeGrant(intent, decision, source);
   }
 }

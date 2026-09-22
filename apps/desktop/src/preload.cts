@@ -4,7 +4,6 @@
  * renderer has no direct access to Node, ipcRenderer, or the filesystem.
  */
 import { contextBridge, ipcRenderer } from "electron";
-import type { CloudAgentsPreloadState } from "./cloudAgentsIpc.js";
 
 type ConnectorsState = {
   busy: boolean;
@@ -30,9 +29,16 @@ contextBridge.exposeInMainWorld("domo", {
   approvalsPending: () => ipcRenderer.invoke("approvals:pending"),
   rulesList: () => ipcRenderer.invoke("rules:list"),
   rulesRemove: (key: string) => ipcRenderer.invoke("rules:remove", key),
+  gatekeeperRecoveryGet: () => ipcRenderer.invoke("gatekeeperRecovery:get"),
+  gatekeeperRecoveryDismiss: (intentId: string) =>
+    ipcRenderer.invoke("gatekeeperRecovery:dismiss", intentId),
+  gatekeeperRecoverySuggest: (activityId: string) =>
+    ipcRenderer.invoke("gatekeeperRecovery:suggest", activityId),
   // The rule set changed under the pane: an approval answered "always allow"
   // stored one, or one was revoked.
   onRulesChanged: (cb: () => void) => ipcRenderer.on("rules:changed", cb),
+  onGatekeeperRecoveryChanged: (cb: () => void) =>
+    ipcRenderer.on("gatekeeperRecovery:changed", cb),
   uiGetTab: () => ipcRenderer.invoke("ui:getTab"),
   uiSetTab: (tab: string) => ipcRenderer.invoke("ui:setTab", tab),
   relayGet: () => ipcRenderer.invoke("settings:getRelay"),
@@ -98,6 +104,10 @@ contextBridge.exposeInMainWorld("domo", {
   // `grants`, the ordered list setup walks; `setEnabled` is the owner's off
   // switch and answers with the fresh state.
   pluginsGet: () => ipcRenderer.invoke("plugins:get"),
+  // Access, after it has drawn a payload: the owner has now seen what Full
+  // Disk Access is. After the render, so a discarded response cannot consume
+  // a celebration nobody saw.
+  pluginsAcknowledge: () => ipcRenderer.invoke("plugins:acknowledge"),
   pluginsSetEnabled: (name: string, on: boolean) => ipcRenderer.invoke("plugins:setEnabled", name, on),
   // Any requirement's button, by id (requirements.ts): the panel, macOS's
   // dialog, Google sign-in or Safari's setting, awaited to the flow's end.
@@ -111,6 +121,8 @@ contextBridge.exposeInMainWorld("domo", {
   // switch (Settings), or on the Audit tab's Blocked view when it named none.
   onShowCapabilities: (cb: () => void) => ipcRenderer.on("ui:showCapabilities", cb),
   onShowAuditBlocked: (cb: () => void) => ipcRenderer.on("ui:showAuditBlocked", cb),
+  onShowGatekeeperRecovery: (cb: () => void) =>
+    ipcRenderer.on("ui:showGatekeeperRecovery", cb),
   // The floating panel's own poll: which switch it points at, and whether
   // that grant has landed.
   grantState: () => ipcRenderer.invoke("grant:state"),
@@ -179,9 +191,12 @@ contextBridge.exposeInMainWorld("domo", {
   // renders from one shape and never has to reconcile two.
   onboardingGet: () => ipcRenderer.invoke("onboarding:get"),
   onboardingBegin: () => ipcRenderer.invoke("onboarding:begin"),
-  onboardingAdvance: () => ipcRenderer.invoke("onboarding:advance"),
-  onboardingBack: () => ipcRenderer.invoke("onboarding:back"),
+  onboardingAdvance: (draft?: string) => ipcRenderer.invoke("onboarding:advance", draft),
+  onboardingBack: (draft?: string) => ipcRenderer.invoke("onboarding:back", draft),
   onboardingSetTelemetry: (on: boolean) => ipcRenderer.invoke("onboarding:setTelemetry", on),
+  gatekeeperPresets: () => ipcRenderer.invoke("onboarding:gatekeeperPresets"),
+  gatekeeperPreview: (preset: string, index: number, draft: string) =>
+    ipcRenderer.invoke("onboarding:gatekeeperPreview", preset, index, draft),
   // The renderer is sandboxed and cannot open a URL; main owns the `sms:` one,
   // so the renderer never has to build it or be trusted with it.
   onboardingOpenMessages: () => ipcRenderer.invoke("onboarding:openMessages"),
@@ -213,12 +228,15 @@ contextBridge.exposeInMainWorld("domo", {
   // no roster row to name and none is needed.
   cloudRemove: (agentId: string) => ipcRenderer.invoke("cloud:remove", agentId),
   cloudRefresh: () => ipcRenderer.invoke("cloud:refresh"),
-  cloudAgents: (): Promise<CloudAgentsPreloadState | null> => ipcRenderer.invoke("cloud:agents"),
+  cloudAgents: (): Promise<{
+    cloudAgents: Array<{ agentId: string; name: string; canMessage: boolean }>;
+    cloudAgentsError: string | null;
+  } | null> => ipcRenderer.invoke("cloud:agents"),
   cloudNewAgentMessages: (providerId: string) => ipcRenderer.invoke("cloud:newAgentMessages", providerId),
   cloudAwaitNewAgent: (providerId: string): Promise<string | null> => ipcRenderer.invoke("cloud:awaitNewAgent", providerId),
   cloudChangeLine: (input: { agentId: string; lineUid: string }) =>
     ipcRenderer.invoke("cloud:changeLine", input),
-  cloudOpenMessages: (agentId?: string) => ipcRenderer.invoke("cloud:openMessages", agentId),
+  cloudOpenMessages: (agentId?: string, draft?: string) => ipcRenderer.invoke("cloud:openMessages", agentId, draft),
   onConnectChanged: (cb: () => void) => ipcRenderer.on("connect:changed", cb),
 
   // Any external destination the app links to. A key, never a URL: main

@@ -15,22 +15,26 @@
  */
 import { ActivationChat, PlowApi, PlowApiError } from "./plowApi.js";
 import { chatPeople, chatRowTitle, usableChatDisplayName } from "./chatRows.js";
+import { PRESET_TEXT } from "./gatekeeperPreview.js";
 import { loadSettings, saveSettings, Settings } from "./settings.js";
+import { queuePendingRevoke } from "./settingsActions.js";
+import {
+  canGoBackFrom,
+  isResumableStep,
+  setupProgress,
+  type SetupProgress,
+  type SetupStep,
+} from "./onboardingSteps.js";
 
 /**
  * The verification sub-steps retain their existing mechanics. A successful
  * login moves straight to Privacy, which doubles as the confirmation screen
- * before the post-login plugin choice.
+ * before the gatekeeper's instructions and the post-login plugin choice.
+ *
+ * The dotted screens come from `SETUP_STEPS`; `welcome` and `done` own no dot,
+ * and `waiting` shares the activation screen's.
  */
-export type OnboardingStep =
-  | "welcome"
-  | "privacy"
-  | "activate"
-  | "waiting"
-  | "plugins"
-  | "access"
-  | "availability"
-  | "done";
+export type OnboardingStep = "welcome" | "waiting" | SetupStep | "done";
 
 /**
  * How long the screen counts down before it stalls and offers a fresh code.
@@ -66,8 +70,8 @@ export function activationSmsBody(displayCode: string): string {
 
 /** The draft Messages opens with, in the form the shipping Plow app uses
  * (`app/Phoenix/DaemonClient.swift`): `sms:<phone>?&body=<encoded>`. */
-export function smsUrl(sendTo: string, body: string): string {
-  return `sms:${sendTo}?&body=${encodeURIComponent(body)}`;
+export function smsUrl(sendTo: string, body?: string): string {
+  return `sms:${sendTo}${body ? `?&body=${encodeURIComponent(body)}` : ""}`;
 }
 
 export interface OnboardingActivation {
@@ -122,6 +126,12 @@ export function activationChatLabel(chat: ActivationChat): string {
 
 export interface OnboardingState {
   step: OnboardingStep;
+  /** Whether the shared setup footer should offer Back on this step. */
+  canGoBack: boolean;
+  /** Which footer dot this screen lights, and how many there are — both from
+   * `SETUP_STEPS`, so adding a screen moves the dots without touching the
+   * renderer. Null on the screens that show no dots at all. */
+  progress: SetupProgress | null;
   /** One honest line: what happened, or what we are waiting for. Never a bare
    * spinner — every failure below produces text here. */
   message: string;
@@ -134,6 +144,9 @@ export interface OnboardingState {
   activationStale: boolean;
   /** The plugins screen's pending choice. It is persisted only on Continue. */
   telemetryEnabled: boolean;
+  /** The gatekeeper's instructions the step opens on. The owner's draft is
+   * saved (trimmed) only on Continue from that step. */
+  purpose: string;
 }
 
 export interface OnboardingDeps {
@@ -141,12 +154,14 @@ export interface OnboardingDeps {
   home: string;
   /** (Re)start the relay from stored settings. */
   startRelay: () => Promise<void>;
+  /** Wake the one main-process executor for credentials queued to retire. */
+  wakePendingRevokes: () => void;
   /** Names this Mac in the activation request. */
   deviceName: string;
-  /** Once per entry from Privacy: turn off every plugin that can't work yet, so the switches start on only what works. */
-  applyPluginDefault: () => Promise<void>;
   /** Whether any switched-on plugin still has something to grant; false skips Access. */
   accessNeeded: () => Promise<boolean>;
+  /** Load account-backed grants before a checkpointed launch exposes Access. */
+  prepareAccess?: () => Promise<void>;
   /**
    * Turn the availability defaults on — Keep Awake, and Launch at Login where
    * the build can. Called at sign-in, which every setup (a re-setup after
@@ -184,27 +199,45 @@ export class Onboarding {
   private pendingMintId = 0;
   private mints = 0;
   private telemetryEnabled: boolean;
+  private purpose: string;
 
   constructor(private readonly deps: OnboardingDeps) {
     const settings = this.settings();
     this.telemetryEnabled = settings.telemetryEnabled;
+    this.purpose = this.storedPurpose(settings);
     this.step = this.initialStep(settings);
+  }
+
+  /** A first setup starts from the Home instructions; a re-setup from what is stored. */
+  private storedPurpose(settings: Settings): string {
+    return settings.agentPurpose.trim() || PRESET_TEXT.home;
   }
 
   state(): OnboardingState {
     return {
       step: this.step,
+      canGoBack: canGoBackFrom(this.step) !== null,
+      progress: setupProgress(this.step),
       message: this.message,
       noteKind: this.noteKind,
       busy: this.busy,
       activation: this.activation,
       activationStale: this.activationStale,
       telemetryEnabled: this.telemetryEnabled,
+      purpose: this.purpose,
     };
   }
 
-  /** Advance the presentational steps and commit the plugins-screen choice. */
-  async advance(): Promise<OnboardingState> {
+  /** Finish the external inventory needed by a checkpointed opening step. */
+  async prepareInitialStep(): Promise<OnboardingState> {
+    if (this.step === "access") await this.deps.prepareAccess?.();
+    return this.state();
+  }
+
+  /** Advance the presentational steps, commit the plugins-screen choice, and
+   * save the gatekeeper's `draft` on the way out of that step — the only step
+   * that reads it. It comes from the renderer, so it is checked here. */
+  async advance(draft?: unknown): Promise<OnboardingState> {
     if (this.busy) return this.state();
     if (this.step === "welcome") {
       // Returning from verification keeps the live activation and its watcher.
@@ -216,14 +249,16 @@ export class Onboarding {
       return this.newActivationCode();
     }
     if (this.step === "privacy") {
-      // run() keeps a throw readable on Privacy and retries the default
-      // rather than skipping it; the step moves only once it has applied.
-      return this.run(async () => {
-        await this.deps.applyPluginDefault();
-        // A reset() (sign-out) can land during this await; don't overwrite it.
-        if (this.step !== "privacy") return;
-        this.step = "plugins";
-      });
+      this.step = "gatekeeper";
+      return this.publish();
+    }
+    if (this.step === "gatekeeper") {
+      const settings = this.settings();
+      settings.agentPurpose = (typeof draft === "string" ? draft : this.purpose).trim();
+      this.save(settings);
+      this.purpose = settings.agentPurpose;
+      this.step = "plugins";
+      return this.publish();
     }
     if (this.step === "plugins") {
       return this.run(async () => {
@@ -255,11 +290,12 @@ export class Onboarding {
   }
 
   /** Return through the steps that have a Back affordance. */
-  async back(): Promise<OnboardingState> {
+  async back(draft?: unknown): Promise<OnboardingState> {
     if (this.busy) return this.state();
-    if (this.step === "activate" || this.step === "waiting") this.step = "welcome";
-    else if (this.step === "access" || this.step === "availability") this.step = "plugins";
-    else return this.state();
+    const previous = canGoBackFrom(this.step);
+    if (previous === null) return this.state();
+    if (this.step === "gatekeeper" && typeof draft === "string") this.purpose = draft;
+    this.step = previous;
     return this.publish();
   }
 
@@ -437,10 +473,11 @@ export class Onboarding {
       // re-evaluated on the far side of one rather than read once at the top.
       const keep = () =>
         secret === this.activationSecret && !this.settings().relayCredential.trim();
-      // A verified token this Mac will not keep is revoked best-effort. The
-      // redeem answers once, so it must not simply be dropped here.
+      // A verified token this Mac will not keep enters the same durable queue
+      // as sign-out. The redeem answers once, so it must not be held only in
+      // this stack frame or handed to a second network owner.
       if (result.status === "verified" && result.token && !keep()) {
-        await this.deps.api.revokeDeviceCredential(result.token).catch(() => {});
+        this.retireSession(result.token);
       }
       if (result.status === "verified" && result.token && keep()) {
         this.cancelPolling();
@@ -544,6 +581,7 @@ export class Onboarding {
     this.busy = false;
     const settings = this.settings();
     this.telemetryEnabled = settings.telemetryEnabled;
+    this.purpose = this.storedPurpose(settings);
     this.step = this.initialStep(settings);
     return this.publish();
   }
@@ -593,27 +631,46 @@ export class Onboarding {
     // login — reset or a fresh mint — so it is the epoch to
     // check against after each network step.
     //
-    // A sign-out landing inside it takes the session with it. The session is
-    // revoked best-effort, the same contract sign-out keeps.
+    // Persist the one-shot token BEFORE another network call. If account lookup
+    // fails, the active credential remains recoverable on relaunch; if sign-out
+    // lands inside the lookup, its queue-first path captures this stored token.
     const epoch = this.pollGeneration;
-    const info = await this.deps.api.relayInfo(sessionToken);
-    if (epoch !== this.pollGeneration) {
-      await this.deps.api.revokeDeviceCredential(sessionToken).catch(() => {});
-      return;
+    const accepted = this.settings();
+    accepted.relayCredential = sessionToken;
+    accepted.accountUid = "";
+    accepted.mcpUrl = "";
+    // The checkpoint rides THIS write, not `publish()`'s, because the step only
+    // becomes `privacy` after the `relayInfo` await below — and a quit inside
+    // that network call would otherwise leave a durable credential with no
+    // checkpoint, which `initialStep` reads as Plugins, skipping Privacy and
+    // Gatekeeper (so `agentPurpose` is never set). `checkpoint()` still owns
+    // every step change; this makes the one write that creates a durable
+    // credential atomic with the screen that credential implies.
+    accepted.onboardingResumeStep = "privacy";
+    this.save(accepted);
+    this.deps.applyAvailabilityDefault?.();
+    let info;
+    try {
+      info = await this.deps.api.relayInfo(sessionToken);
+    } catch (error) {
+      // A clean failure can recover in-process: move the accepted token from
+      // active storage into the durable retirement queue, so Try again is free
+      // to keep the next one. A crash still leaves the active copy recoverable.
+      this.retireSession(sessionToken, true);
+      throw error;
     }
+    if (epoch !== this.pollGeneration) return;
     // Written 0600 by saveSettings. This is the only copy of the credential and
     // it is never handed to the renderer.
     const settings = this.settings();
-    settings.relayCredential = sessionToken;
+    if (settings.relayCredential !== sessionToken) return;
     settings.accountUid = info.uid;
-    settings.mcpUrl = "";
     // Nothing records `sendTo`. Pairing asks for no chat, so it is the managed
     // phone — the number that takes an activation text, not one anyone can be
     // told to text afterwards to get a chat. The cloud-agents screen names the
     // lines the account's own chats run on, which is the only source that
     // cannot be wrong.
     this.save(settings);
-    this.deps.applyAvailabilityDefault?.();
 
     // The activation is spent and dropped. Everything here is derived from
     // the save above; none of it needs the socket to be up.
@@ -625,6 +682,19 @@ export class Onboarding {
     this.noteKind = "error";
     this.step = "privacy";
     this.telemetryEnabled = settings.telemetryEnabled;
+  }
+
+  private retireSession(sessionToken: string, clearIfActive = false): void {
+    const settings = this.settings();
+    queuePendingRevoke(settings, sessionToken);
+    if (clearIfActive && settings.relayCredential === sessionToken) {
+      settings.relayCredential = "";
+      settings.relayCredentialEnc = undefined;
+      settings.accountUid = "";
+      settings.mcpUrl = "";
+    }
+    this.save(settings);
+    this.deps.wakePendingRevokes();
   }
 
   // MARK: plumbing
@@ -639,7 +709,11 @@ export class Onboarding {
 
   private initialStep(settings: Settings): OnboardingStep {
     if (!settings.relayCredential.trim()) return "welcome";
-    return settings.setupComplete ? "done" : "plugins";
+    if (settings.setupComplete) return "done";
+    const resume = settings.onboardingResumeStep;
+    // A checkpoint another build wrote is not a reason to wedge setup on a
+    // screen this one cannot render.
+    return resume && isResumableStep(resume) ? resume : "plugins";
   }
 
   private now(): number {
@@ -668,14 +742,43 @@ export class Onboarding {
     return this.publish();
   }
 
+  /**
+   * Where a relaunch resumes, written wherever the step lands.
+   *
+   * Here rather than at the transitions because this is the one place every
+   * step change already funnels through, which is what makes the checkpoint
+   * impossible to forget. It used to be armed by setup's own Relaunch button,
+   * so the quit macOS performs itself after a Full Disk Access grant — and a
+   * reboot, and Cmd-Q — left it unwritten and returned the owner a screen
+   * early with nothing to show for what they had granted.
+   */
+  private checkpoint(): void {
+    // Records a resumable step; never erases. `initialStep` reads this only
+    // while a credential is held and setup is unfinished, so a value left over
+    // from a finished or signed-out setup has no reader — while erasing one
+    // does real harm: a throw after the credential lands (see
+    // `finishWithSession`) unwinds through `run()`'s publish with the step
+    // still on the code screen, and clearing there would drop the relaunch
+    // back on Plugins, skipping Privacy and Gatekeeper.
+    if (!isResumableStep(this.step)) return;
+    const settings = this.settings();
+    if (settings.onboardingResumeStep === this.step) return;
+    settings.onboardingResumeStep = this.step;
+    this.save(settings);
+  }
+
   private publish(): OnboardingState {
+    this.checkpoint();
     this.deps.onChange?.();
     return this.state();
   }
 }
 
 function messageOf(error: unknown): string {
-  if (error instanceof PlowApiError) return error.message;
+  if (error instanceof PlowApiError) {
+    if (error.kind === "network") return "Plow isn’t responding right now.";
+    return error.message;
+  }
   // Anything else is ours and unexpected; say so rather than showing a stack.
   return "Something went wrong. Try again.";
 }

@@ -2,8 +2,10 @@
    selection is the preview's navigation; production transitions stay in main. */
 
 import { onboardingFixtures } from "./onboarding-fixtures.js";
+import { pluginExamples } from "../onboardingExampleCatalog.js";
+import * as steps from "../onboardingSteps.js";
 
-const fixtures = onboardingFixtures(Date.now());
+const fixtures = onboardingFixtures(Date.now(), pluginExamples, steps);
 const fixturesByName = new Map(fixtures.map((fixture) => [fixture.name, fixture]));
 const params = new URLSearchParams(window.location.search);
 let initialGetDelayMs = Number(params.get("onboardingGetDelayMs")) || 0;
@@ -39,7 +41,19 @@ window.domo = {
   onboardingNewCode: currentState,
   onboardingSetTelemetry: async (enabled) =>
     publish({ ...current, telemetryEnabled: enabled === true }),
+  gatekeeperPresets: async () => selected.gatekeeper?.presets ?? null,
+  // "pending" holds every row on Checking.
+  gatekeeperPreview: (_preset, index) => {
+    const results = selected.gatekeeper?.results;
+    if (results === "pending" || !results) return new Promise(() => {});
+    return Promise.resolve(results[index]);
+  },
+  cloudAgents: async () => selected.cloud ?? null,
+  cloudOpenMessages: async () => {},
   pluginsGet: plugins,
+  // Answers with nothing in production; the preview matches, so its fixture's
+  // `landed` stands and the animation is visible here.
+  pluginsAcknowledge: async () => {},
   pluginsSetEnabled: plugins,
   requirementsAct: async () => ({ ...selected.plugins, error: null }),
   appRelaunch: async () => {},
@@ -54,8 +68,6 @@ window.domo = {
     awake = { enabled: on === true };
     return awake;
   },
-  cloudAgents: async () => selected.cloud,
-  cloudOpenMessages: async () => true,
   onOnboardingChanged: (callback) => {
     changed = callback;
   },

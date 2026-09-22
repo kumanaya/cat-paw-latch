@@ -194,6 +194,7 @@ describe("auditActivities (grouping)", () => {
       ])[0]!;
     expect(mk("approve").decidedBy).toBe("Auto-approved");
     expect(mk("adversarial").decidedBy).toBe("AI Reviewer");
+    expect(mk("owner_override").decidedBy).toBe("Owner override (once)");
     // Not the raw source string: the human's view says what happened, and
     // "no_credits" is a label for us, not for them.
     expect(mk("no_credits").decidedBy).toBe("AI Reviewer (out of credits)");
@@ -286,6 +287,40 @@ describe("auditActivities (grouping)", () => {
     expect(acts[0]!.status).toBe("");
     expect(acts[0]!.decisionKind).toBe("denied");
     expect(acts[0]!.statusKind).toBe("none");
+    expect(acts[0]!.decisionSource).toBe("prompt");
+    expect(acts[0]!.reviewReason).toBeNull();
+  });
+
+  it("retains the AI Reviewer source and reason for historical denial recovery", () => {
+    const acts = auditActivities([
+      {
+        event: "intent_received",
+        intentId: "i1",
+        request: "run: say hello world",
+        capabilities: ["Run: say hello world", "Network: denied"],
+        ts: "2026-08-09T12:00:00Z",
+      },
+      {
+        event: "adversarial_review_result",
+        intentId: "i1",
+        verdict: "deny",
+        reason: "The request is outside the current instructions.",
+        ts: "2026-08-09T12:00:01Z",
+      },
+      {
+        event: "intent_decision",
+        intentId: "i1",
+        decision: "deny",
+        source: "adversarial",
+        ts: "2026-08-09T12:00:02Z",
+      },
+    ]);
+
+    expect(acts[0]).toMatchObject({
+      decisionKind: "denied",
+      decisionSource: "adversarial",
+      reviewReason: "The request is outside the current instructions.",
+    });
   });
 
   it("a clean success is allowed and completed, and no other bucket", () => {

@@ -191,6 +191,12 @@ export interface AuditActivity {
   /** Human label for how the decision was made (auto-approve, adversarial,
    * you/asked, policy deny, always-allow rule), or null for non-decisions. */
   decidedBy: string | null;
+  /** Stable machine source for behavior that must not branch on the human
+   * label above. Historical Gatekeeper recovery keys on `adversarial`. */
+  decisionSource: string | null;
+  /** The AI Reviewer's explanation, retained with the durable activity so a
+   * denial remains understandable and coachable after a newer denial/restart. */
+  reviewReason: string | null;
   timeline: AuditStep[];
 }
 
@@ -211,6 +217,7 @@ export function decidedByLabel(source: string | null): string | null {
   switch (source) {
     case "approve": return "Auto-approved";
     case "adversarial": return "AI Reviewer";
+    case "owner_override": return "Owner override (once)";
     case "rule": return "Always-allow rule";
     case "plow_folder": return "Plow folder (auto-approved)";
     case "policy": return "Policy (deny mode)";
@@ -415,6 +422,8 @@ export function buildActivity(id: string, events: JSONValue[]): AuditActivity {
       ),
     ],
     decidedBy: decidedByLabel(value("intent_decision", "source")),
+    decisionSource: value("intent_decision", "source"),
+    reviewReason: value("adversarial_review_result", "reason"),
     timeline: events.map(describeStep),
   };
 }
@@ -528,8 +537,8 @@ function classifyActivity(
     return outcome("Completed", "green", "completed");
   }
   if (has("agent_spawned")) return outcome("Spawned", "blue", "completed");
-  // A revoke is its own row: the owner did it, from the Rules pane, with no
-  // request behind it.
+  // A revoke is its own row: the owner did it from Audit's rules modal, with
+  // no request behind it.
   if (has("rule_revoked")) return outcome("Revoked", "green", "completed");
   // The decision outranks any browser events riding in the intent's group: a
   // browser_open/browser_request row says how it was decided, and the live

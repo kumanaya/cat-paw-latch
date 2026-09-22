@@ -1,19 +1,11 @@
-import fs from "node:fs";
 import { EventEmitter } from "node:events";
 import vm from "node:vm";
-import ts from "typescript";
 import { describe, expect, it, vi } from "vitest";
+import { compileMain, mainFunctions } from "./mainSource.js";
 
 // Exercise the shipping close gate without booting Electron or the device.
-const source = ts.createSourceFile("main.ts", fs.readFileSync(
-  new URL("../src/main.ts", import.meta.url), "utf8",
-), ts.ScriptTarget.Latest, true);
-const gates = source.statements.filter((node) =>
-  ts.isFunctionDeclaration(node) && ["mayLeaveMain", "hasPendingAgentSetup"].includes(node.name?.text ?? ""),
-);
-const compiled = ts.transpileModule(gates.map((gate) => gate.getText(source)).join("\n"), {
-  compilerOptions: { target: ts.ScriptTarget.ES2022 },
-}).outputText;
+const compiled = compileMain(...mainFunctions("mayLeaveMain", "hasPendingAgentSetup"));
+const compiledRelay = compileMain(...mainFunctions("signOutThisMac", "startRelay"));
 
 function setup(busy = false, credential: unknown = null) {
   const ipcMain = new EventEmitter();
@@ -55,4 +47,42 @@ it.each([
     webContents: { isLoading: () => false, send },
   })).toBe(!pending);
   expect(send).toHaveBeenCalledWith("ui:confirmLeave", pending);
+});
+
+it("keeps a reactivated relay when the signed-out relay is still stopping", async () => {
+  let releaseStop!: () => void;
+  const stopping = new Promise<void>((resolve) => { releaseStop = resolve; });
+  const oldRelay = { stop: vi.fn(() => stopping) };
+  const settings = { relayCredential: "", accountUid: "", mcpUrl: "" };
+  const clients: object[] = [];
+  class RelayClient {
+    constructor(_options: unknown) { clients.push(this); }
+    async start() {}
+  }
+  const runtime = vm.runInNewContext(
+    `${compiledRelay}; ({ signOutThisMac, startRelay, relay: () => relay })`,
+    {
+      relay: oldRelay, connected: true, home: "home", mainWindow: null,
+      hasPendingAgentSetup: () => false, isSignedIn: () => false,
+      telemetry: null, queueRevokeAndSignOut: vi.fn(), pendingRevokeRetrier: null,
+      resetSignedOutRuntime: vi.fn(), notifyRenderer: vi.fn(),
+      loadSettings: () => ({ ...settings }), saveSettings: vi.fn(),
+      device: { identity: { deviceId: "device-1" } }, mcp: {},
+      RelayClient, relaySocketUrl: () => "wss://relay", apiBaseUrl: "https://api.plow.co",
+      loggingFetch: vi.fn(), PlowApi: class {}, hostName: () => "test-mac",
+      connectors: null, signInAgainIfOldKey: vi.fn(), signOut: vi.fn(), console,
+    },
+  ) as { signOutThisMac(): Promise<void>; startRelay(): Promise<void>; relay(): object | null };
+
+  const signingOut = runtime.signOutThisMac();
+  await Promise.resolve();
+  settings.relayCredential = "plow_reactivated";
+  await runtime.startRelay();
+  const reactivated = runtime.relay();
+
+  releaseStop();
+  await signingOut;
+
+  expect(clients).toHaveLength(1);
+  expect(runtime.relay()).toBe(reactivated);
 });

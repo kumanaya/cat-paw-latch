@@ -14,13 +14,15 @@ import path from "node:path";
 import { loadSettings, saveSettings, Settings } from "../src/settings.js";
 import {
   isSignedIn,
+  PendingRevokeRetrier,
+  queueRevokeAndSignOut,
   readAgentPurpose,
   readInference,
-  revokeAndSignOut,
   setAgentPurpose,
   setApprovalMode,
   signOutOfPlow,
 } from "../src/settingsActions.js";
+import { PlowApiError } from "../src/plowApi.js";
 
 const PLOW_CREDENTIAL = "plow_sk_do_not_leak_me";
 
@@ -72,7 +74,6 @@ describe("Plow sign-out forgets the credential and leaves the mode alone", () =>
     signOutOfPlow(home);
 
     expectSignedOutWithAdversarial(home);
-    expect(stored(home).setupComplete).toBe(false);
   });
 
   it("signing out with Adversarial selected leaves the mode alone", () => {
@@ -131,84 +132,30 @@ describe("the persisted file keeps its guarantees", () => {
   });
 });
 
-describe("signing out retires the credential server-side, best effort", () => {
-  const homeSignedIn = () =>
+describe("signing out queues the credential atomically", () => {
+  const homeSignedIn = (overrides: Partial<Settings> = {}) =>
     homeWith({
       relayCredential: PLOW_CREDENTIAL,
       accountUid: "u_someone",
       mcpUrl: "https://api.plow.co/v1/relay/devices/u_someone/mcp",
       approvalMode: "adversarial",
+      ...overrides,
     });
 
-  it("asks Plow to revoke, using the credential being retired", async () => {
+  it("moves the active credential into the durable queue while clearing local state", () => {
     const home = homeSignedIn();
-    const seen: string[] = [];
-    // Observed inside the callback, asserted OUTSIDE it. An expect() in there
-    // would be swallowed by the best-effort catch this very function relies on,
-    // and the test would pass with the ordering reversed.
-    let onDiskWhenAsked: string | null = null;
 
-    const revoked = await revokeAndSignOut(home, async (credential) => {
-      seen.push(credential);
-      onDiskWhenAsked = stored(home).relayCredential;
-    });
-
-    expect(revoked).toBe(true);
-    expect(seen).toEqual([PLOW_CREDENTIAL]);
-    // The revoke authenticates with the CAPTURED token, so the disk copy is
-    // already gone by the time we ask — see the quit test below for why.
-    expect(onDiskWhenAsked).toBe("");
-    expect(stored(home).relayCredential).toBe("");
-  });
-
-  it("the credential is off disk BEFORE the revoke is even asked", async () => {
-    // Position 1 of the sign-out contract: the local erase is the half this app
-    // guarantees, so it happens synchronously, before the first await, and does
-    // not depend on the network call that follows it. A revoke that never
-    // settles is exactly what a hung network looks like.
-    const home = homeSignedIn();
-    let onDiskWhenAsked: string | null = null;
-
-    // Observed inside the callback, asserted OUTSIDE it: an expect() in there
-    // would be swallowed by the best-effort catch this very function relies on.
-    void revokeAndSignOut(home, async () => {
-      onDiskWhenAsked = stored(home).relayCredential;
-      await new Promise(() => {}); // never settles
-    });
-    await new Promise((r) => setImmediate(r));
-
-    expect(onDiskWhenAsked).toBe("");
-    expectSignedOutWithAdversarial(home);
-  });
-
-  it.each([
-    ["Error", () => Promise.reject(new Error(`ENOTFOUND for Bearer ${PLOW_CREDENTIAL}`))],
-    ["bare string", () => Promise.reject("a bare string")],
-  ])("clears locally and reports a %s revoke failure", async (_shape, fail) => {
-    // Offline, API down, route not deployed — the case that matters most,
-    // because a Mac that cannot reach Plow is the one whose owner most wants
-    // the local copy gone.
-    const home = homeSignedIn();
-    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-    expect(await revokeAndSignOut(home, fail)).toBe(false);
+    queueRevokeAndSignOut(home);
 
     expectSignedOutWithAdversarial(home);
-    expect(warning).toHaveBeenCalledOnce();
-    expect(warning).toHaveBeenCalledWith(
-      "[settings] session revoke failed; already signed out locally",
-    );
-    expect(warning.mock.calls.flat().join(" ")).not.toContain(PLOW_CREDENTIAL);
+    expect(stored(home).pendingRevokeCredentials).toEqual([PLOW_CREDENTIAL]);
   });
 
-  it("does not call out at all when there is nothing to revoke", async () => {
+  it("is a no-op for the queue when there is no active credential", () => {
     const home = homeWith({ relayCredential: "" });
-    const revoke = vi.fn();
-    expect(await revokeAndSignOut(home, revoke)).toBe(true);
-    expect(revoke).not.toHaveBeenCalled();
-    expect(stored(home).relayCredential).toBe("");
+    queueRevokeAndSignOut(home);
+    expect(stored(home).pendingRevokeCredentials).toEqual([]);
   });
-
 });
 
 describe("a second sign-out is a no-op, not a second sign-out", () => {
@@ -229,13 +176,60 @@ describe("a second sign-out is a no-op, not a second sign-out", () => {
     expect(isSignedIn(homeWith({ relayCredential: "   " }))).toBe(false);
   });
 
-  it("and the revoke half is already idempotent", async () => {
+  it("and the queueing half is already idempotent", () => {
     const home = homeWith({ relayCredential: PLOW_CREDENTIAL });
-    const revoke = vi.fn(async () => {});
-    await revokeAndSignOut(home, revoke);
-    await revokeAndSignOut(home, revoke); // the second click
-    expect(revoke).toHaveBeenCalledTimes(1);
+    queueRevokeAndSignOut(home);
+    queueRevokeAndSignOut(home);
+    expect(stored(home).pendingRevokeCredentials).toEqual([PLOW_CREDENTIAL]);
   });
+});
+
+describe("pending session revocation", () => {
+  it("keeps failures for the next heartbeat, then clears them on success", async () => {
+    const home = homeWith({ pendingRevokeCredentials: [PLOW_CREDENTIAL] });
+    let offline = true;
+    const retrier = new PendingRevokeRetrier(home, async () => {
+      if (offline) throw new Error("offline");
+    });
+
+    await retrier.start();
+    expect(stored(home).pendingRevokeCredentials).toEqual([PLOW_CREDENTIAL]);
+
+    offline = false;
+    await retrier.start();
+    expect(stored(home).pendingRevokeCredentials).toEqual([]);
+  });
+
+  it("treats unauthorized as confirmation that the old credential is already unusable", async () => {
+    const home = homeWith({ pendingRevokeCredentials: [PLOW_CREDENTIAL] });
+    const retrier = new PendingRevokeRetrier(home, async () => {
+      throw new PlowApiError("unauthorized", "Not authorized.", 401);
+    });
+
+    await retrier.start();
+    expect(stored(home).pendingRevokeCredentials).toEqual([]);
+  });
+
+  it("single-flights overlapping launch and connectivity retries", async () => {
+    const home = homeWith({ pendingRevokeCredentials: [PLOW_CREDENTIAL] });
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let attempts = 0;
+    const retrier = new PendingRevokeRetrier(home, async () => {
+      attempts += 1;
+      await held;
+    });
+
+    const fromLaunch = retrier.start();
+    const fromConnection = retrier.start();
+    expect(fromConnection).toBe(fromLaunch);
+    expect(attempts).toBe(1);
+
+    release();
+    await fromLaunch;
+    expect(stored(home).pendingRevokeCredentials).toEqual([]);
+  });
+
 });
 
 describe("the purpose statement is owner-authored data", () => {

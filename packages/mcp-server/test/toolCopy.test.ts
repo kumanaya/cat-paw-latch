@@ -21,6 +21,7 @@ import {
   INTERACTIVE_VERIFICATION,
   LIVE_WEB_ROUTING,
   PC_HARD_BLOCK_ROUTING,
+  PAYMENT_AUTHORIZATION,
   SAFARI_HARD_BLOCK_ROUTING,
 } from "@domo/device-core";
 import {
@@ -124,6 +125,15 @@ describe("the server tells the agent what it is for", () => {
     expect(SERVER_INSTRUCTIONS).toMatch(/status 'completed'/);
     expect(SERVER_INSTRUCTIONS).toMatch(/nothing is waiting on the user/i);
     expect(SERVER_INSTRUCTIONS).toMatch(/never tell the user .* pending/i);
+  });
+
+  it("routes Gatekeeper denials to Latch without overriding other denial recovery", () => {
+    expect(SERVER_INSTRUCTIONS).toMatch(/status 'denied'/);
+    expect(SERVER_INSTRUCTIONS).toMatch(/Gatekeeper's AI Reviewer/);
+    expect(SERVER_INSTRUCTIONS).toMatch(process.platform === "win32" ? /open Plow Latch on their PC/i : /open Plow Latch on their Mac/i);
+    expect(SERVER_INSTRUCTIONS).toMatch(/review the denial or improve their Gatekeeper instructions/i);
+    expect(SERVER_INSTRUCTIONS).not.toMatch(/allow one matching retry/i);
+    expect(SERVER_INSTRUCTIONS).toMatch(/other 'denied'.*follow its reason/is);
   });
 
   // The third answer: this Mac itself said no. The distinction agents got
@@ -594,10 +604,17 @@ describe("every tool says what kind of tool it is", () => {
 });
 
 describe("what the agent-facing copy must and must not say", () => {
-  it("qualifies separate payment approval with the bundled v1 bank registry", async () => {
+  it("explains threshold payment authorization for the bundled v1 bank registry", async () => {
     const browserTool = (await descriptions(makeServer())).plow_browser;
     for (const copy of [BROWSING_SKILL.body, browserTool]) {
       expect(copy).toMatch(/bundled v1 bank registry/i);
+      expect(copy).toMatch(/plow_request_payment/);
+      expect(copy).toMatch(/threshold/i);
+      expect(copy).toContain(PAYMENT_AUTHORIZATION);
+      expect(copy).toMatch(/frame_url reported by forms/i);
+      expect(copy).toMatch(/not the eventual transaction/i);
+      expect(copy).toMatch(/fresh authorization/i);
+      expect(copy).not.toContain("👍");
     }
   });
 
@@ -673,6 +690,20 @@ describe("what the agent-facing copy must and must not say", () => {
     for (const tool of ["find", "grep", "python3", "ls", "cat", "cp", "mkdir"]) {
       expect(LINUX_TOOLING).toContain(tool);
     }
+  });
+
+  /**
+   * `say` is named with a caveat rather than left out: it speaks on a Mac whose
+   * app was opened from Finder and is silent on one opened from a terminal,
+   * exiting 0 either way (apps/desktop/src/launchSession.ts). An agent that
+   * reads only the promise reports the silent run as success, which is the
+   * user-visible failure — so the caveat, and the move that fixes it, are
+   * part of the contract.
+   */
+  it("the tooling list says a clean `say` is not evidence it was heard", () => {
+    expect(MACOS_TOOLING).toContain("say");
+    expect(MACOS_TOOLING).toMatch(/not evidence it was heard/);
+    expect(MACOS_TOOLING).toMatch(/Finder/);
   });
 
   /**

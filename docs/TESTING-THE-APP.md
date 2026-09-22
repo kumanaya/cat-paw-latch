@@ -207,11 +207,13 @@ DOMO_HOME=/tmp/plow-latch-local DOMO_API_BASE_URL=http://localhost:4242 npx elec
 **Reset to first-run state.** State lives under `DOMO_HOME` (default
 `~/Library/Application Support/Plow-Latch-<branch>` under `just`). With no `relayCredential` in
 `app/settings.json` the app is behind the login gate: the Set Up window is the only window there
-is, and there is no main window until the wizard's last button hands over:
+is, and there is no main window until the wizard's last button hands over. To reset a real dev
+home, sign out in Latch, leave it open until the pending revoke completes, then use the guarded
+clean recipe. It refuses to delete active or pending credentials, so retry it after Plow recovers:
 
 ```bash
 DOMO_HOME=$(mktemp -d) just app                                    # a clean first run; real state untouched, except ~/Plow (created deliberately — the playground is the owner's)
-rm ~/Library/Application\ Support/Plow-Latch-<branch>/app/settings.json  # or reset the real one
+just clean                                                        # refuses active or pending credentials
 ```
 
 `just` recipes default `DOMO_HOME` to this checkout's `Plow-Latch-<branch>` home — your *real* dev one.
@@ -374,12 +376,13 @@ what the smoke prints). Expected values are the `diagnosis` fields.
 | Settings > Permissions | after the blocks above, with the app closed meanwhile | the banner counts the blocks since it was last dismissed and "Show in Audit" lands on the filtered Audit tab; each hit row shows its count and agents, "See blocked requests…" opens the list with the owner sentence; the folder rows disappear once Full Disk Access is granted and a sandboxed child inherits it (granted but not inherited keeps them, and the Full Disk Access row reads denied and says why); a block landing inside a closed group (Folders, Automation) while the section is open opens that group |
 | Permissions: prerequisites | before the buttons | A from-source run must come from `just app`, which launches Electron with TCC responsibility disclaimed (native/launch-disclaimed.swift) so the dialogs and grants are Electron.app's own rather than the terminal's; the dev bundle must carry the usage strings (`just build` patches them in, scripts/dev-usage-strings.mjs); a packaged build must carry the addressbook and calendars entitlements (build/entitlements.mac.plist) or the hardened runtime refuses without a dialog |
 | Permissions: the buttons | each row in turn | Two labels only. "Allow in System Settings…" on Full Disk Access and Accessibility floats the drag panel beside their pane, and on any refused row floats the pointer panel beside the right pane. "Allow via prompt…" on Contacts and Calendars raises the system dialog (packaged build — from source macOS refuses without the usage strings), on a folder raises its dialog, and on an Automation row opens the target app and raises its dialog; a row whose prompt macOS refuses to show flips to the System Settings label |
-| Setup: Plugins | fresh home, sign in, reach Plugins with something staged that still needs a grant | the switches show what's staged; "You'll grant next" lists only what's still unmet — a requirement waiting on a relaunch is left off |
+| Setup: Plugins | fresh home, sign in, reach Plugins with something staged that still needs a grant | the screen says "Give your agents superpowers" and rotates one real-world query per plugin; an enabled plugin whose access is still unmet carries a compact `Required: …` tag, while disabled and ready plugins carry none |
 | Setup: Access, the walk | from Plugins, Continue into Access, click "Set up all N" | each grant runs in turn — the Full Disk Access drag panel, Safari's JavaScript-from-Apple-Events setting, then Google's sign-in in the browser — with "Setting up…" shown meanwhile |
 | Setup: Access, a miss | close the panel (or decline) on one grant mid-walk | that row shows the miss and a Skip control; Skip moves past it, and the button reads "Try again" while the miss is still open |
 | Setup: Access, Full Disk Access granted fresh | grant Full Disk Access for the first time during the walk | its row reads "Granted: relaunch to finish"; the walk stops there, and the button becomes "Relaunch to finish" even with other grants still open |
-| Setup: relaunch mid-setup | relaunch from there | the window reopens on Plugins, not Welcome, with whatever was already granted still met |
-| Setup: Full Disk Access after that relaunch | re-enter Access | Full Disk Access itself reads granted right away — no longer relaunch-pending — and the Safari item runs on its own turn next. **Untested:** Safari's write is a child of the app, so if a child cannot use a grant the app only just gained, Safari keeps missing until the owner relaunches again — needs a human on the test Mac |
+| Setup: relaunch mid-setup | relaunch from there | the window reopens directly on Grant access, not Plugins or Welcome; Full Disk Access reads granted right away — no longer relaunch-pending — and the next outstanding grant is available |
+| Setup: Full Disk Access after that relaunch | continue the Access walk | the granted Full Disk Access row stays met and the Safari item runs on its own turn next. **Untested:** Safari's write is a child of the app, so if a child cannot use a grant the app only just gained, Safari keeps missing until the owner relaunches again — needs a human on the test Mac |
+| Setup: finish | finish Availability | the final page reads “You're all set”; it offers `Text <agent>` when a messageable agent exists and always offers `Explore the app`, which closes setup and opens the main window |
 
 A row whose real answer disagrees with the tree is a bug in the tree, and the audit line's `probes`
 say which branch: fix the branch, add the case to `hostGate.test.ts` with those facts, and re-run

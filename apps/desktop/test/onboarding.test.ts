@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { PRESET_TEXT } from "../src/gatekeeperPreview.js";
 import {
   ACTIVATION_POLL_INTERVAL_MS,
   ACTIVATION_POLL_WINDOW_MS,
@@ -9,8 +10,8 @@ import {
   OnboardingDeps,
 } from "../src/onboarding.js";
 import { PlowApi, PlowApiError } from "../src/plowApi.js";
-import { loadSettings, saveSettings } from "../src/settings.js";
-import { signOutOfPlow } from "../src/settingsActions.js";
+import { loadSettings, saveSettings, Settings } from "../src/settings.js";
+import { PendingRevokeRetrier, queueRevokeAndSignOut, signOutOfPlow } from "../src/settingsActions.js";
 
 const DEVICE_TOKEN = "plow_DEVICEtok_secret";
 const SESSION_TOKEN = "plow_ACTIVATIONsession_secret";
@@ -122,8 +123,13 @@ function build(extra: Partial<OnboardingDeps> = {}): Onboarding {
         return;
       }
     },
+    wakePendingRevokes: () => {
+      void new PendingRevokeRetrier(
+        home,
+        (token) => plow.revokeDeviceCredential(token),
+      ).start();
+    },
     deviceName: "Plow Latch (test)",
-    applyPluginDefault: async () => {},
     accessNeeded: async () => false,
     now: () => clock,
     // No real timers: the poll loop's wait advances the same fake clock the
@@ -249,7 +255,7 @@ describe("wizard steps around the existing verification flow", () => {
     onboarding.reset();
   });
 
-  it("offers Back from Access and Availability but not from Verified, Plugins or Done", async () => {
+  it("owns Back availability and transitions for every setup step", async () => {
     plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
     let notifications = 0;
     const onboarding = build({
@@ -262,16 +268,28 @@ describe("wizard steps around the existing verification flow", () => {
     await onboarding.advance();
     await settle();
     expect(onboarding.state().step).toBe("privacy");
+    expect(onboarding.state().canGoBack).toBe(false);
     notifications = 0;
     expect((await onboarding.back()).step).toBe("privacy");
     expect(notifications).toBe(0);
 
-    expect((await onboarding.advance()).step).toBe("plugins");
+    expect((await onboarding.advance()).step).toBe("gatekeeper");
+    expect(onboarding.state().canGoBack).toBe(true);
     notifications = 0;
-    expect((await onboarding.back()).step).toBe("plugins");
-    expect(notifications).toBe(0);
+    expect((await onboarding.back()).step).toBe("privacy");
+    expect(notifications).toBe(1);
 
+    expect((await onboarding.advance()).step).toBe("gatekeeper");
+    expect((await onboarding.advance()).step).toBe("plugins");
+    expect(onboarding.state().canGoBack).toBe(true);
+    notifications = 0;
+    expect((await onboarding.back()).step).toBe("gatekeeper");
+    expect(notifications).toBe(1);
+
+    // Re-enter Plugins to continue the walk.
+    expect((await onboarding.advance()).step).toBe("plugins");
     expect((await onboarding.advance()).step).toBe("access");
+    expect(onboarding.state().canGoBack).toBe(true);
     notifications = 0;
     expect((await onboarding.back()).step).toBe("plugins");
     expect(notifications).toBe(1);
@@ -279,6 +297,7 @@ describe("wizard steps around the existing verification flow", () => {
     // Back from Availability also lands on Plugins, not on Access.
     expect((await onboarding.advance()).step).toBe("access");
     expect((await onboarding.advance()).step).toBe("availability");
+    expect(onboarding.state().canGoBack).toBe(true);
     notifications = 0;
     expect((await onboarding.back()).step).toBe("plugins");
     expect(notifications).toBe(1);
@@ -286,61 +305,24 @@ describe("wizard steps around the existing verification flow", () => {
     expect((await onboarding.advance()).step).toBe("access");
     await onboarding.advance();
     await onboarding.advance();
+    expect(onboarding.state().canGoBack).toBe(false);
     notifications = 0;
     expect((await onboarding.back()).step).toBe("done");
     expect(notifications).toBe(0);
   });
 
-  it("defaults the plugins once, entering from Privacy — a switch flipped back on survives a relaunch", async () => {
+  it("moves from Privacy to Gatekeeper without rewriting plugin choices", async () => {
     plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
-    const applyPluginDefault = async () => {
-      const live = loadSettings(home);
-      live.disabledPlugins = ["cant-work-yet"];
-      saveSettings(home, live);
-    };
-    const onboarding = build({ applyPluginDefault });
+    const before = loadSettings(home);
+    before.disabledPlugins = ["messages"];
+    saveSettings(home, before);
+    const onboarding = build();
 
     await onboarding.advance();
     await settle();
     expect(onboarding.state().step).toBe("privacy");
-
-    expect((await onboarding.advance()).step).toBe("plugins");
-    expect(loadSettings(home).disabledPlugins).toEqual(["cant-work-yet"]);
-
-    // The owner turns the defaulted-off plugin back on.
-    const live = loadSettings(home);
-    live.disabledPlugins = [];
-    saveSettings(home, live);
-
-    // A relaunch resumes directly on Plugins — Privacy is never re-entered —
-    // so the default must not run again and flip it back off.
-    const relaunched = build({ applyPluginDefault });
-    expect(relaunched.state().step).toBe("plugins");
-    expect(loadSettings(home).disabledPlugins).toEqual([]);
-  });
-
-  it("keeps the owner on Privacy when the plugin default throws, and retries it on the next advance", async () => {
-    plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
-    let applied = 0;
-    const applyPluginDefault = async () => {
-      applied += 1;
-      if (applied === 1) throw new Error("boom");
-    };
-    const onboarding = build({ applyPluginDefault });
-
-    await onboarding.advance();
-    await settle();
-    expect(onboarding.state().step).toBe("privacy");
-
-    const failed = await onboarding.advance();
-    expect(failed.step).toBe("privacy");
-    expect(failed.busy).toBe(false);
-    expect(failed.message).toBe("Something went wrong. Try again.");
-    expect(applied).toBe(1);
-
-    const retried = await onboarding.advance();
-    expect(retried.step).toBe("plugins");
-    expect(applied).toBe(2);
+    expect((await onboarding.advance()).step).toBe("gatekeeper");
+    expect(loadSettings(home).disabledPlugins).toEqual(["messages"]);
   });
 
   it.each<{
@@ -368,16 +350,6 @@ describe("wizard steps around the existing verification flow", () => {
       after: () => {
         // The pending telemetry choice from the signed-out session was never written.
         expect(loadSettings(home).telemetryEnabled).toBe(true);
-      },
-    },
-    {
-      name: "applyPluginDefault",
-      deps: (pending) => ({ applyPluginDefault: () => pending }),
-      enter: async (onboarding) => {
-        plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
-        await onboarding.advance();
-        await settle();
-        expect(onboarding.state().step).toBe("privacy");
       },
     },
   ])("does not resume past reset() lands during $name", async ({ before, deps, enter, after }) => {
@@ -418,7 +390,7 @@ describe("wizard steps around the existing verification flow", () => {
     expect(notifications).toBe(0);
   });
 
-  it("holds a redeemed login on Privacy until Continue moves to plugins", async () => {
+  it("holds a redeemed login on Privacy until Continue moves to the gatekeeper", async () => {
     plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
     const onboarding = build();
     await onboarding.advance();
@@ -429,7 +401,7 @@ describe("wizard steps around the existing verification flow", () => {
     expect(loadSettings(home).relayCredential).toBe(SESSION_TOKEN);
     expect(loadSettings(home).setupComplete).toBe(false);
 
-    expect((await onboarding.advance()).step).toBe("plugins");
+    expect((await onboarding.advance()).step).toBe("gatekeeper");
   });
 
   it("writes telemetry on leaving plugins and completion only on leaving availability", async () => {
@@ -445,9 +417,9 @@ describe("wizard steps around the existing verification flow", () => {
     // The builder's accessNeeded answers false: nothing to grant skips Access.
     expect((await onboarding.advance()).step).toBe("availability");
     expect(loadSettings(home)).toMatchObject({ telemetryEnabled: false, setupComplete: false });
-    // The persisted gate deliberately resumes incomplete setup at Plugins, so a
-    // returning install still makes the telemetry choice before Availability.
-    expect(build().state().step).toBe("plugins");
+    // The checkpoint follows the step, so a returning install resumes right
+    // where this one left off rather than repeating the telemetry choice.
+    expect(build().state().step).toBe("availability");
 
     expect((await onboarding.advance()).step).toBe("done");
     expect(loadSettings(home)).toMatchObject({ telemetryEnabled: false, setupComplete: true });
@@ -471,6 +443,7 @@ describe("wizard steps around the existing verification flow", () => {
     expect(onboarding.state().step).toBe("privacy");
     expect(applied).toBe(1);
     await onboarding.advance();
+    await onboarding.advance();
     onboarding.setTelemetryEnabled(false);
     expect((await onboarding.advance()).step).toBe("availability");
     expect(loadSettings(home)).toMatchObject({ keepAwakeWhileRunning: true, telemetryEnabled: false });
@@ -479,7 +452,7 @@ describe("wizard steps around the existing verification flow", () => {
     // switch turned off on the screen stays off.
     await onboarding.back();
     expect((await onboarding.advance()).step).toBe("availability");
-    expect((await build({ applyAvailabilityDefault }).advance()).step).toBe("availability");
+    expect(build({ applyAvailabilityDefault }).state().step).toBe("availability");
     expect(applied).toBe(1);
 
     // Sign out and set up again: a new setup, so the switches open on again.
@@ -492,6 +465,209 @@ describe("wizard steps around the existing verification flow", () => {
     expect(applied).toBe(2);
   });
 
+  describe("the resume checkpoint", () => {
+    function signedIn(overrides: Partial<Settings> = {}): void {
+      const settings = loadSettings(home);
+      settings.relayCredential = DEVICE_TOKEN;
+      Object.assign(settings, overrides);
+      saveSettings(home, settings);
+    }
+
+    async function enterAccess(): Promise<Onboarding> {
+      signedIn();
+      const onboarding = build({ accessNeeded: async () => true });
+      expect(onboarding.state().step).toBe("plugins");
+      expect((await onboarding.advance()).step).toBe("access");
+      return onboarding;
+    }
+
+    // The bug this replaces: the checkpoint was armed by setup's own Relaunch
+    // button, so macOS's "Quit & Reopen" after a Full Disk Access grant — and a
+    // reboot, and Cmd-Q — returned the owner to Plugins with nothing to show
+    // for what they had just granted.
+    it("reopens on Access after a quit nobody asked this app for", async () => {
+      await enterAccess();
+
+      expect(loadSettings(home).onboardingResumeStep).toBe("access");
+      expect(build({ accessNeeded: async () => true }).state().step).toBe("access");
+    });
+
+    it("reopens on Availability after a quit there", async () => {
+      signedIn();
+      const onboarding = build({ accessNeeded: async () => false });
+      expect((await onboarding.advance()).step).toBe("availability");
+
+      expect(loadSettings(home).onboardingResumeStep).toBe("availability");
+      expect(build().state().step).toBe("availability");
+    });
+
+    it("awaits Access preparation before the resumed initial step is ready", async () => {
+      signedIn({ onboardingResumeStep: "access" });
+      let finishPreparation = () => {};
+      const preparation = new Promise<void>((resolve) => {
+        finishPreparation = resolve;
+      });
+      let calls = 0;
+      const onboarding = build({
+        prepareAccess: async () => {
+          calls += 1;
+          await preparation;
+        },
+      });
+      expect(onboarding.state().step).toBe("access");
+
+      let ready = false;
+      const initial = onboarding.prepareInitialStep().then((state) => {
+        ready = true;
+        return state;
+      });
+      await Promise.resolve();
+
+      expect(calls).toBe(1);
+      expect(ready).toBe(false);
+      finishPreparation();
+      expect((await initial).step).toBe("access");
+      expect(ready).toBe(true);
+    });
+
+    it.each([
+      ["a signed-out setup", { relayCredential: "", setupComplete: false }, "welcome"],
+      ["a completed setup", { relayCredential: DEVICE_TOKEN, setupComplete: true }, "done"],
+    ] as const)("ignores the checkpoint for %s", (_name, overrides, expectedStep) => {
+      signedIn({ ...overrides, onboardingResumeStep: "access" });
+
+      expect(build().state().step).toBe(expectedStep);
+    });
+
+    // A checkpoint written by another build — an older one, or a newer one with
+    // a screen this build has never heard of — must not wedge setup on a screen
+    // it cannot render.
+    it("falls back to Plugins for a checkpoint it does not recognise", () => {
+      signedIn({ onboardingResumeStep: "sometime-later" as never });
+
+      expect(build().state().step).toBe("plugins");
+    });
+
+    // The activation secret lives in memory and never on disk.
+    it("never checkpoints the activation screen", async () => {
+      const onboarding = build();
+      expect(onboarding.state().step).toBe("welcome");
+      await onboarding.advance();
+
+      expect(onboarding.state().step).toBe("activate");
+      expect(loadSettings(home).onboardingResumeStep).toBeUndefined();
+    });
+
+    it.each([
+      ["Back", (onboarding: Onboarding) => onboarding.back(), "plugins", "plugins"],
+      ["Continue", (onboarding: Onboarding) => onboarding.advance(), "availability", "availability"],
+    ] as const)(
+      "moves the checkpoint when %s leaves Access",
+      async (_name, leave, expectedStep, expectedCheckpoint) => {
+        const onboarding = await enterAccess();
+
+        expect((await leave(onboarding)).step).toBe(expectedStep);
+        expect(loadSettings(home).onboardingResumeStep).toBe(expectedCheckpoint);
+      },
+    );
+
+    // The checkpoint is never erased — it has no reader once setup is
+    // complete, and erasing is what drops a relaunch back on Plugins when a
+    // throw unwinds with the step still on a non-resumable screen.
+    it("opens on Done past a checkpoint setup left behind", async () => {
+      signedIn();
+      const onboarding = build({ accessNeeded: async () => false });
+      await onboarding.advance();
+      expect((await onboarding.advance()).step).toBe("done");
+
+      expect(loadSettings(home).onboardingResumeStep).toBe("availability");
+      expect(build().state().step).toBe("done");
+    });
+  });
+
+  describe("the footer's progress", () => {
+    it("reports no dots on the screens that have none", () => {
+      expect(build().state().progress).toBeNull();
+    });
+
+    it("walks the dots forward through setup", async () => {
+      const settings = loadSettings(home);
+      settings.relayCredential = DEVICE_TOKEN;
+      saveSettings(home, settings);
+      const onboarding = build({ accessNeeded: async () => true });
+
+      expect(onboarding.state().step).toBe("plugins");
+      expect(onboarding.state().progress).toEqual({ index: 3, total: 6 });
+      expect((await onboarding.advance()).progress).toEqual({ index: 4, total: 6 });
+      expect((await onboarding.advance()).progress).toEqual({ index: 5, total: 6 });
+      expect((await onboarding.advance()).progress).toBeNull();
+    });
+  });
+});
+
+describe("the gatekeeper's instructions", () => {
+  async function toGatekeeper() {
+    plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
+    const onboarding = build();
+    await onboarding.advance();
+    await settle();
+    expect(onboarding.state().step).toBe("privacy");
+    expect((await onboarding.advance()).step).toBe("gatekeeper");
+    return onboarding;
+  }
+
+  it("starts a first setup from the Home instructions and saves them only on Continue", async () => {
+    const onboarding = await toGatekeeper();
+    expect(onboarding.state().purpose).toBe(PRESET_TEXT.home);
+    expect(loadSettings(home).agentPurpose).toBe("");
+
+    expect((await onboarding.advance()).step).toBe("plugins");
+    expect(loadSettings(home).agentPurpose).toBe(PRESET_TEXT.home);
+  });
+
+  it("keeps an unsaved draft across Gatekeeper → Privacy → Gatekeeper", async () => {
+    const onboarding = await toGatekeeper();
+
+    expect((await onboarding.back("  Let my assistant handle family logistics.  ")).step).toBe("privacy");
+    expect(loadSettings(home).agentPurpose).toBe("");
+    expect((await onboarding.advance()).step).toBe("gatekeeper");
+    expect(onboarding.state().purpose).toBe("  Let my assistant handle family logistics.  ");
+
+    await onboarding.advance();
+    expect(loadSettings(home).agentPurpose).toBe("Let my assistant handle family logistics.");
+  });
+
+  it("saves the owner's draft on Continue, trimmed, and brings it back from Plugins", async () => {
+    const onboarding = await toGatekeeper();
+    expect((await onboarding.advance("  Allow my assistant to read my calendar.  ")).step).toBe("plugins");
+    expect(loadSettings(home).agentPurpose).toBe("Allow my assistant to read my calendar.");
+    expect((await onboarding.back()).step).toBe("gatekeeper");
+    expect(onboarding.state().purpose).toBe("Allow my assistant to read my calendar.");
+  });
+
+  it("keeps an emptied field empty — no instructions is a choice", async () => {
+    const onboarding = await toGatekeeper();
+    await onboarding.advance("   ");
+    expect(loadSettings(home).agentPurpose).toBe("");
+    await onboarding.back();
+    expect(onboarding.state().purpose).toBe("");
+  });
+
+  it("ignores a draft that is not text, or sent from any other step", async () => {
+    const onboarding = await toGatekeeper();
+    await onboarding.advance(42);
+    await onboarding.advance("late");
+    expect(loadSettings(home).agentPurpose).toBe(PRESET_TEXT.home);
+    expect(onboarding.state().purpose).toBe(PRESET_TEXT.home);
+  });
+
+  it("opens a re-setup on the instructions already stored", async () => {
+    const settings = loadSettings(home);
+    settings.agentPurpose = "Allow my assistant to handle my inbox.";
+    saveSettings(home, settings);
+    const onboarding = await toGatekeeper();
+    expect(onboarding.state().purpose).toBe("Allow my assistant to handle my inbox.");
+  });
 });
 
 describe("activation — the path a brand-new user takes", () => {
@@ -523,7 +699,7 @@ describe("activation — the path a brand-new user takes", () => {
       { token: SESSION_TOKEN, deviceId: "device-1", hostname: "test-mac" },
     ]);
     expect(loadSettings(home).mcpUrl).toBe(DEVICE_MCP_URL);
-    expect((await onboarding.advance()).step).toBe("plugins");
+    expect((await onboarding.advance()).step).toBe("gatekeeper");
   });
 
   it("polls without waiting to be told to — a hand-typed message still gets in", async () => {
@@ -732,7 +908,7 @@ describe("activation — the path a brand-new user takes", () => {
 
     expect(state.busy).toBe(false);
     expect(state.activation).toBeNull();
-    expect(state.message).toBe("Couldn't reach Plow at http://localhost:4242.");
+    expect(state.message).toBe("Plow isn’t responding right now.");
   });
 
   it("never lets the renderer see the activation secret", async () => {
@@ -806,7 +982,7 @@ describe("one code, however many callers ask for it", () => {
       throw boom;
     };
     const failed = await onboarding.advance();
-    expect(failed.message).toBe("Couldn't reach Plow.");
+    expect(failed.message).toBe("Plow isn’t responding right now.");
     expect(failed.activation).toBeNull();
 
     plow.createActivation = original;
@@ -817,16 +993,6 @@ describe("one code, however many callers ask for it", () => {
 });
 
 describe("signing out", () => {
-  it("shows the fixed revoke warning on the setup screen", () => {
-    const onboarding = build();
-    const warning =
-      "Signed out on this Desktop. Plow could not be reached to revoke the session — revoke it in Plow's account settings.";
-
-    const state = onboarding.showMessage(warning);
-
-    expect(state.step).toBe("welcome");
-    expect(state.message).toBe(warning);
-  });
 
   it("returns to Welcome without needing a restart", async () => {
     // Reported live: Sign Out blanked the credential in settings but left the
@@ -983,10 +1149,10 @@ describe("the activation credential handoff", () => {
     expect(mode).toBe(0o600);
   });
 
-  it("opens on plugins when this Mac already holds an incomplete credential", async () => {
+  it("opens on the screen this Mac already holds an incomplete credential on", async () => {
     await signIn();
 
-    expect(build().state().step).toBe("plugins");
+    expect(build().state().step).toBe("privacy");
   });
 });
 
@@ -1004,6 +1170,8 @@ describe("signing out", () => {
     await onboarding.advance();
     await settle();
     expect(onboarding.state().step).toBe("privacy");
+    await onboarding.advance();
+    expect(onboarding.state().step).toBe("gatekeeper");
     await onboarding.advance();
     expect(onboarding.state().step).toBe("plugins");
     // Any activation minted from here on is a fresh code nobody has texted yet.
@@ -1037,7 +1205,32 @@ describe("signing out", () => {
 });
 
 describe("while the credential handoff is in the air", () => {
-  it("keeps the verified session when a new-code request lands during relayInfo", async () => {
+  it("retires a failed handoff durably and lets Try again keep the next session", async () => {
+    plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
+    plow.relayInfo = async () => {
+      throw new PlowApiError("network", "Plow unavailable");
+    };
+    const onboarding = build();
+
+    await onboarding.advance();
+    await settle();
+
+    expect(loadSettings(home).relayCredential).toBe("");
+    expect(plow.revoked).toEqual([SESSION_TOKEN]);
+    expect(onboarding.state().message).toBe("Plow isn’t responding right now.");
+
+    const nextSession = "plow_ACTIVATIONsession_retry";
+    plow.relayInfo = async (token: string) => {
+      expect(token).toBe(nextSession);
+      return { uid: "u_123" };
+    };
+    plow.redeems = [{ status: "verified", token: nextSession }];
+    await onboarding.newActivationCode();
+    await settleUntil(() => onboarding.state().step === "privacy");
+    expect(loadSettings(home).relayCredential).toBe(nextSession);
+  });
+
+  it("persists availability defaults before a verified session can be interrupted", async () => {
     let release = () => {};
     const inAir = new Promise<void>((resolve) => {
       release = resolve;
@@ -1048,10 +1241,17 @@ describe("while the credential handoff is in the air", () => {
       await inAir;
       return original(token);
     };
-    const onboarding = build();
+    let defaultsApplied = 0;
+    const onboarding = build({ applyAvailabilityDefault: () => { defaultsApplied += 1; } });
     await onboarding.advance();
     await settle();
     expect(onboarding.state().busy).toBe(true);
+    expect(loadSettings(home).relayCredential).toBe(SESSION_TOKEN);
+    // A quit right here signs in on relaunch, so the checkpoint has to be on
+    // disk already — otherwise it reopens on Plugins, skipping Privacy AND
+    // Gatekeeper, and `agentPurpose` is never set.
+    expect(build().state().step).toBe("privacy");
+    expect(defaultsApplied).toBe(1);
 
     plow.redeems = [{ status: "pending" }];
     const during = await onboarding.newActivationCode();
@@ -1064,6 +1264,26 @@ describe("while the credential handoff is in the air", () => {
     expect(plow.revoked).toEqual([]);
     expect(loadSettings(home).relayCredential).toBe(SESSION_TOKEN);
     expect(onboarding.state().step).toBe("privacy");
+  });
+
+  // A throw after the credential is durable unwinds to run(), whose publish()
+  // checkpoints whatever step is current — so the step has to have moved to
+  // Privacy already, or that publish erases the checkpoint and the relaunch
+  // lands on Plugins again.
+  it("keeps the Privacy checkpoint when the handoff throws after the credential lands", async () => {
+    plow.redeems = [{ status: "verified", token: SESSION_TOKEN }];
+    const onboarding = build({
+      applyAvailabilityDefault: () => {
+        throw new Error("disk full");
+      },
+    });
+
+    await onboarding.advance();
+    await settle();
+
+    expect(loadSettings(home).relayCredential).toBe(SESSION_TOKEN);
+    expect(loadSettings(home).onboardingResumeStep).toBe("privacy");
+    expect(build().state().step).toBe("privacy");
   });
 
   it("stays signed out when the sign-out lands during relayInfo", async () => {
@@ -1081,9 +1301,10 @@ describe("while the credential handoff is in the air", () => {
     await onboarding.advance();
     await settle();
 
-    signOutOfPlow(home);
+    queueRevokeAndSignOut(home);
     onboarding.reset();
     release();
+    await new PendingRevokeRetrier(home, (token) => plow.revokeDeviceCredential(token)).start();
     await settle();
 
     // Nothing is persisted, the session is retired best-effort, and the
@@ -1115,8 +1336,8 @@ describe("while startRelay is dialling", () => {
     release();
     await settle();
 
-    expect(advanced.step).toBe("plugins");
-    expect(onboarding.state().step).toBe("plugins");
+    expect(advanced.step).toBe("gatekeeper");
+    expect(onboarding.state().step).toBe("gatekeeper");
   });
 
   it("is not overwritten by the post-login state", async () => {
