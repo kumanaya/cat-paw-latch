@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { GOG_SKILL } from "../src/providers/gogSkill.js";
 import {
   compactCalendarEvents,
+  freeBusyAnswer,
   gogExitReason,
   mergeFanout,
   planPlowGog,
@@ -281,7 +282,7 @@ describe("planPlowGog", () => {
         ],
         account: null,
         confirmConflict: false,
-        conflictCheck: { from: "2026-08-28T10:00:00-07:00", to: "2026-08-28T11:00:00-07:00" },
+        conflictCheck: { from: "2026-08-28T10:00:00-07:00", to: "2026-08-28T11:00:00-07:00", calendar: "primary" },
       },
     },
     {
@@ -306,7 +307,7 @@ describe("planPlowGog", () => {
         gogArgv: ["plow-gog", "calendar", "create", "primary", "--from=2026-08-28T10:00:00Z", "--to=2026-08-28T11:00:00Z", "--send-updates", "all"],
         account: null,
         confirmConflict: false,
-        conflictCheck: { from: "2026-08-28T10:00:00Z", to: "2026-08-28T11:00:00Z" },
+        conflictCheck: { from: "2026-08-28T10:00:00Z", to: "2026-08-28T11:00:00Z", calendar: "primary" },
       },
     },
     {
@@ -373,7 +374,7 @@ describe("planPlowGog", () => {
         ],
         account: null,
         confirmConflict: true,
-        conflictCheck: { from: "2026-08-28T10:00:00Z", to: "2026-08-28T11:00:00Z" },
+        conflictCheck: { from: "2026-08-28T10:00:00Z", to: "2026-08-28T11:00:00Z", calendar: "primary" },
       },
     },
     {
@@ -691,11 +692,31 @@ describe("compactCalendarEvents", () => {
   });
 });
 
+describe("freeBusyAnswer", () => {
+  const busy = { start: "2026-09-18T22:30:00Z", end: "2026-09-18T23:00:00Z" };
+
+  it("notes a permanently unreadable calendar, and gives up on one that might clear", () => {
+    // notFound never clears — the owner's subscribed holiday calendar answers
+    // that way on every call — so the window is still answered, with the gap
+    // named. A rate limit might have hidden the commitment being booked over.
+    expect(freeBusyAnswer({ primary: { busy: [busy] }, gone: { errors: [{ reason: "notFound" }] } })).toEqual({
+      busy: [busy],
+      errored: ["gone"],
+    });
+    expect(freeBusyAnswer({ primary: { busy: [] }, later: { errors: [{ reason: "rateLimitExceeded" }] } })).toBeNull();
+  });
+});
+
 describe("the Google Workspace skill", () => {
   it("says day names come from startDayOfWeek, and names the compact fields", () => {
     expect(GOG_SKILL.body).toContain("Take every day name you write from `startDayOfWeek`");
     expect(GOG_SKILL.body).toContain("To get the raw events,\npass `--select` or `--fields`");
     expect(GOG_SKILL.body).toContain("never work\nit out from the date yourself, and never from memory");
+    // An agent answered "am I free at 2pm" from the conflict verb, which
+    // pairs commitments across calendars: a lone one made it empty, and the
+    // owner was told a slot was free with a commitment in it.
+    expect(GOG_SKILL.body).toContain('**"Am I free at 2pm?" is a busy-time read.**');
+    expect(GOG_SKILL.body).toContain("proves nothing\nabout whether the owner is free");
     for (const field of ["startDayOfWeek", "startLocal", "endLocal", "truncated: {omitted, after}"]) {
       expect(GOG_SKILL.body).toContain(field);
     }

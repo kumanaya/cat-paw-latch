@@ -68,6 +68,14 @@ first (\`calendar calendars\` fans out) and read every one the owner shows
 <that account>\`. \`--all\` is not the same: it also reads the calendars they
 have hidden.
 
+**"Am I free at 2pm?" is a busy-time read.** For availability — one slot, or
+finding a time — read the window across those shown calendars:
+\`calendar freebusy --cal <ids> --account <email>\`, or \`calendar events
+--calendars <ids> --account <email>\` when you need the titles too.
+\`calendar conflicts\` answers something else: it pairs commitments that
+overlap each other on DIFFERENT calendars, so an empty result proves nothing
+about whether the owner is free.
+
     ["plow-gog", "accounts"]
 
 lists the connected accounts, from the mint — no Google call at all. Which is
@@ -125,8 +133,12 @@ naming it — and the override itself is blocked and nothing is
 booked: say so, without redirecting the conversation elsewhere.
 
 Here that check is a \`calendar create\` with timed \`--from\`/\`--to\`, and the
-refusal carries the overlap COUNT per account plus any account that could not
-be checked — no titles, so use \`calendar conflicts\` if you want the names.
+refusal carries the BUSY TIMES per account plus any account that could not be
+checked — no titles, so read the window yourself if you want the names. A
+calendar Google will never read (no access) is named in the created event's
+own result (\`could_not_check\`) rather than refused on; one that failed for a
+reason that might clear, or an account where nothing answered at all, is a
+refusal like any other.
 All-day (date-only) events skip the check.
 
 \`--account\` and \`--confirm-conflict\` are plow-gog's own arguments and never
