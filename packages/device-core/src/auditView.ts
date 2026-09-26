@@ -221,6 +221,10 @@ export function decidedByLabel(source: string | null): string | null {
     case "rule": return "Always-allow rule";
     case "plow_folder": return "Plow folder (auto-approved)";
     case "policy": return "Policy (deny mode)";
+    // The owner's own allow, withdrawn because the machine could not prove a
+    // person was present. The label names the check, so the row never reads
+    // the raw source "presence".
+    case "presence": return "Windows Hello (not available)";
     // Not internal labels in the human's view: the operation was denied because
     // the reviewer could not run, not because anyone chose. One cannot be paid
     // for; the other was never configured.

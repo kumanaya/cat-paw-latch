@@ -1074,11 +1074,23 @@ ipcMain.handle("onboarding:openMessages", async () => {
   await openSmsUrl(url);
   return onboarding?.messagesOpened();
 });
+// Set by the wizard's last step and read once, by the first paint of the window
+// it opens. It exists for one thing: the visual system distinguishes the window
+// setup hands the owner to from every later window (tray, Dock, relaunch), and
+// CSS is the only thing that reads it. Cleared as it is read, so a second
+// window in the same run does not replay it.
+let handingOverFromSetup = false;
 // The last step of the wizard. It does not just close the setup window — it
 // hands the user over to the app, which is the whole point of the gate: the
 // main window has not existed until now.
 ipcMain.handle("onboarding:finish", async () => {
+  handingOverFromSetup = true;
   gate.sync();
+});
+ipcMain.handle("ui:entered", async () => {
+  const wasHandover = handingOverFromSetup;
+  handingOverFromSetup = false;
+  return wasHandover;
 });
 
 // OAuth URLs never cross this boundary. The renderer names an action and gets

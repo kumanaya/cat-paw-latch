@@ -35,6 +35,16 @@ export class WindowsPresenceGate implements PresenceGate {
     if (!native) return false;
     try {
       const text = reason === "vault" ? "Unlock Plow Latch vault" : "Approve this Plow Latch action";
+      // Two paths, and they are NOT the same prompt. `requestConsent` is
+      // `UserConsentVerifier` — the Windows Hello face/fingerprint check — and
+      // it needs biometric hardware, so on a desktop with no camera or reader
+      // `checkAvailability` answers `device-not-present` and it can never run.
+      // `requestPassword` is `CredUIPromptForWindowsCredentials`, a PASSWORD
+      // dialog: it collects a password and LogonUser checks it. On an account
+      // that has a PIN but no password it has nothing to verify and offers to
+      // create one — which is the "create an account" prompt, and a real
+      // complaint about this path. Removing it does not fix that: it just
+      // denies every sensitive action on hardware where Hello cannot run.
       const available = await native.checkAvailability();
       this.unlocked = available === "available"
         ? await native.requestConsent(text)

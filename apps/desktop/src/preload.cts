@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld("domo", {
     ipcRenderer.on("gatekeeperRecovery:changed", cb),
   uiGetTab: () => ipcRenderer.invoke("ui:getTab"),
   uiSetTab: (tab: string) => ipcRenderer.invoke("ui:setTab", tab),
+  // One-shot: true only for the window the setup wizard just opened.
+  uiEntered: () => ipcRenderer.invoke("ui:entered"),
   relayGet: () => ipcRenderer.invoke("settings:getRelay"),
   // Sign out. Also the "Sign out and re-activate" button on the chat-list
   // error: signing out IS re-activating, because main tears the window down

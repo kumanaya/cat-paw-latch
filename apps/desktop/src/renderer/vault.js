@@ -860,7 +860,6 @@ export async function renderVault(view, isCurrent = () => true) {
   const pane = el("div", { class: "vaultui" });
   const masthead = el("div", { class: "masthead" }, [
     el("div", {}, [
-      el("h2", { text: "Browser Vault" }),
       el("p", { class: "trust" }, [
         el("span", { text: "Logins, credit cards, identities and notes your agents may need while working in the browser. When an agent needs one, this Desktop fills it in for them. The values never leave this Desktop." }),
       ]),

@@ -17,7 +17,7 @@ window.addEventListener("keydown", (e) => arming.pressStarted("key", { repeat: e
 window.addEventListener("mousedown", () => arming.pressStarted("mouse"), true);
 
 /* Disable the action buttons until the mouse arming delay elapses. Arming is
-   ONE-SHOT, at show: an agent is actively driving this Mac, so window focus
+   ONE-SHOT, at show: an agent is actively driving this Desktop, so window focus
    shifts under the user constantly — re-arming on focus made the buttons fade
    out and revoke themselves mid-read. Once enabled they stay enabled; the
    press-start rule in arming.js still rejects input that began elsewhere.

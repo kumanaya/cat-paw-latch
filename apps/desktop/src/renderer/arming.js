@@ -16,7 +16,7 @@
    - **Armed only after a quiet delay (per input kind).** Arming happens once,
      when the window is shown; nothing activates until that kind's delay has
      fully elapsed, and once armed the window STAYS armed (an agent is driving
-     this Mac, so focus shifts under the user constantly — tying arming to
+     this Desktop, so focus shifts under the user constantly — tying arming to
      focus made the buttons revoke themselves mid-read). The renderer also
      disables the buttons until then, but the disabled attribute alone can't
      express the second half:
