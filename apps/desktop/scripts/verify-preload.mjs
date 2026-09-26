@@ -109,6 +109,10 @@ ipcMain.handle("gatekeeperRecovery:suggest", async (_event, activityId) => {
 });
 ipcMain.handle("ui:getTab", async () => "audit");
 ipcMain.handle("ui:setTab", async () => {});
+// The window asks once, on boot, whether it is the one the setup wizard just
+// opened. No wizard ran here, so the entrance animation never plays in a
+// capture — and the probe must not depend on it either.
+ipcMain.handle("ui:entered", async () => false);
 // Settings' fork notice. A 1px image stands in for the bundled banner: the
 // probe proves the row renders through the bridge, not the artwork's bytes.
 ipcMain.handle("fork:banner", async () =>

@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import ts from "typescript";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import assert from "node:assert/strict";
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -36,10 +36,14 @@ async function mouseClick(win, expression) {
 
 app.whenReady().then(async () => {
   fs.mkdirSync(out, { recursive: true });
-  const { CloudAgentState } = await import(path.join(desktop, "dist/cloudAgentState.js"));
-  const { CloudAgentsClient } = await import(path.join(desktop, "dist/cloudAgents.js"));
-  const { PlowApi } = await import(path.join(desktop, "dist/plowApi.js"));
-  const { saveSettings, loadSettings } = await import(path.join(desktop, "dist/settings.js"));
+  // A file:// URL, not a path: Node's ESM loader rejects a bare Windows
+  // absolute path ("Received protocol 'c:'"), and this harness runs on Windows
+  // as well as macOS.
+  const mod = (file) => import(pathToFileURL(file).href);
+  const { CloudAgentState } = await mod(path.join(desktop, "dist/cloudAgentState.js"));
+  const { CloudAgentsClient } = await mod(path.join(desktop, "dist/cloudAgents.js"));
+  const { PlowApi } = await mod(path.join(desktop, "dist/plowApi.js"));
+  const { saveSettings, loadSettings } = await mod(path.join(desktop, "dist/settings.js"));
   saveSettings(home, { ...loadSettings(home), relayCredential: "fixture_device_credential" });
   let providers = [{ id: "exe:life", name: "Life", phrases: ["Start Life & café?", "alias"] }];
   let agentRows = [];
@@ -94,7 +98,7 @@ app.whenReady().then(async () => {
   for (const [channel, value] of Object.entries({
     "connect:get": state, "cloud:refresh": state,
     "status:get": () => ({ deviceId: "fixture", name: "Test Mac", connected: true }),
-    "ui:getTab": () => "agents", "ui:setTab": () => {},
+    "ui:getTab": () => "agents", "ui:setTab": () => {}, "ui:entered": () => false,
     "updates:get": () => ({ supported: false, phase: "idle" }),
     "capabilities:get": () => ({ view: { badgeCount: 0, groups: [], banner: null } }),
     "vault:exchangePending": () => null,

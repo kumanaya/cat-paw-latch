@@ -21,7 +21,7 @@ import { app, ipcMain } from "electron";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { clickText, failLoudly, shootScreens, shotWindow, waitFor } from "./screenshot-harness.mjs";
 import { capabilitiesView } from "../dist/capabilitiesModel.js";
 
@@ -166,11 +166,15 @@ const DEVICE_SETTINGS = {
 };
 
 async function setUp() {
-  const { ConnectClient } = await import(path.join(dist, "connectClient.js"));
-  const { saveSettings, loadSettings } = await import(path.join(dist, "settings.js"));
+  // A file:// URL, not a path: Node's ESM loader rejects a bare Windows
+  // absolute path ("Received protocol 'c:'"), and this harness runs on Windows
+  // as well as macOS.
+  const mod = (file) => import(pathToFileURL(file).href);
+  const { ConnectClient } = await mod(path.join(dist, "connectClient.js"));
+  const { saveSettings, loadSettings } = await mod(path.join(dist, "settings.js"));
   // The Audit screenshot carries the Gatekeeper card, so this harness also
   // serves the reviewer's state and purpose statement from the throwaway home.
-  const { readAgentPurpose, readInference, setAgentPurpose, setApprovalMode } = await import(
+  const { readAgentPurpose, readInference, setAgentPurpose, setApprovalMode } = await mod(
     path.join(dist, "settingsActions.js")
   );
 
@@ -318,6 +322,9 @@ async function setUp() {
   ipcMain.handle("telemetry:get", async () => ({ enabled: true }));
   ipcMain.handle("ui:getTab", async () => "agents");
   ipcMain.handle("ui:setTab", async () => {});
+  // The window asks once, on boot, whether it is the one the setup wizard just
+  // opened. No wizard ran here, so the entrance animation never plays.
+  ipcMain.handle("ui:entered", async () => false);
   ipcMain.handle("onboarding:open", async () => {});
   // Settings awaits these on boot. Without them the invoke rejects and the
   // Connected Accounts section never paints (the fork notice and vault

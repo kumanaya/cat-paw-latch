@@ -83,8 +83,13 @@ function capture(cmd, argv) {
 }
 
 /** GNU tar cannot list/extract zip; Python's zipfile is on every packaging host. */
+/* `python3` on POSIX. On Windows the launcher is `python`, and the Microsoft
+   Store's `python3` alias is a stub that exits without running anything — so
+   naming `python3` here fails on a perfectly good install. */
+const PY = process.platform === "win32" ? "python" : "python3";
+
 function zipEntries(zipDest) {
-  return capture("python3", [
+  return capture(PY, [
     "-c",
     "import zipfile, sys; print('\\n'.join(zipfile.ZipFile(sys.argv[1]).namelist()))",
     zipDest,
@@ -92,7 +97,7 @@ function zipEntries(zipDest) {
 }
 
 function extractZip(zipDest, dest) {
-  run("python3", [
+  run(PY, [
     "-c",
     "import zipfile, sys; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])",
     zipDest,
@@ -316,14 +321,14 @@ function fetchWindowsBrowser(arch) {
   }
   const zipDest = path.join(downloadsDir, path.basename(new URL(asset.url).pathname));
   download(asset.url, asset.sha256, zipDest);
-  const entries = capture("tar", ["-tf", zipDest]).split(/\r?\n/).filter(Boolean);
+  const entries = zipEntries(zipDest);
   if (entries.some((entry) => path.isAbsolute(entry) || entry.split(/[\\/]+/).includes(".."))) {
     throw new Error("Windows Camoufox archive contains an unsafe path");
   }
   const staging = fs.mkdtempSync(path.join(downloadsDir, "camoufox-win-"));
   try {
     log(`extracting Windows Camoufox (${arch})`);
-    run("tar", ["-xf", zipDest, "-C", staging]);
+    extractZip(zipDest, staging);
     const executable = onlyFileNamed(staging, "camoufox.exe");
     const sourceRoot = path.dirname(executable);
     fs.rmSync(installRoot, { recursive: true, force: true });
