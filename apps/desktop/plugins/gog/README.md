@@ -41,8 +41,10 @@ than in the staging code, which knows nothing about any particular CLI.
    `--readonly=false` to an otherwise-refused `gmail send` must be refused
    by `gogFlags.ts` before it reaches gog. At 0.36.0, without the gate, it
    reached Google.
-5. Re-run the scope bound, which the belt depends on. Against the darwin
-   binary, with `--enable-commands=gmail,calendar` in front:
+5. Re-run the scope bound, which the belt depends on. On EVERY host this fork
+   ships — against that host's own staged member (`gog` on macOS and Linux,
+   `gog.exe` on Windows), so a bump is verified where it actually runs — with
+   `--enable-commands=gmail,calendar` in front:
 
    ```
    gmail|mail|email search q     exit 4 — dispatches (aliases count)
