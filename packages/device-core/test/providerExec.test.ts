@@ -18,6 +18,7 @@ import {
   BrowserSessions,
   DeviceAgent,
   HeadlessPolicy,
+  hostNoun,
   impliesNetwork,
   loadPlugins,
   MintError,
@@ -1326,7 +1327,7 @@ describe("a plugin that is off", () => {
       when: "the owner turns it off",
       off: (d: DeviceAgent) => d.setDisabledPlugins(["gog"]),
       on: (d: DeviceAgent) => d.setDisabledPlugins([]),
-      reason: "plow-gog is turned off on this Mac",
+      reason: `plow-gog is turned off on this ${hostNoun()}`,
     },
     {
       when: "no account it requires is connected",
@@ -1361,7 +1362,7 @@ describe("a plugin that is off", () => {
     const ran = path.join(tmp(), "ran");
     d = device(flipsDuringMint, stagedGog(`#!/bin/sh\ntouch "${ran}"\n`));
     const response = await run(d, ["plow-gog", "gmail", "search", "q"]);
-    expect(jv(response).get("error").str).toBe("plow-gog is turned off on this Mac");
+    expect(jv(response).get("error").str).toBe(`plow-gog is turned off on this ${hostNoun()}`);
     // Refused at the launch seam itself — after exec_start, before any child.
     expect(fs.existsSync(ran)).toBe(false);
     expect(d.audit.entries().map((e) => jv(e).get("event").str)).not.toContain("exec_end");
@@ -1374,9 +1375,9 @@ describe("a plugin that is off", () => {
     const d = device(null, echoerPlugin("#!/bin/sh\necho ran\n"));
     d.setDisabledPlugins(["echoer"]);
     expect(d.skills.manifest().map((s) => s.name)).not.toContain("echoer");
-    expect(d.pluginRefusal(["echoer", "say", "hi"])).toBe("echoer is turned off on this Mac");
+    expect(d.pluginRefusal(["echoer", "say", "hi"])).toBe(`echoer is turned off on this ${hostNoun()}`);
     const response = await run(d, ["echoer", "say", "hi"]);
-    expect(jv(response).get("error").str).toBe("echoer is turned off on this Mac");
+    expect(jv(response).get("error").str).toBe(`echoer is turned off on this ${hostNoun()}`);
     expectNeverSpawned(d);
   });
 

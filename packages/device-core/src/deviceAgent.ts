@@ -15,6 +15,7 @@ import { AlwaysAllowRule, canonicalize, capabilityDisplay, Intent, intentIsExpir
 import { PROVIDERS, providerFor, providerRefusal, type Provider } from "./providers/registry.js";
 import { pluginFor, type StagedPlugin } from "./plugins/registry.js";
 import { stagedName } from "./plugins/stage.js";
+import { hostNoun } from "./host.js";
 import { missingPluginAccounts, type PluginPlatform } from "./plugins/manifest.js";
 import { classifyArgv, ruleArgv } from "./plugins/argvRules.js";
 import { resolveEnv } from "./plugins/env.js";
@@ -72,6 +73,7 @@ import { registerContactsSkill } from "./contactsSkill.js";
 import { registerImessageSkill } from "./imessageSkill.js";
 import { ensurePlowFolder, registerPlowFolderSkill } from "./plowFolder.js";
 import { registerWhatsappSkill } from "./whatsappSkill.js";
+import { registerSysSkill } from "./sysSkill.js";
 
 /** The browser's own name in `disabledPlugins` — it has no manifest and is
  *  not one of `this.plugins`, but the owner's off switch treats it the same. */
@@ -434,6 +436,11 @@ export class DeviceAgent {
     ensurePlowFolder(this.ownerHome);
     registerPlowFolderSkill(this.skills, this.ownerHome);
     registerContactsSkill(this.skills, this.ownerHome);
+    // The host's own controls, in the host's own spelling. Registered here for
+    // the same reason as the two above: a host's tools are a start-time fact,
+    // and a skill naming another OS's commands would send the agent looking
+    // for `notify-send` on a Windows PC.
+    registerSysSkill(this.skills);
     if (browserRuntime) {
       // Not registered here: syncPluginSkills() owns it, on exactly while
       // this runtime is present and the owner has not turned the browser off.
@@ -955,7 +962,7 @@ export class DeviceAgent {
    */
   private offReason(staged: StagedPlugin): string | null {
     const { name, command, requires } = staged.manifest;
-    if (this.disabledPlugins.has(name)) return `${command} is turned off on this Mac`;
+    if (this.disabledPlugins.has(name)) return `${command} is turned off on this ${hostNoun()}`;
     const missing = requires.accounts.find((id) => !this.connectedAccounts.has(id));
     if (missing === undefined) return null;
     return `${command} needs a connected ${missing} account — the owner connects one in Plow Latch's Plugins tab`;
@@ -1181,7 +1188,7 @@ export class DeviceAgent {
       // resolve; if it cannot, that is an answer, not a pass.
       const plugin = this.plugin(provider.plugin);
       if (plugin === null) {
-        return this.execError(intent.intentId, this.pluginRefusal(argv) ?? `${provider.command} is not installed on this Mac`);
+        return this.execError(intent.intentId, this.pluginRefusal(argv) ?? `${provider.command} is not installed on this ${hostNoun()}`);
       }
       try {
         return await this.executePlowGog(intent, plugin, provider, argv, { readPaths, writePaths, network, appleEvents, waitMs });

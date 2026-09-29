@@ -7,6 +7,7 @@
  * copy of exactly the three properties that must not drift.
  */
 import type { Provider } from "./registry.js";
+import { hostNoun } from "../host.js";
 
 /** A mint failed. Every message is safe to display, log and audit. */
 export class MintError extends Error {
@@ -16,7 +17,7 @@ export class MintError extends Error {
   }
 
   static unpaired(): MintError {
-    return new MintError("this Mac is not paired with Plow");
+    return new MintError(`this ${hostNoun()} is not paired with Plow`);
   }
 
   /** The mint did not yield a usable token. `detail` comes from `PlowApi`,
