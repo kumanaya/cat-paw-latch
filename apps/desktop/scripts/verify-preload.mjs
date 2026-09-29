@@ -511,7 +511,11 @@ app.whenReady().then(async () => {
   await waitFor(win, `document.querySelector(".panel.settings .cap-row")`, "the permission rows");
   const settings = await win.webContents.executeJavaScript(`(${() => {
     return {
-      hasAccountGroup: document.body.innerText.includes("Plow Account"),
+      // Lowercased because the redesign styles every screen label
+      // `text-transform: uppercase` (styles.css), and `innerText` is the
+      // RENDERED text — it comes back "PLOW ACCOUNT". What is asserted is
+      // which label the pane shows, not how its own type styles set it.
+      hasAccountGroup: document.body.innerText.toLowerCase().includes("plow account"),
       // The account group is about this Mac now, not the wire. The endpoint is
       // the Agents tab's job (where it can be copied) and the UID was noise.
       showsThisMac: document.querySelector("#view").innerText.includes("This Desktop"),
@@ -588,7 +592,7 @@ app.whenReady().then(async () => {
       // Keep Desktop Awake, beside it: off by default, and the toggle is live —
       // the probe's blocker always grants, so a checked box would mean the
       // renderer showed a state it never asked main for.
-      hasAvailabilityGroup: document.body.innerText.includes("Availability"),
+      hasAvailabilityGroup: document.body.innerText.toLowerCase().includes("availability"),
       awakeTitle: document.body.innerText.includes("Keep Desktop Awake"),
       awakeToggleLiveAndOff: (() => {
         const box = [...document.querySelectorAll(".settings input")].find(
@@ -783,7 +787,7 @@ app.whenReady().then(async () => {
       agentsTabFirst: tabs[0] === "agents",
       tabOrder: tabs,
       hasAgentsPane: document.querySelectorAll("#view .panel.agents .list-section").length === 2,
-      showsTitle: text.includes("Connect an MCP client"),
+      showsTitle: text.toLowerCase().includes("connect an mcp client"),
       noConnectTab: !document.querySelector('#seg button[data-tab="connect"]'),
       // The client shortcut. Exactly one: a card exists only for a client whose
       // link lands the user where they paste, and ChatGPT has no such link.
@@ -1358,7 +1362,12 @@ app.whenReady().then(async () => {
       formInModal: !!modal && modal.innerText.includes("Name this connection"),
       noInlineForm: !document.querySelector("#view").innerText.includes("Name this connection"),
       // The pane behind it is switched off while it is up.
-      paneInert: document.querySelector("#view")?.hasAttribute("inert") === true,
+      // The redesign mounts the view inside `.app-chrome` (index.html), and the
+      // modal disables that chrome — sidebar and workspace together — rather
+      // than the view alone. The assertion is that what is behind the dialog
+      // is switched off, so it asks the node that now carries it.
+      paneInert: [...document.querySelectorAll(".app-chrome")].length > 0 &&
+        [...document.querySelectorAll(".app-chrome")].every((n) => n.hasAttribute("inert")),
       // Focus went into the dialog rather than staying on the trigger.
       focusInModal: !!modal && modal.contains(document.activeElement),
       buttons: [...(modal?.querySelectorAll("button") ?? [])].map((b) => b.textContent.trim()),
@@ -1798,7 +1807,7 @@ app.whenReady().then(async () => {
       // Connected Accounts, in the tab's own row style: the Google row with
       // its "Add another" (a browser hop, so arrowed), then one row per
       // account with the address, the default's pill, and a labelled menu.
-      hasConnectedAccounts: document.querySelector("#view").innerText.includes("Connected Accounts"),
+      hasConnectedAccounts: document.querySelector("#view").innerText.toLowerCase().includes("connected accounts"),
       connectorAccounts: [...document.querySelectorAll(".cap-account-email")].map((e) => e.textContent.trim()),
       connectorDefault: document.querySelector(".cap-account-row .cap-default-pill")?.textContent.trim(),
       connectorDefaultOnFirst: !!document.querySelector(".cap-account-row:first-child .cap-default-pill") &&
