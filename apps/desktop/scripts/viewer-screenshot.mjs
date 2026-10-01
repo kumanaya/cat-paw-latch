@@ -60,6 +60,10 @@ app.on("window-all-closed", () => {});
 ipcMain.handle("status:get", async () => ({ deviceId: "probe", name: "Probe", connected: true }));
 ipcMain.handle("ui:getTab", async () => "audit");
 ipcMain.handle("ui:setTab", async () => {});
+// The window asks once, on boot, whether it is the one the setup wizard just
+// opened. No wizard ran here, so the entrance animation never plays in a
+// capture.
+ipcMain.handle("ui:entered", async () => false);
 // The renderer reads a page of rows (no timelines) and then the selected
 // row by id, the way main's live index serves them.
 const activity = {

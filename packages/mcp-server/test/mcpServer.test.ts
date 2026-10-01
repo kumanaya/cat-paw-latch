@@ -16,6 +16,7 @@ import {
   DENIAL_SOURCE_NO_REVIEWER,
   DeviceAgent,
   HeadlessPolicy,
+  hostNoun,
   loadPlugins,
   MAX_FILE_BYTES,
   PolicyDelegate,
@@ -1019,7 +1020,7 @@ describe("review findings", () => {
       const { isError, payload } = await callTool(server, "plow_run_command", { argv: ["plow-gog", "gmail", "search", "q"] }, AGENT);
 
       expect(isError).toBe(true);
-      expect(String(payload.error ?? payload)).toContain("plow-gog is turned off on this Mac");
+      expect(String(payload.error ?? payload)).toContain(`plow-gog is turned off on this ${hostNoun()}`);
       expect(decided).toBe(false);
     });
 

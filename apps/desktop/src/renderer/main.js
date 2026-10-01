@@ -22,8 +22,16 @@ const view = document.getElementById("view");
 // platform draws them, and the reserved width is wasted in a small window.
 if (window.domo?.platform !== "darwin") document.body.classList.add("platform-nonmac");
 const seg = document.getElementById("seg");
+const sectionTitle = document.getElementById("sectionTitle");
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");
+
+/* Dates are formatted in the APP's language, not the host's. Every string
+   around them is hard-written English — "Created …", "minutes ago",
+   "Last checked" — and a pt-BR or de-DE machine would otherwise render
+   "Created 24 de ago" right beside it. One name to change if the app is ever
+   localized; today it is English everywhere, so this is English everywhere. */
+const LOCALE = "en-US";
 
 // Null until boot() picks one: the HTML marks Audit active for the first paint,
 // but boot must still RENDER that pane, and "already on this tab" now returns
@@ -64,7 +72,7 @@ function sinceLabel(iso) {
   if (Number.isNaN(d.getTime())) return "Since…";
   // To the second, like the Time column: the cutoff is exact and the rows
   // either side of it are often seconds apart.
-  return `Since ${d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" })}`;
+  return `Since ${d.toLocaleString(LOCALE, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" })}`;
 }
 // The mounted Settings pane, while that tab is up. Holds a `refresh` that
 // updates the display nodes in place, so a relay reconnect cannot reset the
@@ -191,10 +199,10 @@ let auditRenderGeneration = 0;
 // One formatter per shape, built once: the locale lookup behind each call is
 // the expensive part, and the old per-step call in the main process was most
 // of what it spent on the log.
-const DAY_TIME_FMT = new Intl.DateTimeFormat(undefined, {
+const DAY_TIME_FMT = new Intl.DateTimeFormat(LOCALE, {
   month: "short", day: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit",
 });
-const CLOCK_FMT = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit", second: "2-digit" });
+const CLOCK_FMT = new Intl.DateTimeFormat(LOCALE, { hour: "numeric", minute: "2-digit", second: "2-digit" });
 function fmtWith(fmt, iso) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -1214,7 +1222,8 @@ function closeModal(modal) {
   if (!modal || modal !== activeModal) return;
   document.removeEventListener("keydown", modal.onKeydown, true);
   modal.backdrop.remove();
-  for (const node of document.querySelectorAll(".titlebar, #view, .update-banner, .gatekeeper-notice")) {
+  // The shell — sidebar and workspace, together — is what a modal disables.
+  for (const node of document.querySelectorAll(".app-chrome")) {
     node.removeAttribute("inert");
   }
   activeModal = null;
@@ -1242,7 +1251,7 @@ function openModal(trigger, { children = [], className = "", focus, canDismiss, 
     if (e.target === backdrop) dismiss();
   });
   document.addEventListener("keydown", onKeydown, true);
-  for (const node of document.querySelectorAll(".titlebar, #view, .update-banner, .gatekeeper-notice")) {
+  for (const node of document.querySelectorAll(".app-chrome")) {
     node.setAttribute("inert", "");
   }
   document.body.appendChild(backdrop);
@@ -1694,7 +1703,7 @@ function rosterDate(value) {
   if (Number.isNaN(date.getTime())) return null;
   const now = new Date();
   if (date.toDateString() === now.toDateString()) return "today";
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return date.toLocaleDateString(LOCALE, { month: "short", day: "numeric" });
 }
 
 function rosterAgo(value) {
@@ -1873,10 +1882,10 @@ function clientEntityRow(row, redraw) {
   const name = rosterName(row);
   const context = [
     "MCP client",
-    // Which Mac this credential works from. The main process hands down a
+    // Which Desktop this credential works from. The main process hands down a
     // label and never the device uid, and it goes in as text — a device name
     // is a string somebody else chose.
-    row.deviceLabel ? `Bound to ${row.deviceLabel}` : "Works from any Mac",
+    row.deviceLabel ? `Bound to ${row.deviceLabel}` : "Works from any Desktop",
     row.createdAt ? `Created ${rosterDate(row.createdAt) ?? "date unknown"}` : "Created date unknown",
     row.lastSeenAt ? `Last used ${rosterAgo(row.lastSeenAt) ?? "date unknown"}` : "Never used",
   ].filter(Boolean).join(" · ");
@@ -2127,8 +2136,8 @@ function updateStatusText(u) {
   if (u.phase === "error") return `Last check failed: ${u.error}`;
   // "You're up to date" only when a check THIS session confirmed it; a
   // timestamp persisted from an earlier launch only proves we once looked.
-  if (u.upToDate) return `You're up to date. Last checked ${new Date(u.lastCheckAt).toLocaleString()}.`;
-  return u.lastCheckAt ? `Last checked ${new Date(u.lastCheckAt).toLocaleString()}.` : "Not checked yet.";
+  if (u.upToDate) return `You're up to date. Last checked ${new Date(u.lastCheckAt).toLocaleString(LOCALE)}.`;
+  return u.lastCheckAt ? `Last checked ${new Date(u.lastCheckAt).toLocaleString(LOCALE)}.` : "Not checked yet.";
 }
 
 /** The passive banner: visible only while an update is staged and undismissed. */
@@ -2201,8 +2210,8 @@ function whenText(iso) {
   if (Number.isNaN(d.getTime())) return iso;
   const sameDay = d.toDateString() === new Date().toDateString();
   return sameDay
-    ? d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
-    : d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    ? d.toLocaleTimeString(LOCALE, { hour: "numeric", minute: "2-digit" })
+    : d.toLocaleString(LOCALE, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }
 
 /**
@@ -2216,7 +2225,7 @@ function permissionsPane() {
   // not answering Apple events — so the node is handed back at once with this
   // line in it, and the rows replace it when the read lands.
   const panel = el("div", { class: "permissions" }, [
-    el("p", { class: "faint", text: "Checking this Mac's permissions…" }),
+    el("p", { class: "faint", text: "Checking this Desktop's permissions…" }),
   ]);
   const openRows = new Set();
   // Which groups are open. Seeded from the model on first sight of each
@@ -2644,7 +2653,7 @@ async function renderPlugins() {
     const rows = state.rows.map(pluginRow);
     panel.replaceChildren(group(
       "Plugins",
-      "The tools agents can run on this Mac. Turning one off unpublishes its skill and refuses its commands.",
+      "The tools agents can run on this Desktop. Turning one off unpublishes its skill and refuses its commands.",
       state.error ? [el("p", { class: "warn", text: state.error }), ...rows] : rows,
     ));
   };
@@ -2978,7 +2987,14 @@ async function selectTab(tab) {
   if (tab !== "settings") settingsMounted = permissionsMounted = null;
   if (tab !== "plugins") pluginsMounted = null;
   if (tab !== "agents") agentsMounted = null;
-  for (const b of seg.querySelectorAll("button")) b.classList.toggle("active", b.dataset.tab === tab);
+  // The section title takes its words from the selected row, so the nav and
+  // the heading can never disagree about what this screen is called.
+  for (const b of seg.querySelectorAll("button")) {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", String(on));
+    if (on) sectionTitle.textContent = b.textContent.trim();
+  }
   render();
   return true;
 }
@@ -3090,6 +3106,10 @@ window.addEventListener("focus", () => {
 
 // Restore the last-selected tab (falls back to the HTML default on any miss).
 async function boot() {
+  // Setup keeps its own identity and its own window; this is the one that says
+  // "you are in the product now". Only the window the wizard just opened gets
+  // it, so a later window from the tray arrives already settled.
+  if (await window.domo.uiEntered()) document.body.classList.add("entering");
   refreshStatus();
   refreshUpdateBanner();
   void refreshGatekeeperAttention();

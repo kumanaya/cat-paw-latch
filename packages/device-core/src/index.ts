@@ -30,6 +30,8 @@ export * from "./imessageSkill.js";
 export * from "./auditView.js";
 export * from "./plowFolder.js";
 export * from "./contactsSkill.js";
+export * from "./sysSkill.js";
+export * from "./host.js";
 export * from "./deviceAgent.js";
 export * from "./executor.js";
 export {

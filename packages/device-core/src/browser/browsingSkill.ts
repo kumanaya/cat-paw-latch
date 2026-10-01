@@ -6,6 +6,7 @@
  */
 import { Skill } from "../skills.js";
 import { MAX_CLICK_TIMEOUT_MS } from "./browserSessions.js";
+import { hostNoun } from "../host.js";
 
 /**
  * Why this Mac's browser is the one that answers a live-web question, in ONE
@@ -280,7 +281,7 @@ fill_secret each card field → confirm → screenshot the confirmation → plow
 export function browsingSkillFor(platform: NodeJS.Platform = process.platform): Skill {
   if (platform !== "win32" && platform !== "linux") return BROWSING_SKILL;
 
-  const host = platform === "linux" ? "Linux PC" : "Windows PC";
+  const host = hostNoun(platform);
   const description =
     `Browse websites on this ${host} with an isolated Camoufox session. It uses the ` +
     "owner's local network, but has an empty temporary profile: it cannot read the owner's " +

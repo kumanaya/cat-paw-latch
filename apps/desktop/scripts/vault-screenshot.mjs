@@ -116,6 +116,9 @@ async function setUp() {
   ipcMain.handle("status:get", async () => ({ deviceId: "dev_example", name: "Example Mac", connected: true }));
   ipcMain.handle("ui:getTab", async () => "vault");
   ipcMain.handle("ui:setTab", async () => {});
+  // The window asks once, on boot, whether it is the one the setup wizard just
+  // opened. No wizard ran here, so the entrance animation never plays.
+  ipcMain.handle("ui:entered", async () => false);
   ipcMain.handle("updates:get", async () => ({
     supported: false,
     currentVersion: "0.0.0-shot",

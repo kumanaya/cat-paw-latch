@@ -22,12 +22,19 @@ describe("WindowsPresenceGate", () => {
     expect(calls).toBe(2);
   });
 
-  it("uses the native Windows-password verifier when Hello is unavailable", async () => {
-    let password = 0;
+  it("asks for a PASSWORD, not Hello, when Hello has no hardware to run on", async () => {
+    // The two prompts are not interchangeable. `requestConsent` is the Hello
+    // face/fingerprint verifier and is unreachable without biometric hardware;
+    // `requestPassword` is a credential dialog that LogonUser checks. A
+    // PIN-only account therefore gets a password prompt that offers to create
+    // one — which is the complaint, pinned here so the branch cannot be
+    // "simplified" into claiming it is a Hello prompt.
+    let asked: string[] = [];
     const native = hello("device-not-present");
-    native.requestPassword = async () => (++password, true);
+    native.requestConsent = async () => (asked.push("consent"), true);
+    native.requestPassword = async () => (asked.push("password"), true);
     await expect(new WindowsPresenceGate(native, "win32").verify("vault")).resolves.toBe(true);
-    expect(password).toBe(1);
+    expect(asked).toEqual(["password"]);
   });
 
   it("fails closed without an adapter or after a cancelled prompt", async () => {

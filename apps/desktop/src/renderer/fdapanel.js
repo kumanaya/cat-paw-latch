@@ -112,10 +112,12 @@ async function sendTileImage() {
     // needs the two trees to still match child-for-child.)
     const hint = clone.querySelector(".fda-drag-hint");
     if (hint) hint.style.display = "none";
-    // On the panel the tile's translucent white sits over the panel's
-    // near-opaque gray; flatten that stack so the floating tile keeps the
-    // on-panel look instead of going see-through over System Settings.
-    clone.style.background = "rgb(249, 249, 250)";
+    // On the panel the tile sits on the panel's translucent material; flatten
+    // that stack so the floating tile keeps the on-panel look instead of going
+    // see-through over System Settings. The colour is read from the token, so
+    // a warm light surface and a dark one both flatten to themselves.
+    clone.style.background = getComputedStyle(document.documentElement)
+      .getPropertyValue("--brand-surface").trim();
     const svg =
       `<svg xmlns="http://www.w3.org/2000/svg" width="${rect.width}" height="${rect.height}">` +
       `<foreignObject width="100%" height="100%">` +
