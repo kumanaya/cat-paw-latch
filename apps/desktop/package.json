@@ -36,7 +36,7 @@
   },
   "devDependencies": {
     "chokidar-cli": "^3.0.0",
-    "concurrently": "^10.0.5",
+    "concurrently": "^10.0.6",
     "electron": "33.4.11",
     "electron-builder": "^26.15.3",
     "electronmon": "^2.0.4"
